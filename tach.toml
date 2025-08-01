@@ -1,0 +1,31 @@
+interfaces = []
+exclude = [
+    "**/*__pycache__",
+    "**/*egg-info",
+    "**/docs",
+    "**/tests",
+    "**/venv",
+]
+source_roots = [ ".",
+]
+
+[[modules ]]
+path = "tempo.utils"
+depends_on = ["tempo.core"]
+
+[[modules ]]
+path = "tempo.core"
+depends_on = ["tempo.utils"]
+
+[[modules ]]
+path = "tempo.api"
+depends_on = ["tempo.utils", "tempo.runtime", "tempo.core", "tempo.transformations"]
+
+
+[[modules ]]
+path = "tempo.transformations"
+depends_on = ["tempo.core", "tempo.runtime", "tempo.utils"]
+
+[[modules ]]
+path = "tempo.runtime"
+depends_on = ["tempo.utils", "tempo.core"]

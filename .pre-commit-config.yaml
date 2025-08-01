@@ -1,0 +1,63 @@
+default_stages: [ "commit", "commit-msg", "push" ]
+default_language_version:
+  python: python3
+
+exclude: ^examples/llama/
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.12.1
+    hooks:
+      # Run the linter.
+      - id: ruff
+        args: [ --fix ]
+        files: ^tempo/
+      # Run the formatter.
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+        name: "End of file fixer"
+      - id: debug-statements
+        name: "Debug imports and breakpoints checker"
+      - id: requirements-txt-fixer
+        name: "Requirements txt fixer"
+      - id: mixed-line-ending
+        name: "Mixed line ending fixer"
+      - id: check-yaml
+        name: "Yaml checker"
+        args: [ '--unsafe' ]
+      - id: trailing-whitespace
+        name: "Trailing whitespace fixer"
+        args: ['--markdown-linebreak-ext=md']
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.16.1
+    hooks:
+      - id: mypy
+        name: "Static type checker"
+        files: tempo/.*\.py$
+
+
+  - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
+    rev: v9.22.0
+    hooks:
+      - id: commitlint
+        name: "Commit linter"
+        stages: [ commit-msg ]
+        additional_dependencies: [ '@commitlint/config-conventional' ]
+
+
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.8.1
+    hooks:
+      - id: nbstripout
+        name: "Notebook output cleaner"
+
+  - repo: https://github.com/gauge-sh/tach-pre-commit
+    rev: v0.29.0
+    hooks:
+      - id: tach

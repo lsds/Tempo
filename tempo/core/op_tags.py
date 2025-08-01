@@ -1,0 +1,12 @@
+STATIFY_PAD_ID_TAG = "__PAD_ID__"
+REGION_TAG = "__REGION__"
+GROUP_TAG = "__GROUP__"
+NO_DEDUP_TAG = "__NO_DEDUP__"
+
+BACKWARD_REGION_TAG = "__BACKWARD_REGION__"
+
+RESERVED_TAGS = {STATIFY_PAD_ID_TAG, REGION_TAG, GROUP_TAG, NO_DEDUP_TAG}
+
+
+def is_reserved_tag(tag: str) -> bool:
+    return tag in RESERVED_TAGS

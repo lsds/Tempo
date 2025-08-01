@@ -1,0 +1,4 @@
+fire>=0.5.0
+nvidia-ml-py>=11
+psutil>=5.9.4
+wandb>=0.12.9

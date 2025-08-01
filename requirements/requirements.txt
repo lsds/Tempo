@@ -1,0 +1,8 @@
+graphviz
+islpy
+matplotlib
+networkx
+numpy
+optree
+pulp
+sympy

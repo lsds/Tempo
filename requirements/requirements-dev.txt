@@ -1,0 +1,11 @@
+nvidia-ml-py
+pre-commit
+pytest
+python-semantic-release
+torchao
+torchtune
+
+# NOTE: pre-commit hooks install these anyway.
+#mypy
+#ruff
+#tach

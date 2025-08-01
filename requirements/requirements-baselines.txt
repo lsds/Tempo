@@ -1,0 +1,52 @@
+# NOTE: For CleanRL, we just embed implementation in the repo.
+
+accelerate>=0.17.0
+click
+colorama
+colorful
+colorlog
+dm_tree
+fairscale
+fastapi
+filelock
+flask
+flatbuffers
+
+# RLlib reqs
+grpcio
+#NOTE: The following are requirements of the baselines
+gym==0.26.2
+imageio
+jsonschema
+jsonschema_specifications
+lazy-loader
+lz4
+mock
+pandas
+pickle5
+pillow
+pyarrow
+pydantic
+pyyaml
+
+#NOTE: In the paper, we tested 2.5.0, but to make reproducibility easy and use a single container,
+# we update rllib to 2.37.0, so that dependencies align among baselines.
+#ray[rllib]==2.5.0
+ray[rllib]==2.37.0
+redis
+referencing
+rl-games==1.6.1
+rpds-py
+sample-factory==2.1.1
+scikit-image
+scikit-optimize
+
+# SF reqs
+signal-slot-mp
+starlette
+tensorboard
+tensorboardx
+tifffile
+typer
+uvicorn
+werkzeug

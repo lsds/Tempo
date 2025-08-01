@@ -1,0 +1,172 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+
+
+[project]
+name = "tempo"
+version = "0.0.1"
+authors = [{ name = "Pedro Silvestre" }]
+description = "Declarative, incremental and end-to-end accelerated DRL system"
+requires-python = ">=3.10"
+keywords = [
+    "reinforcement-learning",
+    "deep-learning",
+    "dynamic",
+    "python",
+    "torch",
+    "polyhedral",
+    "isl",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+readme = "README.md"
+dynamic = ["dependencies", "optional-dependencies"]
+
+[tool.setuptools]
+zip-safe = false
+[tool.setuptools.packages.find]
+include = ["tempo*"]
+
+
+[tool.mypy]
+mypy_path = "./tempo"
+python_version = "3.10"
+namespace_packages = false
+explicit_package_bases = false
+incremental = false
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = false
+allow_redefinition = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = false
+strict_optional = true
+strict_equality = true
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["numpy.*", "torch.*", "islpy.*", "graphviz.*", "networkx.*"]
+ignore_missing_imports = true
+
+#[[tool.mypy.overrides]]
+#module = ["islpy.*"]
+#disallow_untyped_calls = false  # Specifically allow untyped calls for islpy
+#allow_untyped_globals = true  # Allow untyped globals and type expressions
+##allow_incomplete_defs = true  # Allow partially defined type hints
+
+
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+hvcs = "github"
+major_on_zero = false
+build_command = "python -m build"
+upload_to_pypi = false
+commit_message = "chore(release): release {version} [skip ci]"
+changelog_sections = "feature,fix,documentation,refactor,breaking,performance"
+
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+    "tests",
+    "examples",
+]
+
+# Same as Black.
+line-length = 100
+indent-width = 4
+
+# Assume Python 3.9
+target-version = "py310"
+
+[tool.ruff.lint]
+#TODO add in D and T
+select = ["A", "B", "C", "E", "F", "G", "I", "N", "W"]
+
+# D107  -- Do not require docstrings for __init__.
+# E266  -- Do not require block comments to only have a single leading #.
+# E731  -- Do not assign a lambda expression, use a def.
+# B017  -- assertRaises(Exception): or pytest.raises(Exception) should be considered evil.
+# E203  -- black and flake8 disagree on whitespace before ':'.
+# N806  -- Variable in function should be lowercase.
+# E741  -- Ambiguous variable name
+# B019 --  Use of `functools.lru_cache` or `functools.cache` on methods can lead to memory leaks
+
+# NOTE: ruff does not support W503???
+# W503  -- Line break before binary operator (not compatible with black).
+ignore = ["D107", "E266", "E731", "B017", "E203", "N806", "N803", "E741", "B019"]
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+per-file-ignores = { "__init__.py" = ["F401"] }
+
+#TODO
+#docstring-convention = "google"
+#import-order-style = "google"
+#application-import-names = ["tempo"]
+
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.mccabe]
+# Flag errors (`C901`) whenever the complexity level exceeds 5.
+max-complexity = 15
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+#[tool.pyright]
+#reportGeneralTypeIssues = false
+#typeCheckingMode = "off"
+#
+#[tool.pyright.diagnosticSeverityOverrides]
+#reportGeneralTypeIssues = "none"
