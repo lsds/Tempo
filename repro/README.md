@@ -24,7 +24,7 @@ the results using some updated dependencies:
 * PyTorch v2.5.1 -> v2.7.1
 * JAX v0.4.35 -> v0.6.2
 
-The full locked list of dependencies file can be seen in [here](requirements/requirements-repro.txt).
+The full locked list of dependencies file can be seen in [here](../requirements/requirements-repro.txt).
 
 We have packaged the experiments into an easy to use docker container.
 Thus, to reproduce these results, you will need access to a similar host with
@@ -113,7 +113,7 @@ Breakdown:
 
 ## Minimal Working Example
 
-For this, you can refer to [repro/sec7_3_rl_train/impls/tempo_ppo.py](repro/sec7_3_rl_train/impls/tempo_ppo.py).
+For this, you can refer to [repro/sec7_3_rl_train/impls/tempo_ppo.py](../repro/sec7_3_rl_train/impls/tempo_ppo.py).
 Which can be executed as follows:
 
 ```bash
