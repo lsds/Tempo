@@ -12,6 +12,7 @@ examples/experiments/paper/plotting/data/
 **/*.dot
 **/*.pdf
 **/*.png
+!docs/banner
 **/*.svg
 **/*.jpg
 **/*.jpeg
