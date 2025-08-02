@@ -123,7 +123,6 @@ def launch(
     else:
         skip_sys = tuple(skip_sys.split(","))
 
-    skip_sys = ("cleanrl", "rlgames", "samplefactory", "rllib")
     seq, par = build_large_obs_configs(skip_sys=skip_sys, results_path=results_path)
 
     launch_par(par, visible_gpus=visible_gpus)
