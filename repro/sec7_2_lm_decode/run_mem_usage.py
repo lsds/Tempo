@@ -90,7 +90,7 @@ def run_mem_usage(
     results_path.mkdir(parents=True, exist_ok=True)
     configs = generate_configs(results_path)
     print(f"Generated {len(configs)} configs")
-    launch_par(configs, visible_gpus=visible_gpus)
+    launch_par(configs, visible_gpus=visible_gpus, timeout_minutes=120)
 
 
 if __name__ == "__main__":
