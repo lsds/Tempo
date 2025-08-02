@@ -72,7 +72,6 @@ def get_single_run_data(
     expected_name, experiment_path = name_function(path, params)
 
     experiment_path = Path(experiment_path)
-    print(f"Experiment path: {experiment_path}")
 
     if experiment_path.exists():
         # Check for error file
