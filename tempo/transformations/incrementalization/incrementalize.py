@@ -28,27 +28,19 @@ class Incrementalize(Transformation):
 
         inc_rounds = 0
 
-        limit = self.ctx.exec_cfg.incrementalize_mem_threshold
 
         while True:
             glob.set_active_dg(new_dg)
             mem_est = MemoryEstimator(self.current_compilation_ctx)
-            ## inc_policy = PreferTemporalDimsFirstBatchSecond()
-            # if inc_rounds == 0:
+
+            limit = self.ctx.exec_cfg.incrementalize_mem_threshold
+            max_mem_op = max(new_dg.nodes, key=lambda op: mem_est.estimate_op_size_bytes(op.op_id))
+            max_mem_op_size = mem_est.estimate_op_size_bytes(max_mem_op.op_id)
+
+            if max_mem_op_size < limit:
+                break
+
             inc_policy = IncTemporalOnce()
-            # elif (
-            #    inc_rounds == 1
-            #    and DLBackendName.str_to_enum(self.ctx.exec_cfg.backend) == DLBackendName.TORCH
-            # ):
-            #    max_mem_op = max(new_dg.nodes, key=lambda op: mem_est.estimate_op_size_bytes(op.op_id))
-            #    max_mem_op_size = mem_est.estimate_op_size_bytes(max_mem_op.op_id)
-            #    print(f"Max mem op: {max_mem_op} with size {max_mem_op_size}")
-            #    if max_mem_op_size > limit / 2:
-            #        inc_policy = PreferTemporalDimsFirstBatchSecond()
-            #    else:
-            #        break
-            # else:
-            #    break
 
             inc_round_ctx = inc_policy.get_round_info(self.current_compilation_ctx, inc_rounds)
 
