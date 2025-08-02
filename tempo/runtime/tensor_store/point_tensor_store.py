@@ -1,6 +1,6 @@
 from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.datatypes import BackendTensorT, TensorId
-from tempo.core.storage_methods import EvalSymbolStore, PointStore
+from tempo.core.storage_methods import DontStore, EvalSymbolStore, PointStore
 from tempo.runtime.tensor_store.point_runtime_tensor import PointRuntimeTensor
 from tempo.runtime.tensor_store.prealloc_eval_symbol_runtime_tensor import (
     EvalSymbolRuntimeTensor,
@@ -38,17 +38,17 @@ class PointTensorStore(TensorStore[BackendTensorT]):
                     storage_method.symbol,
                     dg.bound_defs,
                 )
-            # elif isinstance(storage_method, PointStore):
-            self.tensors[tensor_id] = PointRuntimeTensor(
-                exec_cfg, tensor_id, shape, dtype, dev, domain
-            )
+            elif isinstance(storage_method, (PointStore, DontStore)):
+                self.tensors[tensor_id] = PointRuntimeTensor(
+                    exec_cfg, tensor_id, shape, dtype, dev, domain
+                )
             # NOTE: This causes tests to fail despite correct
             # elif isinstance(storage_method, DontStore):
             #    self.tensors[tensor_id] = NoStorageRuntimeTensor(
             #        exec_cfg, tensor_id, shape, dtype, domain
             #    )
             # else:
-            #    raise ValueError(f"Unknown storage method {storage_method}")
+            #   raise ValueError(f"Unknown storage method {storage_method}")
 
     def __getitem__(self, item: TensorId) -> PointRuntimeTensor:
         return self.tensors[item]  # type: ignore
