@@ -407,7 +407,13 @@ class ResourceMonitorManager:
             f.write("\n")
 
             # Write data
-            for i in range(len(results.elapsed_ns)):
+            max_index = min(
+                len(results.elapsed_ns),
+                len(results.curr_time),
+                len(results.cpu_util),
+                len(results.cpu_mem_util),
+            )
+            for i in range(max_index):
                 f.write(
                     f"{results.elapsed_ns[i]},{results.curr_time[i]},"
                     + f"{results.cpu_util[i]},{results.cpu_mem_util[i]}"
