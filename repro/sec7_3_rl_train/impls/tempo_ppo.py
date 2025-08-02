@@ -2,6 +2,7 @@ from typing import Any
 
 from repro.sec7_3_rl_train.shared import (
     FakeWandBLogger,
+    is_large_obs,
     is_small_to_med_scale_experiment,
 )
 from tempo.api import rl
@@ -38,23 +39,26 @@ def get_tempo_rl_train_config(
 
     backend = sys_cfg.split("-")[1]
     cfg.backend = backend
+    cfg.torch_compilation_backend = "compile"
 
     obs_shape = kwargs.get("obs_shape", (3, 4, 4))
 
+    # NOTE: Enforce original submission's behaviour
     if is_small_to_med_scale_experiment(obs_shape):
         # NOTE: RL fairs better with only point storage, since intermediate activations
         # are fairly small. Thus, doing in-place writes ends up being expensive.
         # Ultimately it is preferable to do a single stack operation on 1000 small tensors,
         # rather than doing 1000 in-place writes to avoid the stack.
         cfg.enable_hybrid_tensorstore = False
+    if obs_shape[-1] < 64:
         cfg.enable_incrementalization = False
-    else:
+    elif is_large_obs(obs_shape):
         # NOTE: Enable swap for large obs experiments.
         cfg.enable_swap = True
 
-    if backend == "torch":
-        # This optimization leads to worse performance on PyTorch backend
-        cfg.enable_inplace_writes = False
+    #if backend == "torch":
+    #    # This optimization leads to worse performance on PyTorch backend
+    #    cfg.enable_inplace_writes = False
 
     return cfg
 
@@ -180,7 +184,7 @@ if __name__ == "__main__":
         # NOTE: Default obs shape for trivial env
         "obs_shape": (3, 4, 4),
         "seed": 0,
-        "dev": "gpu",
+        "dev": "fake-gpu",
         "iterations": 50,
         # PPO hyperparams
         "gamma": 0.99,
@@ -189,12 +193,12 @@ if __name__ == "__main__":
         "ent_coef": 0.01,
         "vf_coef": 0.5,
         # NOTE: Fixed param base used in large obs experiments (overwritten in small_to_med_scale)
-        "num_envs": 512,
+        "num_envs": 64,
         "ep_len": 250,
         "params_per_layer": 64,
         "num_layers": 2,
-        "sys_cfg": "tempo-jax",
-        "results_path": "./results/minimal_test",
+        "sys_cfg": "tempo-torch",
+        "results_path": "./results/minimal_test_large_obs",
         "vizualize": True,
     }
 
@@ -203,4 +207,4 @@ if __name__ == "__main__":
         **params,
     )
 
-    exe.execute()
+    #exe.execute()
