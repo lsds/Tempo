@@ -412,6 +412,13 @@ class ResourceMonitorManager:
                 len(results.curr_time),
                 len(results.cpu_util),
                 len(results.cpu_mem_util),
+                *[len(results.gpu_util[g]) for g in results.gpu_util.keys()],
+                *[len(results.smact[g]) for g in results.smact.keys()],
+                *[len(results.gpu_mem_util[g]) for g in results.gpu_mem_util.keys()],
+                *[len(results.pcie_tx_bytes[g]) for g in results.pcie_tx_bytes.keys()],
+                *[len(results.pcie_rx_bytes[g]) for g in results.pcie_rx_bytes.keys()],
+                *[len(results.pcie_rx_util[g]) for g in results.pcie_rx_util.keys()],
+                *[len(results.pcie_tx_util[g]) for g in results.pcie_tx_util.keys()],
             )
             for i in range(max_index):
                 f.write(
