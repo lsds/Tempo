@@ -47,6 +47,7 @@ def get_tempo_rl_train_config(
         # Ultimately it is preferable to do a single stack operation on 1000 small tensors,
         # rather than doing 1000 in-place writes to avoid the stack.
         cfg.enable_hybrid_tensorstore = False
+        cfg.enable_incrementalization = False
     else:
         # NOTE: Enable swap for large obs experiments.
         cfg.enable_swap = True
