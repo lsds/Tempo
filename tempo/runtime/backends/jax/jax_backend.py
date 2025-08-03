@@ -250,8 +250,6 @@ try:
         def configure(exec_cfg: ExecutionConfig) -> None:
             JaxBackend.pinned_memory_enabled = exec_cfg.torch_pinned_memory_enabled
 
-            assert JaxBackend.pinned_memory_enabled, "Expected pinned memory to be enabled"
-
             # torch._dynamo.config.cache_size_limit = 64
             np.random.seed(exec_cfg.seed)
             try:

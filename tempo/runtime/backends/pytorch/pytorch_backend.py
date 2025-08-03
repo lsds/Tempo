@@ -144,8 +144,8 @@ try:
                 )
                 start_time = time.perf_counter_ns()
                 buffer = torch.empty(
-                    int(amount // 4),
-                    dtype=torch.float32,
+                    int(amount),
+                    dtype=torch.uint8,
                     device=torch.device("cpu"),
                     pin_memory=exec_cfg.torch_pinned_memory_enabled,
                 )
@@ -215,15 +215,10 @@ try:
             #    print(f"Time taken - H2D: {elapsed_ms} ms")
             # return ret
 
-            assert PyTorchBackend.pinned_memory_enabled, "Expected pinned memory to be enabled"
-
             if dev.type == tensor.device.type:
                 return tensor
             if dev.type == PyTorchBackend.backend_cpu.type:
-                pool_key = (tensor.shape, tensor.dtype)
-                if pool_key not in pinned_tensor_cache:
-                    pinned_tensor_cache[pool_key] = PyTorchBackend._create_pool(tensor)
-                pool = pinned_tensor_cache[pool_key]
+                pool = PyTorchBackend._get_or_create_pool(tensor)
                 # borrow_start_time = time.perf_counter_ns()
                 buffer = pool.borrow()
                 # borrow_end_time = time.perf_counter_ns()
@@ -243,12 +238,10 @@ try:
                 # print(f"Time taken - D2H: {elapsed_ms} ms")
                 return buffer
             else:
-                # NOTE: non_blocking=False is needed to avoid incorrect results
                 temp = tensor.to(dev, non_blocking=PyTorchBackend.pinned_memory_enabled)
 
-                if hasattr(tensor, "_pool"):
-                    pool = pinned_tensor_cache[tensor._pool]
-                    pool.recycle(tensor)
+                pool = PyTorchBackend._get_or_create_pool(tensor)
+                pool.recycle(tensor)
 
                 # end_time = time.perf_counter_ns()
                 # elapsed_ms = (end_time - start_time) / 1e6
@@ -258,7 +251,11 @@ try:
                 return temp
 
         @staticmethod
-        def _create_pool(tensor: torch.Tensor) -> ObjectPool[torch.Tensor]:
+        def _get_or_create_pool(tensor: torch.Tensor) -> ObjectPool[torch.Tensor]:
+            key = (tensor.shape, tensor.dtype)
+            if key in pinned_tensor_cache:
+                return pinned_tensor_cache[key]
+
             pool = ObjectPool(
                 lambda: torch.empty(
                     tensor.shape,
@@ -268,6 +265,8 @@ try:
                     pin_memory=PyTorchBackend.pinned_memory_enabled,
                 )
             )
+            pinned_tensor_cache[key] = pool
+            return pool
             # example_shape = tensor.shape
             # example_dtype = tensor.dtype
             # example_device = tensor.device
