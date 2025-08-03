@@ -250,6 +250,8 @@ try:
         def configure(exec_cfg: ExecutionConfig) -> None:
             JaxBackend.pinned_memory_enabled = exec_cfg.torch_pinned_memory_enabled
 
+            assert JaxBackend.pinned_memory_enabled, "Expected pinned memory to be enabled"
+
             # torch._dynamo.config.cache_size_limit = 64
             np.random.seed(exec_cfg.seed)
             try:
@@ -297,6 +299,8 @@ try:
                 module=r"brax.*",  # Regex pattern to match modules starting with 'brax'
             )
             warnings.filterwarnings("ignore", category=DeprecationWarning)
+            if exec_cfg.torch_pinned_memory_enabled:
+                PyTorchBackend.configure(exec_cfg)
 
         @staticmethod
         def get_backend_name() -> DLBackendName:

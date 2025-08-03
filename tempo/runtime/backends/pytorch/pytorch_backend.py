@@ -88,7 +88,7 @@ try:
             np.random.seed(exec_cfg.seed)
             torch.manual_seed(exec_cfg.seed)
 
-            torch.backends.cudnn.benchmark = False  # True
+            torch.backends.cudnn.benchmark = True
             if exec_cfg.deterministic:
                 torch.use_deterministic_algorithms(True)
                 torch.backends.cudnn.deterministic = True
@@ -131,18 +131,20 @@ try:
                 import psutil
 
                 # NOTE: Allocate at most 50% of the CPU memory
-                ps_util_cpu_mem_max_bytes = psutil.virtual_memory().total * 0.5
+                ps_util_cpu_mem_max_bytes = psutil.virtual_memory().total * 0.80
                 amount = min(
                     exec_cfg.torch_pinned_prealloc_size_bytes,
                     ps_util_cpu_mem_max_bytes,
                 )
                 log.info(
-                    "Preallocating %s bytes of CPU memory. This may take a second...",
+                    "Preallocating %s bytes of pinned=%s CPU memory. This should take ~%s seconds.",
                     bytes_to_human_readable(amount),
+                    exec_cfg.torch_pinned_memory_enabled,
+                    amount / (2 ** 30) if exec_cfg.torch_pinned_memory_enabled else 0.1,
                 )
                 start_time = time.perf_counter_ns()
                 buffer = torch.empty(
-                    int(amount // 4),
+                    int(amount ),
                     dtype=torch.float32,
                     device=torch.device("cpu"),
                     pin_memory=exec_cfg.torch_pinned_memory_enabled,
@@ -213,6 +215,8 @@ try:
             #    print(f"Time taken - H2D: {elapsed_ms} ms")
             # return ret
 
+            assert PyTorchBackend.pinned_memory_enabled, "Expected pinned memory to be enabled"
+
             if dev.type == tensor.device.type:
                 return tensor
             if dev.type == PyTorchBackend.backend_cpu.type:
@@ -240,7 +244,7 @@ try:
                 return buffer
             else:
                 # NOTE: non_blocking=False is needed to avoid incorrect results
-                temp = tensor.to(dev, non_blocking=False)
+                temp = tensor.to(dev, non_blocking=PyTorchBackend.pinned_memory_enabled)
 
                 if hasattr(tensor, "_pool"):
                     pool = pinned_tensor_cache[tensor._pool]
