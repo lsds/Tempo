@@ -201,52 +201,18 @@ try:
 
         @staticmethod
         def to_device(tensor: torch.Tensor, dev: Any) -> torch.Tensor:
-            # tensor = tensor.contiguous()
-            # start_time = time.perf_counter_ns()
-            # if dev == PyTorchBackend.backend_cpu:
-            #    ret = tensor.to(dev, non_blocking=False)
-            #    end_time = time.perf_counter_ns()
-            #    elapsed_ms = (end_time - start_time) / 1e6
-            #    print(f"Time taken - D2H: {elapsed_ms} ms")
-            # else:
-            #    ret = tensor.to(dev, non_blocking=False)
-            #    end_time = time.perf_counter_ns()
-            #    elapsed_ms = (end_time - start_time) / 1e6
-            #    print(f"Time taken - H2D: {elapsed_ms} ms")
-            # return ret
-
             if dev.type == tensor.device.type:
                 return tensor
             if dev.type == PyTorchBackend.backend_cpu.type:
                 pool = PyTorchBackend._get_or_create_pool(tensor)
-                # borrow_start_time = time.perf_counter_ns()
                 buffer = pool.borrow()
-                # borrow_end_time = time.perf_counter_ns()
-                # borrow_elapsed_ms = (borrow_end_time - borrow_start_time) / 1e6
-                # print(f"Time taken - borrow: {borrow_elapsed_ms} ms")
-                # copy_start_time = time.perf_counter_ns()
-                # NOTE: For offloading, no need to block for correctness
-                # NOTE: However, due to our observed performance bug, we set it to False to avoid
-                # a copy to pinned memory.
-                buffer = buffer.copy_(tensor, non_blocking=PyTorchBackend.pinned_memory_enabled)
-                # copy_end_time = time.perf_counter_ns()
-                # copy_elapsed_ms = (copy_end_time - copy_start_time) / 1e6
-                # print(f"Time taken - copy: {copy_elapsed_ms} ms")
-                buffer._pool = (tensor.shape, tensor.dtype)
-                # end_time = time.perf_counter_ns()
-                # elapsed_ms = (end_time - start_time) / 1e6
-                # print(f"Time taken - D2H: {elapsed_ms} ms")
+                buffer = buffer.copy_(tensor, non_blocking=False)
                 return buffer
             else:
-                temp = tensor.to(dev, non_blocking=PyTorchBackend.pinned_memory_enabled)
+                temp = tensor.to(dev, non_blocking=True)
 
                 pool = PyTorchBackend._get_or_create_pool(tensor)
                 pool.recycle(tensor)
-
-                # end_time = time.perf_counter_ns()
-                # elapsed_ms = (end_time - start_time) / 1e6
-                # if dev == PyTorchBackend.backend_cpu:
-                #    print(f"Time taken - H2D: {elapsed_ms} ms")
 
                 return temp
 
