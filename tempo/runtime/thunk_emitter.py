@@ -109,26 +109,26 @@ class ThunkEmitter(Generic[BackendTensorT], ABC):
 
         input_devs = CompilationCtx(pg, analysis_ctx, exec_cfg).get_input_devices_list(op)
 
-        from tempo.runtime.backends.backend import DLBackend, DLBackendName
+        from tempo.runtime.backends.backend import DLBackend
 
         backend = DLBackend.get_backend(exec_cfg.backend)
         # interp_exec_func = interp_exec_func_
         # TODO: I don' actually think this helps, and its breaking encapsulation. Remove later.
-        if backend.get_backend_name() == DLBackendName.TORCH:
-            # interp_exec_func = lambda xs: tuple(
-            #    o.contiguous()  # type: ignore
-            #    for o in interp_exec_func_(xs)
-            # )
-            interp_exec_func = interp_exec_func_
+        #if backend.get_backend_name() == DLBackendName.TORCH:
+        #    # interp_exec_func = lambda xs: tuple(
+        #    #    o.contiguous()  # type: ignore
+        #    #    for o in interp_exec_func_(xs)
+        #    # )
+        #    interp_exec_func = interp_exec_func_
 
-            if len(input_shapes) > 0:
-                from torch.fx import symbolic_trace
+        #    if len(input_shapes) > 0:
+        #        from torch.fx import symbolic_trace
 
-                interp_exec_func = symbolic_trace(interp_exec_func).forward
-            else:
-                interp_exec_func = interp_exec_func_
-        else:
-            interp_exec_func = interp_exec_func_
+        #        interp_exec_func = symbolic_trace(interp_exec_func).forward
+        #    else:
+        #        interp_exec_func = interp_exec_func_
+        #else:
+        #    interp_exec_func = interp_exec_func_
 
         log.debug(
             "Codegening dataflow %s with example inputs %s",
@@ -159,7 +159,7 @@ class ThunkEmitter(Generic[BackendTensorT], ABC):
             and has_buffer_stored_outputs(pg, op, analysis_ctx)
         ):
             (
-                interp_exec_func,
+                interp_exec_func_,
                 example_inputs,
                 donatable_args,
             ) = make_inplace_write_wrapper(
@@ -168,7 +168,7 @@ class ThunkEmitter(Generic[BackendTensorT], ABC):
                 pg,
                 op,
                 output_types,
-                interp_exec_func,
+                interp_exec_func_,
                 example_inputs,
                 donatable_args,
             )
@@ -177,7 +177,7 @@ class ThunkEmitter(Generic[BackendTensorT], ABC):
             # NOTE: We apply the lazy slice wrapper after the inplace write wrapper,
             # as the lazy slice wrapper only affects the original inputs.
             (
-                interp_exec_func,
+                interp_exec_func_,
                 example_inputs,
                 donatable_args,
             ) = make_lazy_slice_thunk_wrapper(
@@ -186,13 +186,13 @@ class ThunkEmitter(Generic[BackendTensorT], ABC):
                 pg,
                 op,
                 output_types,
-                interp_exec_func,
+                interp_exec_func_,
                 example_inputs,
                 donatable_args,
             )
 
         exec_func = backend.trace_codegen_thunk(
-            interp_exec_func,
+            interp_exec_func_,
             op_id,
             exec_dev,
             exec_cfg,

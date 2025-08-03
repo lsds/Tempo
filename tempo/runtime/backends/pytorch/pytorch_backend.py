@@ -450,10 +450,11 @@ try:
                 # Symbolic tracing instead
                 traced_func = execution_func
             else:
-                # from torch.fx import symbolic_trace
+                from torch.fx import symbolic_trace
 
-                # traced_func_ = symbolic_trace(execution_func)
-                # return traced_func.forward  # type: ignore
+                traced_func_ = symbolic_trace(execution_func)
+                traced_func = traced_func_.forward  # type: ignore
+
                 traced_func = torch.jit.trace(
                     execution_func,
                     (inputs,),
@@ -501,13 +502,13 @@ try:
             inputs: Tuple[torch.Tensor, ...],
             donatable_args: Sequence[int],
         ) -> Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]]:
-            from torch.fx import symbolic_trace
+            #from torch.fx import symbolic_trace
 
-            traced_func = symbolic_trace(execution_func)
-            if "narrow" in traced_func.code:
-                return PyTorchBackend.trace_codegen_thunk_jit_trace(
-                    traced_func.forward, op_id, exec_cfg, inputs, donatable_args
-                )
+            #traced_func = symbolic_trace(execution_func)
+            #if "narrow" in traced_func.code:
+            #    return PyTorchBackend.trace_codegen_thunk_jit_trace(
+            #        traced_func.forward, op_id, exec_cfg, inputs, donatable_args
+            #    )
 
             # NOTE: Can only set mode or options. Modes set these options:
             # DEFAULTS:
@@ -530,10 +531,24 @@ try:
             #    "coordinate_descent_tuning": True,
             # },
             # }
+            # NOTE: Torch.compile has trouble with no inputs
+            if len(inputs) == 0:
+                return execution_func
+
+            from torch.fx import symbolic_trace
+
+            traced_func_ = symbolic_trace(execution_func)
+            traced_func = traced_func_.forward  # type: ignore
+
+            if "narrow" in traced_func_.code:
+                log.info("Using JIT trace due to narrow in code for op %s", op_id)
+                return PyTorchBackend.trace_codegen_thunk_jit_trace(
+                    execution_func, op_id, exec_cfg, inputs, donatable_args
+                )
 
             params = {
                 # "model": traced_func.forward,
-                "model": execution_func,
+                "model": traced_func,
                 "fullgraph": True,
                 "dynamic": False,
                 "backend": "inductor",  # tvm
@@ -568,9 +583,7 @@ try:
 
             params["options"] = opts
 
-            # NOTE: Torch.compile has trouble with no inputs
-            if len(inputs) == 0:
-                return execution_func
+
 
             exec_func = torch.compile(**params)
 
