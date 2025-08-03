@@ -144,7 +144,7 @@ try:
                 )
                 start_time = time.perf_counter_ns()
                 buffer = torch.empty(
-                    int(amount ),
+                    int(amount // 4),
                     dtype=torch.float32,
                     device=torch.device("cpu"),
                     pin_memory=exec_cfg.torch_pinned_memory_enabled,
