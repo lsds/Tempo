@@ -33,6 +33,7 @@ class AnalysisCtx:
     _compilation_time_breakdown: Optional[Dict[str, Any]] = None
     _buffer_stored_output_tensor_positions: Optional[Dict[OpId, Tuple[int, ...]]] = None
     _broadcast_elim_has_run: bool = False
+    _is_incremental_algo: bool = False
 
     def __deepcopy__(self, memo: Dict[int, Any]) -> AnalysisCtx:
         return AnalysisCtx(
@@ -58,6 +59,8 @@ class AnalysisCtx:
             copy.deepcopy(self._device_assignment, memo),
             copy.deepcopy(self._compilation_time_breakdown, memo),
             copy.deepcopy(self._buffer_stored_output_tensor_positions, memo),
+            self._broadcast_elim_has_run,
+            self._is_incremental_algo,
         )
 
     @property

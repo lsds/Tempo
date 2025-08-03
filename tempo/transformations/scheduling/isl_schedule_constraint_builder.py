@@ -1,6 +1,7 @@
 from typing import Callable, Dict, Tuple
 
 import islpy as isl
+import optree
 
 from tempo.core import index_expr as ie
 from tempo.core import isl_types as islt
@@ -10,10 +11,11 @@ from tempo.core.datatypes import TensorId
 from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.core.device import device
 from tempo.core.domain import Domain
+from tempo.core.op_tags import BACKWARD_REGION_TAG, REGION_TAG
 from tempo.core.storage_methods import DontStore, EvalSymbolStore
 from tempo.core.utils import bytes_to_human_readable
 from tempo.utils import logger
-from tempo.utils.dg_utils import get_block_access_var, is_block_access, is_window_access
+from tempo.utils.dg_utils import get_block_access_var, is_block_access
 from tempo.utils.isl import (
     dependence_to_isl_map,
     op_id_to_exec_name,
@@ -80,9 +82,7 @@ class IslScheduleConstraintsBuilder:
 
         self._tids_to_swap: isl.Set[TensorId] = set()
 
-        self.any_window_access_in_dg = any(
-            is_window_access(m) for _, _, e in self._dg.get_all_edges() for m in e.expr.members
-        )
+        self.any_window_access_in_dg = self.analysis_ctx._is_incremental_algo
 
         for snk, src, d in self._all_edges:
             if d.is_control_edge:
@@ -163,9 +163,31 @@ class IslScheduleConstraintsBuilder:
             log.debug("Tensor %s is an env step or reset, skipping swap", tensor_id)
             return False
 
+        deps = self._dg.get_tensor_flat_direct_dependents(tensor_id)
+        nonbasis_consumers = [
+            (op_, edge)
+            for op_, edge in deps
+            if not edge.isl_expr.struct_eq(prod_op.domain.basis_expr)
+        ]
+        if len(nonbasis_consumers) > 1:
+            log.debug(
+                "Found more than one non-basis consumer for tensor %s. Skipping swap",
+                tensor_id,
+            )
+            return False
+
+        for op, _ in deps:
+            tags_flattened = {k: sorted(set(optree.tree_flatten(v)[0])) for k, v in op.tags.items()}
+            if BACKWARD_REGION_TAG in tags_flattened.get(REGION_TAG, ()):
+                log.info(
+                    "Will swap tensor %s with point size: %s",
+                    tensor_id,
+                    bytes_to_human_readable(size),
+                )
+                return True
+
         # NOTE: If all dependents do basis point accesses, then they can be scheduled together.
         # Thus, it is not worth offloading the tensor.
-        deps = self._dg.get_tensor_flat_direct_dependents(tensor_id)
         if all(edge.expr.struct_eq(prod_op.domain.basis_expr) for _, edge in deps):
             log.debug("Tensor %s is a basis point access, skipping swap", tensor_id)
             return False
@@ -514,14 +536,6 @@ class IslScheduleConstraintsBuilder:
                 ctx=self._isl_ctx,
             )
             union_map = union_map.union(offload_after_fetch)
-
-        if len(nonbasis_consumers) > 1:
-            log.warning(
-                "Found more than one non-basis consumer for tensor %s. "
-                "Current swap strategy may not be ideal: %s",
-                t_id,
-                nonbasis_consumers,
-            )
 
         # NOW, for the non-basis consumers, which we hope is just one,
         # we want to schedule the fetch before the consumer and the offload after the consumer.

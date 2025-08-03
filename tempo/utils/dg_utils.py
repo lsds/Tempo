@@ -470,12 +470,16 @@ def is_block_access(e: ie.IndexAtom) -> bool:
         return False
 
     # NOTE: For one of the variables in the start expression, it should be the case that
-    # if we increment it, we will get the stop expression.
+    # if we increment it, we will get the stop expression. Except for t:t+1 case
     start_vars = e.start.vars_used()
     for var in start_vars:
+        if ie.struct_eq(e, ie.Slice(var, var + 1)):
+            continue
         remapped_start = e.start.remap({var: var + 1})
         if ie.logical_eq(e.stop, remapped_start):
             return True
+        else:
+            return False
 
     return False
 

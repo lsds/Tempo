@@ -9,6 +9,7 @@ from tempo.transformations.compilation_pass import AbstractCompilationPass, Comp
 from tempo.transformations.iterate_compilation_pass import Pipeline
 from tempo.utils import logger
 from tempo.utils.common import Timer
+from tempo.utils.dg_utils import is_window_access
 
 log = logger.get_logger(__name__)
 
@@ -49,6 +50,9 @@ def compile_frontend(
     with Timer() as timer:
         isl_ctx = get_isl_context(exec_cfg)
         compilation_ctx = CompilationCtx(dg, AnalysisCtx(isl_ctx), exec_cfg)
+        compilation_ctx.analysis_ctx._is_incremental_algo = any(
+            is_window_access(m) for _, _, e in dg.get_all_edges() for m in e.expr.members
+        )
         pipeline = pipeline_fnc(compilation_ctx)
         new_ctx, _, _ = pipeline.run()
 

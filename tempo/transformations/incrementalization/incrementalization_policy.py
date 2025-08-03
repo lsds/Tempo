@@ -10,6 +10,7 @@ from tempo.core.datatypes import OpInId
 from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.core.dim_utils import normalize_negative_dim
 from tempo.core.utils import bytes_to_human_readable
+from tempo.runtime.backends.backend import DLBackendName
 from tempo.transformations.compilation_pass import CompilationCtx
 from tempo.transformations.incrementalization.incrementalization_common import (
     ALLOWED_START_OPS,
@@ -96,7 +97,7 @@ def _needs_incrementalize(
 
     op_memory = mem_est.estimate_op_size_bytes(op.op_id)
     assert op_memory is not None, f"Op {op} has no memory estimate"
-    op_large: bool = op_memory > max_memory_allowed // 8
+    op_large: bool = op_memory > max_memory_allowed // 2
     # if op_large:
     #    print(f"Op {op} is too large: {op_memory} > {max_memory_allowed}")
 
@@ -767,12 +768,7 @@ class IncTemporalOnce(IncrementalizationPolicy):
         #    is_window_access(m) for _, _, e in dg.get_all_edges() for m in e.expr.members
         # )
 
-        self.any_window_access_in_dg = False
-        for snk, src, edge_data in dg.get_all_edges():
-            if any(is_window_access(m) for m in edge_data.expr.members):
-                self.any_window_access_in_dg = True
-                print(f"Found window access in DG: {snk} --{edge_data.expr}--> {src}")
-                break
+        self.any_window_access_in_dg = ctx.analysis_ctx._is_incremental_algo
 
         # Find ops needing incrementalization
         ops_over_memory_threshold = [
@@ -808,11 +804,15 @@ class IncTemporalOnce(IncrementalizationPolicy):
 
         percentile = self.ctx.exec_cfg.incrementalization_percentile
 
+        if DLBackendName.str_to_enum(self.ctx.exec_cfg.backend) == DLBackendName.TORCH:
+            block_size = 1
 
-        # For temporal incrementalization, we use block_size=1 and always fully incrementalize
-        block_size = (
-            1 if self.any_window_access_in_dg else get_divisor_at_percentile(ub, percentile)
-        )
+        else:
+            # For temporal incrementalization, we use block_size=1 and always fully incrementalize
+            block_size = (
+                1 if self.any_window_access_in_dg else get_divisor_at_percentile(ub, percentile)
+            )
+
         num_blocks = ub // block_size
         inc_var, block_idxs = (
             (temporal_var, None)

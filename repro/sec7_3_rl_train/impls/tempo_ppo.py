@@ -182,7 +182,7 @@ if __name__ == "__main__":
     params = {
         "env_name": "trivial.trivial",
         # NOTE: Default obs shape for trivial env
-        "obs_shape": (3, 256, 256),
+        "obs_shape": (3, 4, 4),
         "seed": 0,
         "dev": "fake-gpu",
         "iterations": 50,
@@ -193,7 +193,7 @@ if __name__ == "__main__":
         "ent_coef": 0.01,
         "vf_coef": 0.5,
         # NOTE: Fixed param base used in large obs experiments (overwritten in small_to_med_scale)
-        "num_envs": 64,
+        "num_envs": 256,
         "ep_len": 1000,
         "params_per_layer": 64,
         "num_layers": 2,
