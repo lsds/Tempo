@@ -10,7 +10,6 @@ from tempo.core.datatypes import OpInId
 from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.core.dim_utils import normalize_negative_dim
 from tempo.core.utils import bytes_to_human_readable
-from tempo.runtime.backends.backend import DLBackendName
 from tempo.transformations.compilation_pass import CompilationCtx
 from tempo.transformations.incrementalization.incrementalization_common import (
     ALLOWED_START_OPS,
@@ -781,7 +780,6 @@ class IncTemporalOnce(IncrementalizationPolicy):
             for op in dg.nodes
             if _needs_incrementalize(op, ctx, initial=True, mem_est=self.mem_est)
         ]
-
         if not ops_over_memory_threshold:
             return None
 
@@ -800,6 +798,9 @@ class IncTemporalOnce(IncrementalizationPolicy):
         if not final_inc_start_ops:
             return None
 
+        if not self.any_window_access_in_dg:
+            final_inc_start_ops = [o for o in final_inc_start_ops if o in ops_over_memory_threshold]
+
         # Create start op and input side dims mapping
         start_op_and_input_side_dims = {
             op: self._get_start_op_input_and_dim(op, ub) for op in final_inc_start_ops
@@ -807,11 +808,6 @@ class IncTemporalOnce(IncrementalizationPolicy):
 
         percentile = self.ctx.exec_cfg.incrementalization_percentile
 
-        max_depth = 8
-        # NOTE: Torch consumes more memory.
-        if DLBackendName.str_to_enum(self.ctx.exec_cfg.backend) == DLBackendName.TORCH:
-            percentile -= 10
-            max_depth -= 4
 
         # For temporal incrementalization, we use block_size=1 and always fully incrementalize
         block_size = (
@@ -826,7 +822,10 @@ class IncTemporalOnce(IncrementalizationPolicy):
             )
         )
 
-        needs_inc_fn = lambda op, comp_ctx, is_initial: True
+        if self.any_window_access_in_dg:
+            needs_inc_fn = lambda op, comp_ctx, is_initial: True
+        else:
+            needs_inc_fn = partial(_needs_incrementalize, mem_est=self.mem_est)
 
         return IncRoundCtx(
             IncKind.MEMORY,
@@ -840,5 +839,5 @@ class IncTemporalOnce(IncrementalizationPolicy):
             ctx,
             needs_incrementalization=needs_inc_fn,
             finalize_incremental=True,
-            max_depth=None if self.any_window_access_in_dg else max_depth,
+            max_depth=None,
         )
