@@ -349,6 +349,14 @@ class Vectorize(Transformation):
         # NOTE: If the source was not vec, but there are no slices before the vec dim,
         # then again we don't need to permute the dims because the new dim is just prepended.
         if (not src_vectorized) and slices_before_vec_dim == 0:
+            old_e = old_dep_data.expr.members[dim_idx]
+            if old_e.struct_eq(ie.Slice(dim, dim + 1)):
+                stensor = _get_symbolic_tensor_for_op_output(dg, new_src, old_dep_data.src_out_idx)
+                stensor = stensor.unsqueeze(0)
+                self.op_vectorizations[stensor.op][0].append(dim)
+                self.op_vectorizations[stensor.op][1].append(size)
+                new_src = stensor.op
+                new_dep_data = dataclasses.replace(new_dep_data, src_out_idx=OpOutId(0))
             dg.add_edge(new_snk, new_src, new_dep_data)
             return
 
@@ -408,7 +416,10 @@ class Vectorize(Transformation):
         # TODO: this only works if the expression between these was d. For now, this must have
         # been the case, because we check that the edges are all d or 0:D.
         # To support other cases, we will need smarter processing of these indexes
-        if not e.members[dim_idx].struct_eq(dim):
+        if not (
+            e.members[dim_idx].struct_eq(dim)
+            or e.members[dim_idx].struct_eq(ie.Slice(dim, dim + 1))
+        ):
             print(
                 "vectorized_snk_only_src_has_dim: snk=%s, src=%s, dep_data=%s, dim=%s",
                 snk,

@@ -90,7 +90,7 @@ class ExecutionConfig:
     path: str = get_default_path()
     dev: str = "cpu"
     backend: str = "torch"
-    torch_compilation_backend: str = "jit"  # Can also try "compile"
+    torch_compilation_backend: str = "compile"  # Can also try "jit"
     # COMPILER TRANSFORMS & Analysis ============================================
     # OPTIMIZER ----------------------------------------------------
     enable_dead_code_elim: bool = True

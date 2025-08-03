@@ -20,10 +20,10 @@ def n_step_returns(
 
     gamma = RecurrentTensor.lift(gamma)
 
+    r_t_idx = r.domain.find_variable_index(t)
     if n == 1:
-        return r
+        return r[(*((slice(None),) * r_t_idx), ie.Slice(t, t + 1))]
     else:
-        r_t_idx = r.domain.find_variable_index(t)
         r_index_expr = (*((slice(None),) * r_t_idx), slice(t, min(t + n, T)))
         return r[r_index_expr].discounted_sum(gamma)
 
