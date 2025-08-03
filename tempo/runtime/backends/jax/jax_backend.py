@@ -297,6 +297,8 @@ try:
                 module=r"brax.*",  # Regex pattern to match modules starting with 'brax'
             )
             warnings.filterwarnings("ignore", category=DeprecationWarning)
+            if exec_cfg.torch_pinned_memory_enabled:
+                PyTorchBackend.configure(exec_cfg)
 
         @staticmethod
         def get_backend_name() -> DLBackendName:

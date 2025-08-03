@@ -22,6 +22,10 @@ from tempo.utils.resource_monitor import ResourceMonitorManager
 """ Run the algorithm-specific scheduling experiments from Figure 15 in Section 7.4.
 """
 
+CACHING_ALLOC_TO_ITERS = {
+    True: 20,
+    False: 5,
+}
 
 def run_experiment(  # noqa: C901
     **kwargs,
@@ -75,9 +79,11 @@ def build_algo_specific_sched_obs_configs(
         **SHARED_REINFORCE_HYPERPARAMS,
     }
 
+
     par, seq = [], []
     for use_caching_allocators in [True, False]:
         params_base["use_caching_allocators"] = use_caching_allocators
+        params_base["iterations"] = CACHING_ALLOC_TO_ITERS[use_caching_allocators]
 
         # This experiment uses only Tempo-JAX
         exclude_sys = list(SYS)

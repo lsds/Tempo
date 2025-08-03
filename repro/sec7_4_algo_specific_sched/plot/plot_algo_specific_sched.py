@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 import fire
 import matplotlib.pyplot as plt
@@ -76,49 +76,28 @@ SHADE_ALPHA = 0.1
 X_LIM_START, X_LIM_END = 5, 99
 
 
-# ============== TIMELINE ALIGNMENT CONSTANTS =================
-# NOTE: These may require manual adjustment to produce an image similar to the one in the paper.
 
-# Time warp points for GPU memory alignment.
-# Since the memory usage data is obtained from a seperate run, we need to align the time axis of
-# memory usage with the time axis of the other metrics.
+## ============== SHADING CONSTANTS (Original) =================
+#
+## NOTE: This should cover the simulation phase for Monte Carlo (when GPU mem is low)
+#RED_SHADE_START, RED_SHADE_END = 15, 33.5
+#
+## NOTE: This should cover the learning phase for Monte Carlo (when GPU mem is high)
+#ORANGE_SHADE_START, ORANGE_SHADE_END = 34, 49
+#
+## NOTE: This should cover the parallel learning and simulation phase for Temporal Differences
+#BLUE_SHADE_START, BLUE_SHADE_END = 66, 98
 
-# The way to interpret this is that the original points are mapped 1-1 to the new points,
-# stretching or compressing the time axis as needed.
-
-# In our original runs, no alignment was needed for Temporal differences, as they were generally
-# well aligned.
-NO_ALIGNMENT = np.array([0, 20, 40, 60, 80, 100])
-OBJECTIVE_ALIGNMENTS = {
-    None: {
-        "original": np.array([0, 20, 36, 55, 65, 86, 100]),
-        "new": np.array([0, 15, 38, 50, 66, 81, 100]),
-    },
-    1: {
-        "original": NO_ALIGNMENT,
-        "new": NO_ALIGNMENT,
-    },
-    8: {
-        "original": NO_ALIGNMENT,
-        "new": NO_ALIGNMENT,
-    },
-    64: {
-        "original": NO_ALIGNMENT,
-        "new": NO_ALIGNMENT,
-    },
-}
-
-# ============== SHADING CONSTANTS =================
-# NOTE: Once memory usage is aligned, modify the shading constants to match the new timeline.
+# ============== SHADING CONSTANTS (NEW) =================
 
 # NOTE: This should cover the simulation phase for Monte Carlo (when GPU mem is low)
-RED_SHADE_START, RED_SHADE_END = 15, 33.5
+RED_SHADE_START, RED_SHADE_END = 19, 40
 
 # NOTE: This should cover the learning phase for Monte Carlo (when GPU mem is high)
-ORANGE_SHADE_START, ORANGE_SHADE_END = 34, 49
+ORANGE_SHADE_START, ORANGE_SHADE_END = 40, 60
 
 # NOTE: This should cover the parallel learning and simulation phase for Temporal Differences
-BLUE_SHADE_START, BLUE_SHADE_END = 66, 98
+BLUE_SHADE_START, BLUE_SHADE_END = 55, 92
 
 
 # --- DATA LOADING ---
@@ -161,17 +140,6 @@ def get_runtime_data(
 
     return get_normalized_dfs(data[cache_str], FRAMEWORK, "objective", objective)
 
-
-def align_timeline(df: pd.DataFrame, metric: str, objective: Optional[int]) -> pd.DataFrame:
-    """Align timeline for better visualization."""
-    df = df.copy()
-
-    orig, new = OBJECTIVE_ALIGNMENTS[objective]["original"], OBJECTIVE_ALIGNMENTS[objective]["new"]
-
-    # Time warp for Monte Carlo to align phases
-    df["elapsed_percent"] = np.interp(df["elapsed_percent"], orig, new)
-
-    return df
 
 
 def smooth_data(data: np.ndarray, sigma: float = SMOOTH_SIGMA) -> np.ndarray:
@@ -251,14 +219,10 @@ def plot_runtime_metrics(
                 df_monitor["elapsed_percent"] = (
                     df_monitor["elapsed_sec"] / df_monitor["elapsed_sec"].max() * 100
                 )
-                if metric == "gpu_mem_util":
-                    aligned_df = align_timeline(df_monitor, metric, objective)
-                else:
-                    aligned_df = df_monitor
 
                 # Plot smoothed data
                 ax.plot(
-                    aligned_df["elapsed_percent"],
+                    df_monitor["elapsed_percent"],
                     smooth_data(df_monitor[metric].values),
                     label=label,
                     color=color,
@@ -342,7 +306,7 @@ def plot_iteration_time_comparison(
     x_positions = np.arange(len(objectives))
     colors = ["cadetblue" for _ in objectives]
 
-    ax.bar(x_positions, iteration_times, color=colors, zorder=3, hatch=hatch)
+    ax.bar(x_positions, iteration_times, color=colors, zorder=3, hatch=hatch, alpha=0.99)
 
     # Add speedup labels
     max_time = max(iteration_times)
@@ -357,11 +321,8 @@ def plot_iteration_time_comparison(
     ax.grid(axis="y", which="both", zorder=0)
     ax.set_xticks(x_positions)
     ax.set_xticklabels([OBJECTIVE_DISPLAY_NAMES.get(obj, str(obj)) for obj in objectives])
-    ax.set_yticks([0, 5, 10, 15, 20])
+    ax.set_yticks([0, 5, 10, 15, 20, 25])
 
-    # Log scale y axis
-    ax.set_yscale("log")
-    ax.set_ylim(pow(10, -1), pow(10, 4))
 
     plt.tight_layout()
     fig.savefig(out_pdf, bbox_inches="tight")

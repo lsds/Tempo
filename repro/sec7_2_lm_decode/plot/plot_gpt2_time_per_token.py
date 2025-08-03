@@ -6,7 +6,7 @@ import numpy as np
 
 from repro.data_loading import DEFAULT_PLOTS_PATH, DEFAULT_RESULTS_PATH
 from repro.sec7_2_lm_decode.plot.plot_shared import gather_summary_results
-from repro.sec7_2_lm_decode.run_measure_tpt import TPT_DIR
+from repro.sec7_2_lm_decode.run_measure_tpt import SEQ_LENS, TPT_DIR
 from repro.sec7_2_lm_decode.shared import GPT2_DECODE_DIR
 
 """ Plot the time per token decoding results from Figures 9 and 10.
@@ -36,7 +36,6 @@ HATCH_PATTERNS = ["/", "\\", "|", "-", "+", "x", "o", "O", ".", "*"]
 
 
 def organize_data(raw_data, metric=METRIC):
-    seq_lens = set()
     frameworks_found = set()
     organized = {}
     for dct in raw_data:
@@ -70,29 +69,27 @@ def organize_data(raw_data, metric=METRIC):
                     pass
         if bs != BATCH_SIZE or seq_len is None:
             continue
-        seq_lens.add(seq_len)
         frameworks_found.add(framework)
         val = dct.get(metric, None)
         if val is not None and metric == "avg_iter_time":
             val = val / seq_len  # time per token
         organized.setdefault(framework, {})[seq_len] = val
-    seq_lens = sorted(seq_lens)
     # Always use all frameworks in FRAMEWORKS, even if not found in data
     frameworks = [fw for fw in FRAMEWORKS if fw in frameworks_found or fw in organized]
     # Build matrix: framework -> [val for each seq_len]
     data_matrix = {}
     for fw in frameworks:
-        data_matrix[fw] = [organized.get(fw, {}).get(sl, 0.0) for sl in seq_lens]
-    return data_matrix, seq_lens, frameworks
+        data_matrix[fw] = [organized.get(fw, {}).get(sl, 0.0) for sl in SEQ_LENS]
+    return data_matrix, frameworks
 
 
 # --- PLOTTING ---
-def plot_tpt(data_matrix, seq_lens, frameworks, out_pdf):
+def plot_tpt(data_matrix, frameworks, out_pdf):
     plt.rcParams.update({"font.size": 11})
     plt.rcParams["pdf.fonttype"] = 42
     plt.rcParams["ps.fonttype"] = 42
     fig, ax = plt.subplots(figsize=(8, 2.5))
-    x = np.arange(len(seq_lens))
+    x = np.arange(len(SEQ_LENS))
     width = 0.8 / len(frameworks)
     # Plot bars
     for j, fw in enumerate(frameworks):
@@ -126,7 +123,7 @@ def plot_tpt(data_matrix, seq_lens, frameworks, out_pdf):
                     fontweight="bold",
                 )
     ax.set_xticks(x + width * (len(frameworks) - 1) / 2)
-    ax.set_xticklabels(seq_lens)
+    ax.set_xticklabels(SEQ_LENS)
     ax.set_xlabel("Number of Decoded Tokens")
     ax.set_ylabel(METRIC_DISPLAY_NAME)
     ax.set_ylim(0, 0.08)
@@ -158,8 +155,8 @@ def plot_tpt_both(results_path: str = DEFAULT_RESULTS_PATH, plots_path: str = DE
     # Load and organize
     causal_results = [d for d in summary_results if "attncausal" in d["name"]]
     window_results = [d for d in summary_results if "attnwindow" in d["name"]]
-    causal_data, causal_seq_lens, frameworks = organize_data(causal_results)
-    window_data, window_seq_lens, _ = organize_data(window_results)
+    causal_data, frameworks = organize_data(causal_results)
+    window_data, _ = organize_data(window_results)
 
     # Output directory for plots
     plot_dir = Path(plots_path) / GPT2_DECODE_DIR / TPT_DIR
@@ -169,14 +166,12 @@ def plot_tpt_both(results_path: str = DEFAULT_RESULTS_PATH, plots_path: str = DE
     # Plot causal attention
     plot_tpt(
         causal_data,
-        causal_seq_lens,
         frameworks,
         f_path,
     )
     # Plot window attention
     plot_tpt(
         window_data,
-        window_seq_lens,
         frameworks,
         w_path,
     )

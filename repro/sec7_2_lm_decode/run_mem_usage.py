@@ -38,7 +38,7 @@ ATTN_CONFIGS = [
 ]
 
 
-def generate_configs(base_results_path: str):
+def generate_configs(base_results_path: str, mode: str):
     configs = []
     for framework in FRAMEWORKS:
         for attn_type, window_size in ATTN_CONFIGS:
@@ -59,15 +59,19 @@ def generate_configs(base_results_path: str):
                 "dev": "gpu",
                 "backend": "jax",
                 "max_bench_time_secs": MAX_BENCH_TIME_SECS,
-                "monitor_fps": 5,
+                "monitor_fps": 1,
                 "is_jax": framework == "tempo",
+                "fine_grained_mem": mode == "fine_grained",
             }
             configs.append(cfg)
     return configs
 
 
 def run_mem_usage(
-    gpus: str = "0,1,2,3", phbgpu: int = None, results_path: str = DEFAULT_RESULTS_PATH
+    gpus: str = "0,1,2,3",
+    phbgpu: int = None,
+    results_path: str = DEFAULT_RESULTS_PATH,
+    mode: str = "fine_grained",
 ):
     """
     Usage Example:
@@ -77,6 +81,11 @@ def run_mem_usage(
         gpus (str, optional): Comma-separated list of GPU IDs to use. Defaults to "0,1,2,3".
         phbgpu (int, optional): Specific GPU ID to use for sequential execution. Ignored.
         results_path (str, optional): Path to the results directory. Defaults to "./results/".
+        mode (str, optional): "fast" or "fine_grained". Defaults to "fine_grained".
+        "fast" disables preallocation, but uses caching allocators, leading to much faster runtime (minutes vs hours).
+        "fine_grained" additionally disables caching allocators, leading to much slower runtime (hours vs days),
+        but more accurate memory usage tracking. To get plots exactly like in the paper, use "fine_grained",
+        but beware this may take up to 10 hours.
     """
     if isinstance(gpus, tuple):
         assert all(isinstance(gpu, int) for gpu in gpus), (
@@ -86,11 +95,16 @@ def run_mem_usage(
     else:
         assert isinstance(gpus, str), f"gpus must be a string '0,1,2,3', got {type(gpus)}"
         visible_gpus = tuple(int(gpu) for gpu in gpus.split(","))
+
+    assert mode.lower().strip() in ["fast", "fine_grained"], (
+        f"Invalid mode: {mode}. Valid modes are 'fast' and 'fine_grained'."
+    )
+
     results_path = Path(results_path) / GPT2_DECODE_DIR / MEM_USAGE_DIR
     results_path.mkdir(parents=True, exist_ok=True)
-    configs = generate_configs(results_path)
+    configs = generate_configs(results_path, mode)
     print(f"Generated {len(configs)} configs")
-    launch_par(configs, visible_gpus=visible_gpus, timeout_minutes=4 * 60)
+    launch_par(configs, visible_gpus=visible_gpus, timeout_minutes=8 * 60)
 
 
 if __name__ == "__main__":

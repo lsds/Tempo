@@ -171,22 +171,6 @@ will skip any experiments for which directories already exist.
 
 ## Notes
 
-### Pinned (Page-locked) memory
-
-In the original submission, Tempo used page-locked memory buffers to accelerate CPU-to-GPU transfers.
-However, we have found that under the current software configuration of our research cluster,
-the latency of page-locked memory allocation has increased dramatically. This can be verified
-using pinned_buffer_microbenchmark.py.
-
-For this reason, **we have disabled page-locked memory in Tempo
-by default**. This has some effect in the plots of Figures 14 and 15, as swapping becomes much more expensive.
-If reproducing on a machine where pinned_buffer_microbenchmark.py shows no meaningful difference
-in allocation latency, or if we come to understand the source of this latency on our machines, please enable pinned memory in Tempo by default by setting "torch_pinned_memory_enabled"
-in tempo/core/configs.py to True.
-
-Finally, we highlight that despite this, the core contribution of automatic scheduling of swap operations through
-SDG augmentations, stays intact, and we are happy with the results reproduced with our main backend, JAX.
-
 
 ### RLlib at large scale
 
@@ -197,14 +181,15 @@ However, it can be enabled by passing --skip_sys "" to run_large_obs.py.
 ### Manual alignment
 
 The plot in Figure 15a requires manual alignment to reproduce similar presentation to that in the paper.
-It is unlikely that the provided default values will work for reproducers.
+It is unlikely that the provided default values will reproduce the original image exactly.
 However, the alignment parameters are at the top-level of plot_algo_specific_sched.py and can be
 tweaked if desired.
 
-### Torch failure at 3x256x256
+### Tempo-Torch OOM with Large Observations
 
 Under the current system configuration, Tempo's Torch backend will often fail at the largest
 setting tested. We are still investigating this issue.
+We highlight that with our main JAX backend, which executes the same SDG, this issue does not occur.
 
 ## Warning Messages to expect
 

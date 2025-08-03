@@ -88,7 +88,7 @@ try:
             np.random.seed(exec_cfg.seed)
             torch.manual_seed(exec_cfg.seed)
 
-            torch.backends.cudnn.benchmark = False  # True
+            torch.backends.cudnn.benchmark = True
             if exec_cfg.deterministic:
                 torch.use_deterministic_algorithms(True)
                 torch.backends.cudnn.deterministic = True
@@ -131,19 +131,21 @@ try:
                 import psutil
 
                 # NOTE: Allocate at most 50% of the CPU memory
-                ps_util_cpu_mem_max_bytes = psutil.virtual_memory().total * 0.5
+                ps_util_cpu_mem_max_bytes = psutil.virtual_memory().total * 0.80
                 amount = min(
                     exec_cfg.torch_pinned_prealloc_size_bytes,
                     ps_util_cpu_mem_max_bytes,
                 )
                 log.info(
-                    "Preallocating %s bytes of CPU memory. This may take a second...",
+                    "Preallocating %s bytes of pinned=%s CPU memory. This should take ~%s seconds.",
                     bytes_to_human_readable(amount),
+                    exec_cfg.torch_pinned_memory_enabled,
+                    amount / (2 ** 30) if exec_cfg.torch_pinned_memory_enabled else 0.1,
                 )
                 start_time = time.perf_counter_ns()
                 buffer = torch.empty(
-                    int(amount // 4),
-                    dtype=torch.float32,
+                    int(amount),
+                    dtype=torch.uint8,
                     device=torch.device("cpu"),
                     pin_memory=exec_cfg.torch_pinned_memory_enabled,
                 )
@@ -199,62 +201,27 @@ try:
 
         @staticmethod
         def to_device(tensor: torch.Tensor, dev: Any) -> torch.Tensor:
-            # tensor = tensor.contiguous()
-            # start_time = time.perf_counter_ns()
-            # if dev == PyTorchBackend.backend_cpu:
-            #    ret = tensor.to(dev, non_blocking=False)
-            #    end_time = time.perf_counter_ns()
-            #    elapsed_ms = (end_time - start_time) / 1e6
-            #    print(f"Time taken - D2H: {elapsed_ms} ms")
-            # else:
-            #    ret = tensor.to(dev, non_blocking=False)
-            #    end_time = time.perf_counter_ns()
-            #    elapsed_ms = (end_time - start_time) / 1e6
-            #    print(f"Time taken - H2D: {elapsed_ms} ms")
-            # return ret
-
             if dev.type == tensor.device.type:
                 return tensor
             if dev.type == PyTorchBackend.backend_cpu.type:
-                pool_key = (tensor.shape, tensor.dtype)
-                if pool_key not in pinned_tensor_cache:
-                    pinned_tensor_cache[pool_key] = PyTorchBackend._create_pool(tensor)
-                pool = pinned_tensor_cache[pool_key]
-                # borrow_start_time = time.perf_counter_ns()
+                pool = PyTorchBackend._get_or_create_pool(tensor)
                 buffer = pool.borrow()
-                # borrow_end_time = time.perf_counter_ns()
-                # borrow_elapsed_ms = (borrow_end_time - borrow_start_time) / 1e6
-                # print(f"Time taken - borrow: {borrow_elapsed_ms} ms")
-                # copy_start_time = time.perf_counter_ns()
-                # NOTE: For offloading, no need to block for correctness
-                # NOTE: However, due to our observed performance bug, we set it to False to avoid
-                # a copy to pinned memory.
-                buffer = buffer.copy_(tensor, non_blocking=PyTorchBackend.pinned_memory_enabled)
-                # copy_end_time = time.perf_counter_ns()
-                # copy_elapsed_ms = (copy_end_time - copy_start_time) / 1e6
-                # print(f"Time taken - copy: {copy_elapsed_ms} ms")
-                buffer._pool = (tensor.shape, tensor.dtype)
-                # end_time = time.perf_counter_ns()
-                # elapsed_ms = (end_time - start_time) / 1e6
-                # print(f"Time taken - D2H: {elapsed_ms} ms")
+                buffer = buffer.copy_(tensor, non_blocking=False)
                 return buffer
             else:
-                # NOTE: non_blocking=False is needed to avoid incorrect results
-                temp = tensor.to(dev, non_blocking=False)
+                temp = tensor.to(dev, non_blocking=True)
 
-                if hasattr(tensor, "_pool"):
-                    pool = pinned_tensor_cache[tensor._pool]
-                    pool.recycle(tensor)
-
-                # end_time = time.perf_counter_ns()
-                # elapsed_ms = (end_time - start_time) / 1e6
-                # if dev == PyTorchBackend.backend_cpu:
-                #    print(f"Time taken - H2D: {elapsed_ms} ms")
+                pool = PyTorchBackend._get_or_create_pool(tensor)
+                pool.recycle(tensor)
 
                 return temp
 
         @staticmethod
-        def _create_pool(tensor: torch.Tensor) -> ObjectPool[torch.Tensor]:
+        def _get_or_create_pool(tensor: torch.Tensor) -> ObjectPool[torch.Tensor]:
+            key = (tensor.shape, tensor.dtype)
+            if key in pinned_tensor_cache:
+                return pinned_tensor_cache[key]
+
             pool = ObjectPool(
                 lambda: torch.empty(
                     tensor.shape,
@@ -264,6 +231,8 @@ try:
                     pin_memory=PyTorchBackend.pinned_memory_enabled,
                 )
             )
+            pinned_tensor_cache[key] = pool
+            return pool
             # example_shape = tensor.shape
             # example_dtype = tensor.dtype
             # example_device = tensor.device
