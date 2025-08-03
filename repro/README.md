@@ -181,14 +181,15 @@ However, it can be enabled by passing --skip_sys "" to run_large_obs.py.
 ### Manual alignment
 
 The plot in Figure 15a requires manual alignment to reproduce similar presentation to that in the paper.
-It is unlikely that the provided default values will work for reproducers.
+It is unlikely that the provided default values will reproduce the original image exactly.
 However, the alignment parameters are at the top-level of plot_algo_specific_sched.py and can be
 tweaked if desired.
 
-### Torch failure at 3x256x256
+### Tempo-Torch OOM with Large Observations
 
 Under the current system configuration, Tempo's Torch backend will often fail at the largest
 setting tested. We are still investigating this issue.
+We highlight that with our main JAX backend, which executes the same SDG, this issue does not occur.
 
 ## Warning Messages to expect
 
