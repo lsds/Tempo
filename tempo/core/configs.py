@@ -166,8 +166,8 @@ class ExecutionConfig:
     num_executor_pool_workers: Optional[int] = None
     enable_parallel_block_detection: bool = False
     # NOTE: Not currently in use
-    torch_pinned_prealloc_size_bytes: int = 250 * (2**30)  # 250GB
-    torch_pinned_memory_enabled: bool = False
+    torch_pinned_prealloc_size_bytes: int = 0 # 0 means disabled
+    torch_pinned_memory_enabled: bool = True
     # OTHER =========================================================
     M: int = 20_000  # A number assumed larger than every temporal dimension.
 
