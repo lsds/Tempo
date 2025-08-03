@@ -59,8 +59,9 @@ def generate_configs(base_results_path: str):
                 "dev": "gpu",
                 "backend": "jax",
                 "max_bench_time_secs": MAX_BENCH_TIME_SECS,
-                "monitor_fps": 5,
+                "monitor_fps": 1,
                 "is_jax": framework == "tempo",
+                "fine_grained_mem": False,
             }
             configs.append(cfg)
     return configs

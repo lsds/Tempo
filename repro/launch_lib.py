@@ -158,7 +158,9 @@ def terminate_process_and_children(pid: int):
         pass
 
 
-def set_flags(gpu_id: int, use_caching_allocators: bool, is_jax: bool) -> None:
+def set_flags(
+    gpu_id: int, use_caching_allocators: bool, is_jax: bool, fine_grained_mem: bool = True
+) -> None:
     # Set the GPU for this process
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -186,8 +188,12 @@ def set_flags(gpu_id: int, use_caching_allocators: bool, is_jax: bool) -> None:
     else:
         # Disable caching allocators so we can measure real runtime memory usage
         os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-        os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-        os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "1"
+
+        # To observe fine-grained memory usage, we need to use the platform allocators,
+        # which truly deallocate memory.
+        if fine_grained_mem:
+            os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+            os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "1"
 
 
 def worker(
@@ -225,7 +231,9 @@ def worker(
         or kwargs.get("is_jax", False)
     )
     # Set the flags for this process
-    set_flags(gpu_id, kwargs["use_caching_allocators"], is_jax)
+    set_flags(
+        gpu_id, kwargs["use_caching_allocators"], is_jax, kwargs.get("fine_grained_mem", True)
+    )
 
     # add gpu_id to kwargs
     kwargs["gpu_id"] = gpu_id
