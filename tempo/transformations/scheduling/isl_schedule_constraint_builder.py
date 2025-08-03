@@ -179,11 +179,13 @@ class IslScheduleConstraintsBuilder:
         for op, _ in deps:
             tags_flattened = {k: sorted(set(optree.tree_flatten(v)[0])) for k, v in op.tags.items()}
             if BACKWARD_REGION_TAG in tags_flattened.get(REGION_TAG, ()):
-                log.info(
-                    "Will swap tensor %s with point size: %s",
-                    tensor_id,
-                    bytes_to_human_readable(size),
-                )
+                if tensor_id not in self._tids_to_swap:
+                    log.info(
+                        "Will swap tensor %s with point size: %s",
+                        tensor_id,
+                        bytes_to_human_readable(size),
+                    )
+                    self._tids_to_swap.add(tensor_id)
                 return True
 
         # NOTE: If all dependents do basis point accesses, then they can be scheduled together.

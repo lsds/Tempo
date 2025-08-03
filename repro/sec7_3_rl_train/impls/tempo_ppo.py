@@ -39,7 +39,6 @@ def get_tempo_rl_train_config(
 
     backend = sys_cfg.split("-")[1]
     cfg.backend = backend
-    cfg.torch_compilation_backend = "compile"
 
     obs_shape = kwargs.get("obs_shape", (3, 4, 4))
 
@@ -182,7 +181,7 @@ if __name__ == "__main__":
     params = {
         "env_name": "trivial.trivial",
         # NOTE: Default obs shape for trivial env
-        "obs_shape": (3, 4, 4),
+        "obs_shape": (3, 256, 256),
         "seed": 0,
         "dev": "fake-gpu",
         "iterations": 50,
