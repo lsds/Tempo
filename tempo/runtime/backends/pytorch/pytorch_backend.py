@@ -509,11 +509,11 @@ try:
             traced_func_ = symbolic_trace(execution_func)
             traced_func = traced_func_.forward  # type: ignore
 
-            #if "narrow" in traced_func_.code:
-            #    log.info("Using JIT trace due to narrow in code for op %s", op_id)
-            #    return PyTorchBackend.trace_codegen_thunk_jit_trace(
-            #        execution_func, op_id, exec_cfg, inputs, donatable_args
-            #    )
+            if "narrow" in traced_func_.code:
+                log.info("Using JIT trace due to narrow in code for op %s", op_id)
+                return PyTorchBackend.trace_codegen_thunk_jit_trace(
+                    execution_func, op_id, exec_cfg, inputs, donatable_args
+                )
 
             params = {
                 # "model": traced_func.forward,
