@@ -16,6 +16,7 @@ from repro.data_loading import (
 )
 from repro.sec7_4_algo_specific_sched.shared import (
     ALGO_SPECIFIC_SCHED_DIR,
+    CACHING_ALLOC_TO_ITERS,
     OBJECTIVE_SWEEP,
     SHARED_REINFORCE_HYPERPARAMS,
     get_experiment_name_and_results_path,
@@ -73,32 +74,39 @@ SHADE_3_COLOR = "blue"
 SHADE_ALPHA = 0.1
 
 # Axis formatting
-X_LIM_START, X_LIM_END = 5, 99
-
+X_LIM_START, X_LIM_END = 1, 99
 
 
 ## ============== SHADING CONSTANTS (Original) =================
 #
 ## NOTE: This should cover the simulation phase for Monte Carlo (when GPU mem is low)
-#RED_SHADE_START, RED_SHADE_END = 15, 33.5
+# RED_SHADE_START, RED_SHADE_END = 15, 33.5
 #
 ## NOTE: This should cover the learning phase for Monte Carlo (when GPU mem is high)
-#ORANGE_SHADE_START, ORANGE_SHADE_END = 34, 49
+# ORANGE_SHADE_START, ORANGE_SHADE_END = 34, 49
 #
 ## NOTE: This should cover the parallel learning and simulation phase for Temporal Differences
-#BLUE_SHADE_START, BLUE_SHADE_END = 66, 98
+# BLUE_SHADE_START, BLUE_SHADE_END = 66, 98
 
 # ============== SHADING CONSTANTS (NEW) =================
 
 # NOTE: This should cover the simulation phase for Monte Carlo (when GPU mem is low)
-RED_SHADE_START, RED_SHADE_END = 19, 40
+RED_SHADE_START, RED_SHADE_END = 16, 32
 
 # NOTE: This should cover the learning phase for Monte Carlo (when GPU mem is high)
-ORANGE_SHADE_START, ORANGE_SHADE_END = 40, 60
+ORANGE_SHADE_START, ORANGE_SHADE_END = 33, 50
 
 # NOTE: This should cover the parallel learning and simulation phase for Temporal Differences
-BLUE_SHADE_START, BLUE_SHADE_END = 55, 92
+BLUE_SHADE_START, BLUE_SHADE_END = 52, 85
 
+
+## =============== ALIGNMENT OF MEMORY USAGE =================
+# In our original runs, no alignment was needed for Temporal differences, as they were generally
+# well aligned.
+# NOTE: This is used to stretch and compress memory usage, which comes from a different run,
+# to align with the GPU utilization/tranfer plots.
+ALIGNMENT_X_BEFORE = np.array([13, 28, 43, 58, 72, 87, 100])
+ALIGNMENT_X_AFTER = np.array([0, 16, 33, 50, 67, 84,100])
 
 # --- DATA LOADING ---
 def load_algo_specific_sched_data(
@@ -134,12 +142,28 @@ def get_runtime_data(
     data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]],
     objective: Any,
     use_caching: bool,
+    restrict_to_three_iters: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Get normalized monitor and log data for a specific configuration."""
     cache_str = "caching" if use_caching else "no_caching"
 
-    return get_normalized_dfs(data[cache_str], FRAMEWORK, "objective", objective)
+    total_iters = CACHING_ALLOC_TO_ITERS[use_caching]
+    rm_start_iters = 1
+    rm_end_iters = 1
 
+    # NOTE: Take 3 iterations from middle of the run to avoid warmup/winddown effects
+    if (restrict_to_three_iters) and (total_iters > 6):
+        rm_start_iters = 5
+        rm_end_iters = total_iters - (rm_start_iters + 3)
+
+    return get_normalized_dfs(
+        data[cache_str],
+        FRAMEWORK,
+        "objective",
+        objective,
+        iterations_from_start_to_remove=rm_start_iters,
+        iterations_from_end_to_remove=rm_end_iters,
+    )
 
 
 def smooth_data(data: np.ndarray, sigma: float = SMOOTH_SIGMA) -> np.ndarray:
@@ -213,12 +237,19 @@ def plot_runtime_metrics(
             try:
                 # Get data - use caching data for most metrics, no-caching for memory
                 use_caching = metric != "gpu_mem_util"
-                df_monitor, _ = get_runtime_data(data, objective, use_caching)
+                df_monitor, _ = get_runtime_data(
+                    data, objective, use_caching, restrict_to_three_iters=True
+                )
 
                 # Normalize time to 0-100%
                 df_monitor["elapsed_percent"] = (
                     df_monitor["elapsed_sec"] / df_monitor["elapsed_sec"].max() * 100
                 )
+
+                if metric == "gpu_mem_util":
+                    df_monitor["elapsed_percent"] = np.interp(
+                        df_monitor["elapsed_percent"], ALIGNMENT_X_BEFORE, ALIGNMENT_X_AFTER
+                    )
 
                 # Plot smoothed data
                 ax.plot(
@@ -322,7 +353,6 @@ def plot_iteration_time_comparison(
     ax.set_xticks(x_positions)
     ax.set_xticklabels([OBJECTIVE_DISPLAY_NAMES.get(obj, str(obj)) for obj in objectives])
     ax.set_yticks([0, 5, 10, 15, 20, 25])
-
 
     plt.tight_layout()
     fig.savefig(out_pdf, bbox_inches="tight")
