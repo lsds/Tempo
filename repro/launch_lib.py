@@ -184,7 +184,7 @@ def set_flags(
             os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
         else:
             # For JAX-based systems, allow them to preallocate memory
-            os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".95"
+            os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".8"
     else:
         # Disable caching allocators so we can measure real runtime memory usage
         os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
