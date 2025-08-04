@@ -210,12 +210,12 @@ def can_vectorize_basic(  # noqa: C901
             # log.info("UDF %s has no vectorization function", op)
             return False
 
-    # NOTE: This is here to work around the JAX bug which leads to:
-    # "jax INTERNAL: Failed to allocate 204800000 bytes for new constant"
-    if isinstance(op, top.RandOp):
-        # NOTE: Vectorize only on trivial dims
-        if not is_trivial_dim(dg, dim):
-            return False
+    ## NOTE: This is here to work around the JAX bug which leads to:
+    ## "jax INTERNAL: Failed to allocate 204800000 bytes for new constant"
+    #if isinstance(op, top.RandOp):
+    #    # NOTE: Vectorize only on trivial dims
+    #    if not is_trivial_dim(dg, dim):
+    #        return False
 
     # Attempt to get the vectorization rule for the op - if there is none then we can't do
     # vectorization

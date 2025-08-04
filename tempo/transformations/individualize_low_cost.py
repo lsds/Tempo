@@ -19,7 +19,7 @@ DEFAULT_OPS_TO_INDIVIDUALIZE = (
 
 DEFAULT_EXCEPTION_OPS = (top.SplitOp,)
 
-DO_NOT_INDIVIDUALIZE_CONSTS_LARGER_THAN_X_BYTES = 2 ** (2**20)  # 2MB
+DO_NOT_INDIVIDUALIZE_CONSTS_LARGER_THAN_X_BYTES = 250 ** (2**20)  # 2MB
 
 # def is_static_op(dg: PDG, op: top.TensorOp) -> bool:
 #    all_shapes = list(dg.get_input_shapes_list(op)) + list(dg.get_output_shapes_list(op))
