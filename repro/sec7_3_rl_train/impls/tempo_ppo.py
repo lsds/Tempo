@@ -3,7 +3,6 @@ from typing import Any
 from repro.sec7_3_rl_train.shared import (
     FakeWandBLogger,
     is_large_obs,
-    is_small_to_med_scale_experiment,
 )
 from tempo.api import rl
 from tempo.api.optim.optim import Adam
@@ -43,15 +42,15 @@ def get_tempo_rl_train_config(
     obs_shape = kwargs.get("obs_shape", (3, 4, 4))
 
     # NOTE: Enforce original submission's behaviour
-    if is_small_to_med_scale_experiment(obs_shape):
+    if obs_shape[-1] < 64:
         # NOTE: RL fairs better with only point storage, since intermediate activations
         # are fairly small. Thus, doing in-place writes ends up being expensive.
         # Ultimately it is preferable to do a single stack operation on 1000 small tensors,
         # rather than doing 1000 in-place writes to avoid the stack.
         cfg.enable_hybrid_tensorstore = False
-    if obs_shape[-1] < 64:
         cfg.enable_incrementalization = False
-    elif is_large_obs(obs_shape):
+
+    if is_large_obs(obs_shape):
         # NOTE: Enable swap for large obs experiments.
         cfg.enable_swap = True
 
