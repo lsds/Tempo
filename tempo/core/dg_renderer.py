@@ -226,7 +226,7 @@ class DGRenderer:
         label += (
             f"isl domain: {str(analysis_ctx.get_or_make_domain(op))}\n" if not is_dataflow else ""
         )
-        tags_flattened = {k: sorted(set(optree.tree_flatten(v)[0])) for k, v in op.tags.items()}
+        tags_flattened = op.flat_tags
         label += f"tags: {str(tags_flattened)}\n"
         label += f"total memory:{bytes_to_human_readable(op_size_bytes)}\n"
         if not is_dataflow:

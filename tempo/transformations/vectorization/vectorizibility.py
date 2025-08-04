@@ -401,7 +401,7 @@ def _restore_original_submission_vectorization(
         # which is better than vectorizing.
         if dim.struct_eq(t) and not any_window_access_patterns:
             for op in dg.nodes:
-                if BACKWARD_REGION_TAG in op.tags.get(REGION_TAG, ()) and can_vectorize_basic(
+                if BACKWARD_REGION_TAG in op.flat_tags.get(REGION_TAG, ()) and can_vectorize_basic(
                     op, dim, dg
                 ):
                     candidate_ops.add(op)

@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod, abstractproperty
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence, Set
 
+import optree
+
 from tempo.core import index_expr as ie
 from tempo.core.datatypes import OpId
 from tempo.core.domain import Domain
@@ -26,6 +28,10 @@ class TensorOp(ABC):
         repr=False,
         hash=False,
     )
+
+    @property
+    def flat_tags(self) -> Dict[str, Set[str]]:
+        return {k: sorted(set(optree.tree_flatten(v)[0])) for k, v in self.tags.items()}
 
     @property
     def creation_traceback(self) -> str:

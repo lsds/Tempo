@@ -1,7 +1,6 @@
 from typing import Callable, Dict, Tuple
 
 import islpy as isl
-import optree
 
 from tempo.core import index_expr as ie
 from tempo.core import isl_types as islt
@@ -177,8 +176,7 @@ class IslScheduleConstraintsBuilder:
             return False
 
         for op, _ in deps:
-            tags_flattened = {k: sorted(set(optree.tree_flatten(v)[0])) for k, v in op.tags.items()}
-            if BACKWARD_REGION_TAG in tags_flattened.get(REGION_TAG, ()):
+            if BACKWARD_REGION_TAG in op.flat_tags.get(REGION_TAG, ()):
                 if tensor_id not in self._tids_to_swap:
                     log.info(
                         "Will swap tensor %s with point size: %s",
@@ -688,19 +686,28 @@ class IslScheduleConstraintsBuilder:
             isl.UnionMap: representing the coincidence constraints.
 
         """
+
+        def filter_fun(sink: top.TensorOp, src: top.TensorOp, expr: ie.IndexSequence) -> bool:
+            # NOTE: Always want to place backward close to forward when possible.
+            return (
+                expr.is_point()
+                and BACKWARD_REGION_TAG in sink.flat_tags.get(REGION_TAG, ())
+                and BACKWARD_REGION_TAG not in src.flat_tags.get(REGION_TAG, ())
+            )
+
         edge_constraints = self._build_edge_constraints(
-            lambda sink, src, expr: True,
+            filter_fun,
             is_validity=False,
         )
 
         constraints = edge_constraints
-        gc_constraints = self._build_gc_constraints(True)
-        constraints = gc_constraints  # edge_constraints.union(gc_constraints)
-        if self.analysis_ctx._isl_execution_schedule is not None:
-            swap_constraints = self._build_swap_constraints_single_exec(True, coincidence=True)
-            constraints = constraints.union(swap_constraints).union(
-                self.additional_coincidence_constraints
-            )
+        # gc_constraints = self._build_gc_constraints(True)
+        # constraints = gc_constraints  # edge_constraints.union(gc_constraints)
+        # if self.analysis_ctx._isl_execution_schedule is not None:
+        #    swap_constraints = self._build_swap_constraints_single_exec(True, coincidence=True)
+        #    constraints = constraints.union(swap_constraints).union(
+        #        self.additional_coincidence_constraints
+        #    )
         log.debug("Coincidence constraints: %s", str(constraints))
         return constraints
 
@@ -807,5 +814,5 @@ class IslScheduleConstraintsBuilder:
         sc = sc.set_context(params)
         sc = sc.set_validity(val)
         sc = sc.set_proximity(prox)
-        # sc = sc.set_coincidence(coin)
+        sc = sc.set_coincidence(coin)
         return sc
