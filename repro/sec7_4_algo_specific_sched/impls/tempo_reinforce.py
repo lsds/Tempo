@@ -1,6 +1,6 @@
 from typing import Any
 
-from repro.launch_lib import FakeWandBLogger
+from repro.launch_lib import StatsLogger
 from tempo.api import rl
 from tempo.api.optim.optim import Adam
 from tempo.api.recurrent_tensor import RecurrentTensor
@@ -46,7 +46,7 @@ def get_tempo_rl_train_config(
 
 
 def get_tempo_reinforce_executor(  # noqa: C901
-    wandb_run: Any,
+    stats_logger: Any,
     env_name: str = "gym.CartPole-v1",  # "brax.halfcheetah",
     num_envs: int = 1024,
     ep_len: int = 1000,
@@ -118,7 +118,7 @@ def get_tempo_reinforce_executor(  # noqa: C901
 
         RecurrentTensor.sink_many_with_ts_udf(
             [mean_ep_ret, loss],
-            lambda xs, ts: wandb_run.log(
+            lambda xs, ts: stats_logger.log(
                 {
                     "iteration": ts[i],
                     "mean_episode_return": xs[0].item(),
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     }
 
     exe = get_tempo_reinforce_executor(
-        wandb_run=FakeWandBLogger("./results/minimal_test_reinforce/tempo_reinforce.csv"),
+        stats_logger=StatsLogger("./results/minimal_test_reinforce/tempo_reinforce.csv"),
         **params,
     )
 

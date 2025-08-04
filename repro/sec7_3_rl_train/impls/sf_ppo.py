@@ -17,7 +17,7 @@ from sample_factory.utils.typing import Config, Env, PolicyID
 from tensorboardX import SummaryWriter
 from torch import Tensor
 
-from repro.sec7_3_rl_train.shared import FakeWandBLogger
+from repro.sec7_3_rl_train.shared import StatsLogger
 from tempo.core.configs import get_default_path
 
 default_path = get_default_path()
@@ -242,9 +242,9 @@ def register_trivial_custom_components(evaluation: bool = False) -> None:
         register_env(env_name, make_trivial_env)
 
 
-class WandbAlgoObserver(AlgoObserver):
-    def __init__(self, cfg: Config, runner: Runner, wandb_run: Any):
-        self.run = wandb_run
+class StatsAlgoObserver(AlgoObserver):
+    def __init__(self, cfg: Config, runner: Runner, stats_logger: Any):
+        self.run = stats_logger
 
         self.last_loss = 0.0
         self.last_entropy_loss = 0.0
@@ -316,7 +316,7 @@ class WandbAlgoObserver(AlgoObserver):
 
 
 def get_sample_factory_ppo_execute_fn(
-    wandb_run: Any,
+    stats_logger: Any,
     dev: str = "cpu",
     results_path: str = default_path,
     env_name: str = "gym.CartPole-v1",  # "brax.halfcheetah",
@@ -434,7 +434,7 @@ def get_sample_factory_ppo_execute_fn(
 
     cfg, runner = make_runner(cfg)
 
-    observer = WandbAlgoObserver(cfg, runner, wandb_run)
+    observer = StatsAlgoObserver(cfg, runner, stats_logger)
     runner.register_observer(observer)
 
     status = runner.init()
@@ -461,9 +461,9 @@ def execute(
     ent_coef: float = 0.01,  # 0.01,
     vf_coef: float = 0.5,  # .5, # 0.5,
 ) -> None:
-    wandb_run = FakeWandBLogger(str(Path(results_path) / "sf_ppo.csv"))
+    stats_logger = StatsLogger(str(Path(results_path) / "sf_ppo.csv"))
     get_sample_factory_ppo_execute_fn(
-        wandb_run,
+        stats_logger,
         dev,
         results_path,
         env_name,

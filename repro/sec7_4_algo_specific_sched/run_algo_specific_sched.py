@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 import fire
 
 from repro.data_loading import DEFAULT_RESULTS_PATH
-from repro.launch_lib import FakeWandBLogger, launch_par, launch_seq
+from repro.launch_lib import StatsLogger, launch_par, launch_seq
 from repro.sec7_3_rl_train.shared import sweep_param
 from repro.sec7_4_algo_specific_sched.shared import (
     ALGO_SPECIFIC_SCHED_DIR,
@@ -34,11 +34,11 @@ def run_experiment(  # noqa: C901
     results_path = Path(kwargs["results_path"])
     results_path.mkdir(parents=True, exist_ok=True)
 
-    wandb_run = FakeWandBLogger(str(results_path / LOG_CSV_FILE))
-    wandb_run.set_config(kwargs)
+    stats_logger = StatsLogger(str(results_path / LOG_CSV_FILE))
+    stats_logger.set_config(kwargs)
 
     params = dict(kwargs)
-    params["wandb_run"] = wandb_run
+    params["stats_logger"] = stats_logger
 
     try:
         from repro.sec7_4_algo_specific_sched.impls.tempo_reinforce import (
@@ -65,7 +65,7 @@ def run_experiment(  # noqa: C901
             traceback.print_exc(file=f)  # Writes the stack trace to the file
             f.write("\n")
     finally:
-        wandb_run.finish(quiet=True)
+        stats_logger.finish(quiet=True)
 
 
 # NOTE: Section 7.3: Fig 14
