@@ -23,8 +23,8 @@ from tempo.utils.resource_monitor import ResourceMonitorManager
 """
 
 CACHING_ALLOC_TO_ITERS = {
-    True: 5,
-    False: 5,
+    True: 6,
+    False: 6,
 }
 
 def run_experiment(  # noqa: C901
