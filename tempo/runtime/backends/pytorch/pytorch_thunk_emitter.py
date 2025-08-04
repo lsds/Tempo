@@ -523,22 +523,30 @@ def index_slice_op_translation(
     dim = op.dim
     length = op.length
 
+    start_op, start_edge_data = emit_ctx.dg.get_flat_direct_dependencies(op)[1]
+    can_optimize_narrow = (
+        isinstance(start_op, top.ConstOp)
+        and start_op.is_uniform
+        and start_edge_data.is_unconditional_basis()
+    )
+
+
     if op.is_static():
         assert isinstance(length, int)
 
-        if emit_ctx.exec_cfg.torch_compilation_backend == "jit":
+        if can_optimize_narrow:
+            value = start_op.uniform_value
 
             def index_slice_op_torch_thunk(
                 inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
             ) -> Tuple[torch.Tensor, ...]:
-                res = inputs[0].narrow(dim, inputs[1], length)
+                res = inputs[0].narrow(dim, value, length)
                 return (res,)
         else:
 
             def index_slice_op_torch_thunk(
                 inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
             ) -> Tuple[torch.Tensor, ...]:
-                # res = inputs[0].narrow(dim, int(inputs[1]), length)
                 res = inputs[0].narrow(dim, inputs[1], length)
                 return (res,)
     else:
