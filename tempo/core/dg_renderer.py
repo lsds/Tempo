@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import time
 from typing import Optional, Set
@@ -87,6 +88,10 @@ class DGRenderer:
             self._render(self.dg, self.location, self.name)
             for op in self.dg.nodes:
                 if isinstance(op, top.ExecDataflowOp):
+                    old_mem_est = self.mem_est
+                    self.mem_est = MemoryEstimator(
+                        dataclasses.replace(self.ctx, dg=op.dataflow.subgraph)
+                    )
                     subg: PDG = op.dataflow.subgraph  # type: ignore
                     self._render(
                         subg,
@@ -94,6 +99,7 @@ class DGRenderer:
                         f"{op.op_id}",
                         annotation=f"irouter={op.dataflow.irouter}\norouter={op.dataflow.orouter}",
                     )
+                    self.mem_est = old_mem_est
 
         except Exception as e:
             log.error("Skipping rendering DG to dot due to error: %s", e)
@@ -211,7 +217,7 @@ class DGRenderer:
         op_str = str(op)
 
         try:
-            op_size_bytes = self.mem_est.estimate_op_size_bytes(op.op_id) if not is_dataflow else 0
+            op_size_bytes = self.mem_est.estimate_op_size_bytes(op.op_id)
         except Exception:
             op_size_bytes = 0
 
@@ -229,14 +235,14 @@ class DGRenderer:
         tags_flattened = op.flat_tags
         label += f"tags: {str(tags_flattened)}\n"
         label += f"total memory:{bytes_to_human_readable(op_size_bytes)}\n"
+        out_tensor_point_sizes = [
+            bytes_to_human_readable(
+                self.mem_est.estimate_tensor_point_size_bytes(op.op_id, OpOutId(out))
+            )
+            for out in range(op.num_outputs)
+        ]
+        label += f"Out tensor point sizes: {str(out_tensor_point_sizes)}\n"
         if not is_dataflow:
-            out_tensor_point_sizes = [
-                bytes_to_human_readable(
-                    self.mem_est.estimate_tensor_point_size_bytes(op.op_id, OpOutId(out))
-                )
-                for out in range(op.num_outputs)
-            ]
-            label += f"Out tensor point sizes: {str(out_tensor_point_sizes)}\n"
             if analysis_ctx._tensor_storage_classes is not None:
                 storages = {}
                 for out in range(op.num_outputs):
