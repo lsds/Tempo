@@ -159,7 +159,11 @@ def terminate_process_and_children(pid: int):
 
 
 def set_flags(
-    gpu_id: int, use_caching_allocators: bool, is_jax: bool, fine_grained_mem: bool = True
+    gpu_id: int,
+    use_caching_allocators: bool,
+    is_jax: bool,
+    fine_grained_mem: bool = True,
+    sequential: bool = False,
 ) -> None:
     # Set the GPU for this process
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -178,15 +182,22 @@ def set_flags(
     os.environ.pop("XLA_PYTHON_CLIENT_ALLOCATOR", None)
     os.environ.pop("PYTORCH_NO_CUDA_MEMORY_CACHING", None)
 
-    if use_caching_allocators:
-        if not is_jax:
-            # For non-JAX systems, disable JAX's aggressive memory preallocation
-            os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-        else:
+    if not is_jax:
+        # For non-JAX systems, disable JAX's aggressive memory preallocation
+        os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+    else:
+        if sequential:
+            # NOTE: Need to leave some room for torch allocator since we use it for JAX
+            # GPU-CPU transfers
             # For JAX-based systems, allow them to preallocate memory
             os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".8"
-    else:
-        # Disable caching allocators so we can measure real runtime memory usage
+        else:
+            # NOTE: Need to allocate as much as possible for JAX
+            os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".95"
+
+
+    if not use_caching_allocators:
+        # Disable preallocations.
         os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
         # To observe fine-grained memory usage, we need to use the platform allocators,
@@ -199,6 +210,7 @@ def set_flags(
 def worker(
     gpu_id: int,
     experiment_runner: Callable,
+    sequential: bool,
     **kwargs: Any,
 ) -> None:
     semaphore = kwargs["semaphore"]
@@ -232,7 +244,11 @@ def worker(
     )
     # Set the flags for this process
     set_flags(
-        gpu_id, kwargs["use_caching_allocators"], is_jax, kwargs.get("fine_grained_mem", True)
+        gpu_id,
+        kwargs["use_caching_allocators"],
+        is_jax,
+        kwargs.get("fine_grained_mem", True),
+        sequential,
     )
 
     # add gpu_id to kwargs
@@ -318,7 +334,7 @@ def launch_par(
 
             p = ctx.Process(
                 target=worker,
-                args=(gpu_id, runner),
+                args=(gpu_id, runner, False),
                 kwargs=kwargs,
             )
             p.start()
@@ -426,7 +442,7 @@ def launch_seq(
 
         p = ctx.Process(
             target=worker,
-            args=(gpu_id, runner),
+            args=(gpu_id, runner, True),
             kwargs=kwargs,
         )
         p.start()
