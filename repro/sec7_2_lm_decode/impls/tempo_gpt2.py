@@ -265,8 +265,8 @@ class TempoBenchRunner(BenchRunner):
 def main():
     base_cfg = {
         "runner": run_bench,
-        "name": "tempo_gpt2_causal_0_win0_bs4_seq4096",
-        "results_path": "./results/tempo_gpt2_causal_0_win0_bs4_seq4096/",
+        "name": "tempo_gpt2_causal_0_win0_bs4_seq8192",
+        "results_path": "./results/tempo_gpt2_causal_0_win0_bs4_seq8192/",
         "use_caching_allocators": True,
         # "attn_type": "window",
         # "window_size": 512,
@@ -274,17 +274,17 @@ def main():
         "window_size": 0,
         "framework_name": "tempo",
         "batch_size": 64,
-        "seq_len": 4096,
+        "seq_len": 8192,
         **GPT2_SMALL_PARAMS,
         "max_bench_time_secs": 1 * 60,  # 1 minute
-        "dev": "gpu",
+        "dev": "fake-gpu",
         "statify_block_size": DEFAULT_STATIFY_BLOCK_SIZE,
     }
 
     runner = TempoBenchRunner(**base_cfg)
     runner.compile()
-    runner.warmup()
-    runner.run()
+    #runner.warmup()
+    #runner.run()
 
 
 if __name__ == "__main__":

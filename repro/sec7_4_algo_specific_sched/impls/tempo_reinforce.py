@@ -42,10 +42,6 @@ def get_tempo_rl_train_config(
 
     cfg.enable_swap = True
 
-    # NOTE: Currently, the TD computation is fused very aggressively by Tempo,
-    # leading to unschedulable graphs.
-    cfg.enable_conservative_grouping = kwargs["objective"] is not None
-
     return cfg
 
 
@@ -141,9 +137,9 @@ if __name__ == "__main__":
     params = {
         "env_name": "trivial.trivial",
         # NOTE: Default obs shape for trivial env
-        "obs_shape": (3, 256, 256),
+        "obs_shape": (3, 4, 4),
         "seed": 0,
-        "dev": "fake-gpu",
+        "dev": "gpu",
         "iterations": 50,
         # PPO hyperparams
         "gamma": 0.99,
@@ -159,7 +155,7 @@ if __name__ == "__main__":
         "sys_cfg": "tempo-jax",
         "results_path": "./results/minimal_test_reinforce",
         "vizualize": True,
-        "objective": None,
+        "objective": 8,
     }
 
     exe = get_tempo_reinforce_executor(

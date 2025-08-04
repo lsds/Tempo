@@ -43,20 +43,21 @@ def get_tempo_rl_train_config(
 
     # NOTE: Enforce original submission's behaviour
     if obs_shape[-1] < 64:
-        # NOTE: RL fairs better with only point storage, since intermediate activations
+        # NOTE: Small-scale RL fairs better with only point storage, since intermediate activations
         # are fairly small. Thus, doing in-place writes ends up being expensive.
         # Ultimately it is preferable to do a single stack operation on 1000 small tensors,
         # rather than doing 1000 in-place writes to avoid the stack.
+        # NOTE: This optimization is mostly captured by our small-tensor point store fallback,
+        # but we still enforce it here for reproducibility by disabling hybrid tensorstore.
         cfg.enable_hybrid_tensorstore = False
+
+        #NOTE: In the paper, incrementalization was not used until 3x64x64.
+        # Enforce this here for reproducibility.
         cfg.enable_incrementalization = False
 
     if is_large_obs(obs_shape):
         # NOTE: Enable swap for large obs experiments.
         cfg.enable_swap = True
-
-    #if backend == "torch":
-    #    # This optimization leads to worse performance on PyTorch backend
-    #    cfg.enable_inplace_writes = False
 
     return cfg
 
@@ -180,9 +181,9 @@ if __name__ == "__main__":
     params = {
         "env_name": "trivial.trivial",
         # NOTE: Default obs shape for trivial env
-        "obs_shape": (3, 256, 256),
+        "obs_shape": (3, 4, 4),
         "seed": 0,
-        "dev": "fake-gpu",
+        "dev": "gpu",
         "iterations": 50,
         # PPO hyperparams
         "gamma": 0.99,
@@ -195,13 +196,13 @@ if __name__ == "__main__":
         "ep_len": 1000,
         "params_per_layer": 64,
         "num_layers": 2,
-        "sys_cfg": "tempo-torch",
-        "results_path": "./results/minimal_test",
+        "sys_cfg": "tempo-jax",
+        "results_path": "./results/minimal_test_ppo",
         "vizualize": True,
     }
 
     exe = get_tempo_ppo_executor(
-        wandb_run=FakeWandBLogger("./results/minimal_test/tempo_ppo.csv"),
+        wandb_run=FakeWandBLogger("./results/minimal_test_ppo/tempo_ppo.csv"),
         **params,
     )
 
