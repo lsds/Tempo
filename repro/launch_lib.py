@@ -18,6 +18,7 @@ class StatsLogger:
     """Logger for tracking RL experiment stats.
     Imitates the interface of wandb, but writes to a CSV file instead.
     """
+
     def __init__(self, csv_file_path: Union[Path, str]) -> None:
         self.csv_file = Path(csv_file_path)
         self.config_file = self.csv_file.with_suffix(".config")
@@ -197,7 +198,6 @@ def set_flags(
         else:
             # NOTE: Need to allocate as much as possible for JAX
             os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".95"
-
 
     if not use_caching_allocators:
         # Disable preallocations.

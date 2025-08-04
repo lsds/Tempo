@@ -9,6 +9,7 @@ from repro.launch_lib import StatsLogger, launch_par, launch_seq
 from repro.sec7_3_rl_train.shared import sweep_param
 from repro.sec7_4_algo_specific_sched.shared import (
     ALGO_SPECIFIC_SCHED_DIR,
+    CACHING_ALLOC_TO_ITERS,
     ERROR_TXT_FILE,
     LOG_CSV_FILE,
     MONITOR_CSV_FILE,
@@ -22,10 +23,7 @@ from tempo.utils.resource_monitor import ResourceMonitorManager
 """ Run the algorithm-specific scheduling experiments from Figure 15 in Section 7.4.
 """
 
-CACHING_ALLOC_TO_ITERS = {
-    True: 6,
-    False: 6,
-}
+
 
 def run_experiment(  # noqa: C901
     **kwargs,
