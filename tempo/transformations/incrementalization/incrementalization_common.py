@@ -17,6 +17,7 @@ from tempo.core.symbolic_tensor import (
     _get_symbolic_tensor_for_op_output,
 )
 from tempo.core.tensor_op import TensorOp
+from tempo.runtime.backends.backend import DLBackendName
 from tempo.transformations.optimizer.dead_code_elimination import DeadCodeElimination
 from tempo.utils import isl as isl_utils
 from tempo.utils import logger
@@ -1224,12 +1225,25 @@ def _handle_dependency_edge(  # noqa: C901
             )
 
             # NOTE: For torch backend, we may want to use index_select here, though
-            # it is less efficient than slicing.
-            indexed_src = symb_t.index_slice(
-                hypothetical_inc_dim_depy,
-                inc_round_ctx.inc_var * inc_round_ctx.block_size,
-                inc_round_ctx.block_size,
-            )
+            # it is less efficient than slicing, to allow for use of torch.compile
+            if (
+                DLBackendName.str_to_enum(inc_round_ctx.comp_ctx.exec_cfg.backend)
+                == DLBackendName.TORCH
+            ):
+                block_idx = (
+                    inc_round_ctx.block_idx or SymbolicTensor.lift(inc_round_ctx.inc_var)
+                )
+                indexed_src = symb_t.index_select(
+                    hypothetical_inc_dim_depy,
+                    block_idx,
+                    keepdim=True
+                )
+            else:
+                indexed_src = symb_t.index_slice(
+                    hypothetical_inc_dim_depy,
+                    inc_round_ctx.inc_var * inc_round_ctx.block_size,
+                    inc_round_ctx.block_size,
+                )
 
             new_depy_data = DependencyData(
                 indexed_src.domain.basis_expr,

@@ -1,9 +1,8 @@
 from typing import Any
 
 from repro.sec7_3_rl_train.shared import (
-    FakeWandBLogger,
+    StatsLogger,
     is_large_obs,
-    is_small_to_med_scale_experiment,
 )
 from tempo.api import rl
 from tempo.api.optim.optim import Adam
@@ -43,27 +42,28 @@ def get_tempo_rl_train_config(
     obs_shape = kwargs.get("obs_shape", (3, 4, 4))
 
     # NOTE: Enforce original submission's behaviour
-    if is_small_to_med_scale_experiment(obs_shape):
-        # NOTE: RL fairs better with only point storage, since intermediate activations
+    if obs_shape[-1] < 64:
+        # NOTE: Small-scale RL fairs better with only point storage, since intermediate activations
         # are fairly small. Thus, doing in-place writes ends up being expensive.
         # Ultimately it is preferable to do a single stack operation on 1000 small tensors,
         # rather than doing 1000 in-place writes to avoid the stack.
+        # NOTE: This optimization is mostly captured by our small-tensor point store fallback,
+        # but we still enforce it here for reproducibility by disabling hybrid tensorstore.
         cfg.enable_hybrid_tensorstore = False
-    if obs_shape[-1] < 64:
+
+        #NOTE: In the paper, incrementalization was not used until 3x64x64.
+        # Enforce this here for reproducibility.
         cfg.enable_incrementalization = False
-    elif is_large_obs(obs_shape):
+
+    if is_large_obs(obs_shape):
         # NOTE: Enable swap for large obs experiments.
         cfg.enable_swap = True
-
-    #if backend == "torch":
-    #    # This optimization leads to worse performance on PyTorch backend
-    #    cfg.enable_inplace_writes = False
 
     return cfg
 
 
 def get_tempo_ppo_executor(  # noqa: C901
-    wandb_run: Any,
+    stats_logger: Any,
     env_name: str = "gym.CartPole-v1",
     num_envs: int = 1024,
     ep_len: int = 1000,
@@ -159,7 +159,7 @@ def get_tempo_ppo_executor(  # noqa: C901
         # NOTE: Can log other metrics if desired, such as commented example
         RecurrentTensor.sink_many_with_ts_udf(
             [mean_ep_ret, loss],  # , l_pg_avg, l_vf_avg, l_ent
-            lambda xs, ts: wandb_run.log(
+            lambda xs, ts: stats_logger.log(
                 {
                     "iteration": ts[i],
                     "mean_episode_return": xs[0].item(),
@@ -181,9 +181,9 @@ if __name__ == "__main__":
     params = {
         "env_name": "trivial.trivial",
         # NOTE: Default obs shape for trivial env
-        "obs_shape": (3, 256, 256),
+        "obs_shape": (3, 4, 4),
         "seed": 0,
-        "dev": "fake-gpu",
+        "dev": "gpu",
         "iterations": 50,
         # PPO hyperparams
         "gamma": 0.99,
@@ -196,13 +196,13 @@ if __name__ == "__main__":
         "ep_len": 1000,
         "params_per_layer": 64,
         "num_layers": 2,
-        "sys_cfg": "tempo-torch",
-        "results_path": "./results/minimal_test",
+        "sys_cfg": "tempo-jax",
+        "results_path": "./results/minimal_test_ppo",
         "vizualize": True,
     }
 
     exe = get_tempo_ppo_executor(
-        wandb_run=FakeWandBLogger("./results/minimal_test/tempo_ppo.csv"),
+        stats_logger=StatsLogger("./results/minimal_test_ppo/tempo_ppo.csv"),
         **params,
     )
 

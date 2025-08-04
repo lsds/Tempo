@@ -36,7 +36,11 @@ def rand_op_translation(
     shape = op.shape.try_resolve(emit_ctx.compile_time_known_symbol_values)
     # assert op.dtype == dtypes.float32
 
-    key = [JaxBackend.to_device(jax.random.PRNGKey(np.random.randint(0, sys.maxsize - 1)), device)]
+    key = [
+        JaxBackend.to_device(
+            jax.random.PRNGKey(np.random.randint(0, sys.maxsize - 1)), device, compiling=True
+        )
+    ]
 
     if shape.is_dynamic():
 

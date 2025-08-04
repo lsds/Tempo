@@ -19,7 +19,7 @@ default_path = get_default_path()
 
 
 def get_cleanrl_caching_ppo_execute_fn(
-    wandb_run: Any,
+    stats_logger: Any,
     dev: str = "cpu",
     results_path: str = default_path,
     env_name: str = "gym.CartPole-v1",  # "brax.halfcheetah",
@@ -42,7 +42,7 @@ def get_cleanrl_caching_ppo_execute_fn(
 
     return partial(  # type: ignore
         execute_cleanrl_caching_ppo,
-        wandb_run=wandb_run,
+        stats_logger=stats_logger,
         dev=dev,
         results_path=results_path,
         env_name=env_name,
@@ -63,7 +63,7 @@ def get_cleanrl_caching_ppo_execute_fn(
 
 
 def execute_cleanrl_caching_ppo(
-    wandb_run: Any,
+    stats_logger: Any,
     dev: str = "cpu",
     results_path: str = default_path,
     env_name: str = "gym.CartPole-v1",  # "brax.halfcheetah",
@@ -188,7 +188,7 @@ def execute_cleanrl_caching_ppo(
             loss.backward(retain_graph=True)
         optimizer.step()
 
-        wandb_run.log(
+        stats_logger.log(
             {
                 # "l_vf": v_loss.item(),
                 # "l_pg": pg_loss.item(),

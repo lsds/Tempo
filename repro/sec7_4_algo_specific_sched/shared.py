@@ -8,6 +8,11 @@ LOG_CSV_FILE = "log.csv"
 LOG_CONFIG_FILE = "log.config"
 ERROR_TXT_FILE = "error.txt"
 
+CACHING_ALLOC_TO_ITERS = {
+    True: 10,
+    False: 6,
+}
+
 SHARED_REINFORCE_HYPERPARAMS = {
     "env_name": "trivial.trivial",
     # NOTE: Default obs shape for trivial env

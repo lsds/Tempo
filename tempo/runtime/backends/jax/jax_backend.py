@@ -381,8 +381,8 @@ try:
             return t_dev
 
         @staticmethod
-        def to_device(tensor: jnp.ndarray, dev: Any) -> jnp.ndarray:
-            if JaxBackend.pinned_memory_enabled:
+        def to_device(tensor: jnp.ndarray, dev: Any, compiling: bool = False) -> jnp.ndarray:
+            if JaxBackend.pinned_memory_enabled and not compiling:
                 if dev == JaxBackend.backend_cpu:
                     for t_dev in tensor.devices():  # noqa: B007
                         break

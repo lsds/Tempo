@@ -1,6 +1,6 @@
 from typing import Any
 
-from repro.launch_lib import FakeWandBLogger
+from repro.launch_lib import StatsLogger
 from tempo.api import rl
 from tempo.api.optim.optim import Adam
 from tempo.api.recurrent_tensor import RecurrentTensor
@@ -42,15 +42,11 @@ def get_tempo_rl_train_config(
 
     cfg.enable_swap = True
 
-    # NOTE: Currently, the TD computation is fused very aggressively by Tempo,
-    # leading to unschedulable graphs.
-    cfg.enable_conservative_grouping = kwargs["objective"] is not None
-
     return cfg
 
 
 def get_tempo_reinforce_executor(  # noqa: C901
-    wandb_run: Any,
+    stats_logger: Any,
     env_name: str = "gym.CartPole-v1",  # "brax.halfcheetah",
     num_envs: int = 1024,
     ep_len: int = 1000,
@@ -122,7 +118,7 @@ def get_tempo_reinforce_executor(  # noqa: C901
 
         RecurrentTensor.sink_many_with_ts_udf(
             [mean_ep_ret, loss],
-            lambda xs, ts: wandb_run.log(
+            lambda xs, ts: stats_logger.log(
                 {
                     "iteration": ts[i],
                     "mean_episode_return": xs[0].item(),
@@ -141,9 +137,9 @@ if __name__ == "__main__":
     params = {
         "env_name": "trivial.trivial",
         # NOTE: Default obs shape for trivial env
-        "obs_shape": (3, 256, 256),
+        "obs_shape": (3, 4, 4),
         "seed": 0,
-        "dev": "fake-gpu",
+        "dev": "gpu",
         "iterations": 50,
         # PPO hyperparams
         "gamma": 0.99,
@@ -159,11 +155,11 @@ if __name__ == "__main__":
         "sys_cfg": "tempo-jax",
         "results_path": "./results/minimal_test_reinforce",
         "vizualize": True,
-        "objective": None,
+        "objective": 8,
     }
 
     exe = get_tempo_reinforce_executor(
-        wandb_run=FakeWandBLogger("./results/minimal_test_reinforce/tempo_reinforce.csv"),
+        stats_logger=StatsLogger("./results/minimal_test_reinforce/tempo_reinforce.csv"),
         **params,
     )
 

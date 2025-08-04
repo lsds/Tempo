@@ -1,0 +1,21 @@
+============================================================
+TEMPO-JAX AVERAGE SPEEDUP ANALYSIS
+============================================================
+Tempo-JAX is on average 21.6x faster than RLlib (+2063.6%)
+Tempo-JAX is on average 4.1x faster than SampleFactory (+313.4%)
+Tempo-JAX is on average 2.9x faster than RLGames (+194.1%)
+Tempo-JAX is on average 2.6x faster than CleanRL (+159.8%)
+Tempo-JAX is on average 4.6x faster than CleanRL (C) (+357.2%)
+Tempo-JAX is on average 2.1x faster than Tempo-Torch (+107.4%)
+============================================================
+
+============================================================
+CLEANRL AVERAGE SPEEDUP ANALYSIS
+============================================================
+CleanRL is on average 8.7x faster than RLlib (+770.1%)
+CleanRL is on average 1.6x faster than SampleFactory (+58.6%)
+CleanRL is on average 1.1x faster than RLGames (+13.0%)
+CleanRL is on average 1.8x faster than CleanRL (C) (+76.1%)
+CleanRL is on average 0.8x faster than Tempo-Torch (-19.2%)
+CleanRL is on average 0.4x faster than Tempo-JAX (-58.4%)
+============================================================

@@ -10,7 +10,6 @@ from tempo.core.datatypes import OpInId
 from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.core.dim_utils import normalize_negative_dim
 from tempo.core.utils import bytes_to_human_readable
-from tempo.runtime.backends.backend import DLBackendName
 from tempo.transformations.compilation_pass import CompilationCtx
 from tempo.transformations.incrementalization.incrementalization_common import (
     ALLOWED_START_OPS,
@@ -804,14 +803,9 @@ class IncTemporalOnce(IncrementalizationPolicy):
 
         percentile = self.ctx.exec_cfg.incrementalization_percentile
 
-        if DLBackendName.str_to_enum(self.ctx.exec_cfg.backend) == DLBackendName.TORCH:
-            block_size = 1
-
-        else:
-            # For temporal incrementalization, we use block_size=1 and always fully incrementalize
-            block_size = (
-                1 if self.any_window_access_in_dg else get_divisor_at_percentile(ub, percentile)
-            )
+        block_size = (
+            1 if self.any_window_access_in_dg else get_divisor_at_percentile(ub, percentile)
+        )
 
         num_blocks = ub // block_size
         inc_var, block_idxs = (

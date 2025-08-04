@@ -187,7 +187,9 @@ def get_normalized_dfs(
     data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]],
     framework: str,
     sweep_key: str,
-    sweep_value,
+    sweep_value: Any,
+    iterations_from_start_to_remove: int = 1,
+    iterations_from_end_to_remove: int = 1,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Get normalized dataframes for a specific framework and sweep value"""
     run = data[sweep_key][sweep_value][framework]
@@ -198,8 +200,8 @@ def get_normalized_dfs(
         return None, None
 
     # NOTE: Remove first and last iterations to avoid warmup/winddown effects
-    iteration_0_time_ns = int(df_log["curr_time"].iloc[1])
-    iteration_last_time_ns = int(df_log["curr_time"].iloc[-1])
+    iteration_0_time_ns = int(df_log["curr_time"].iloc[iterations_from_start_to_remove])
+    iteration_last_time_ns = int(df_log["curr_time"].iloc[-iterations_from_end_to_remove])
 
     gpu_used = run["gpu_used"]
 

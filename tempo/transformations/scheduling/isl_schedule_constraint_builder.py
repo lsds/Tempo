@@ -1,7 +1,6 @@
 from typing import Callable, Dict, Tuple
 
 import islpy as isl
-import optree
 
 from tempo.core import index_expr as ie
 from tempo.core import isl_types as islt
@@ -177,8 +176,7 @@ class IslScheduleConstraintsBuilder:
             return False
 
         for op, _ in deps:
-            tags_flattened = {k: sorted(set(optree.tree_flatten(v)[0])) for k, v in op.tags.items()}
-            if BACKWARD_REGION_TAG in tags_flattened.get(REGION_TAG, ()):
+            if BACKWARD_REGION_TAG in op.flat_tags.get(REGION_TAG, ()):
                 if tensor_id not in self._tids_to_swap:
                     log.info(
                         "Will swap tensor %s with point size: %s",
@@ -658,6 +656,9 @@ class IslScheduleConstraintsBuilder:
         #        is_validity=False,
         #    )
         # else:
+        # NOTE: if incremental, we want proximity, else, we do not want proximity between backward and forward.
+        # NOTE: But, if
+
         edge_constraints = self._build_edge_constraints(
             lambda sink, src, expr: True,
             is_validity=False,
@@ -688,6 +689,8 @@ class IslScheduleConstraintsBuilder:
             isl.UnionMap: representing the coincidence constraints.
 
         """
+
+
         edge_constraints = self._build_edge_constraints(
             lambda sink, src, expr: True,
             is_validity=False,

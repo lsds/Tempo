@@ -210,12 +210,15 @@ def can_vectorize_basic(  # noqa: C901
             # log.info("UDF %s has no vectorization function", op)
             return False
 
-    # NOTE: This is here to work around the JAX bug which leads to:
-    # "jax INTERNAL: Failed to allocate 204800000 bytes for new constant"
+    ## NOTE: This is here to work around the JAX bug which leads to:
+    ## "jax INTERNAL: Failed to allocate 204800000 bytes for new constant"
     if isinstance(op, top.RandOp):
-        # NOTE: Vectorize only on trivial dims
-        if not is_trivial_dim(dg, dim):
+        small_dim = 5000
+        if dg.static_bounds.get(dim.as_bound(), small_dim) >= small_dim:
             return False
+        ## NOTE: Vectorize only on trivial dims
+        #if (not is_trivial_dim(dg, dim)):
+        #    return False
 
     # Attempt to get the vectorization rule for the op - if there is none then we can't do
     # vectorization
@@ -401,7 +404,7 @@ def _restore_original_submission_vectorization(
         # which is better than vectorizing.
         if dim.struct_eq(t) and not any_window_access_patterns:
             for op in dg.nodes:
-                if BACKWARD_REGION_TAG in op.tags.get(REGION_TAG, ()) and can_vectorize_basic(
+                if BACKWARD_REGION_TAG in op.flat_tags.get(REGION_TAG, ()) and can_vectorize_basic(
                     op, dim, dg
                 ):
                     candidate_ops.add(op)

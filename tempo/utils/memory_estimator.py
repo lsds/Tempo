@@ -143,7 +143,8 @@ class MemoryEstimator:
 
     def estimate_op_size_bytes_in(self, op_id: OpId) -> int:
         # NOTE: it may be MergeOp
-        op = self.dg.ops_by_id[op_id].op
+        op_data = self.dg.ops_by_id[op_id]
+        op = op_data.op
 
         from tempo.core import tensor_ops as top
 
@@ -154,11 +155,14 @@ class MemoryEstimator:
                 for i in range(num_inputs)
             )
         else:
-            num_inputs = op.num_inputs
-            # NOTE: They should all be the same size, tbh
-            input_sizes = max(
-                self.estimate_tensor_point_size_bytes(op_id, in_idx=OpInId(i))
-                for i in range(num_inputs)
-            )
+            if op_data.uncommitted_branch_conds:
+                input_sizes = 0
+            else:
+                num_inputs = op.num_inputs
+                # NOTE: They should all be the same size, tbh
+                input_sizes = max(
+                    self.estimate_tensor_point_size_bytes(op_id, in_idx=OpInId(i))
+                    for i in range(num_inputs)
+                )
 
         return input_sizes

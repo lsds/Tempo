@@ -156,13 +156,13 @@ default_path = get_default_path()
 class EpochStatsAlgoObserver(AlgoObserver):
     def __init__(
         self,
-        wandb_run: Any,
+        stats_logger: Any,
         vf_coef: float = 0.01,
         ent_coef: float = 0.01,
         ep_len: int = 200,
         num_envs: int = 1024,
     ):
-        self.run = wandb_run
+        self.run = stats_logger
         self.algo: A2CAgent = None
         self.rewards = None
         self.vf_coef = vf_coef
@@ -219,7 +219,7 @@ class EpochStatsAlgoObserver(AlgoObserver):
 
 
 def get_rlgames_ppo_execute_fn(
-    wandb_run: Any,
+    stats_logger: Any,
     dev: str = "cpu",
     results_path: str = default_path,
     env_name: str = "gym.CartPole-v1",  # "brax.halfcheetah",
@@ -429,7 +429,7 @@ def get_rlgames_ppo_execute_fn(
         }
     }
 
-    observer = EpochStatsAlgoObserver(wandb_run, vf_coef, ent_coef, ep_len, num_envs)
+    observer = EpochStatsAlgoObserver(stats_logger, vf_coef, ent_coef, ep_len, num_envs)
     runner = Runner(observer)
 
     try:
@@ -440,7 +440,7 @@ def get_rlgames_ppo_execute_fn(
     return partial(runner.run_train, args={})
 
 
-class FakeWandbRun:
+class StatsRun:
     def log(self, x):
         print(x)
 
@@ -468,7 +468,7 @@ def execute_rl_games_ppo(
     assert (num_envs * ep_len) % minibatch_size == 0
 
     execute_fn = get_rlgames_ppo_execute_fn(
-        FakeWandbRun(),  # type: ignore
+        StatsRun(),  # type: ignore
         dev,
         results_path,
         env_name,

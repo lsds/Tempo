@@ -191,7 +191,7 @@ class CustomPPOModel(TorchModelV2, nn.Module):
 
 
 def get_rllib_ppo_execute_fn(
-    wandb_run: Any,
+    stats_logger: Any,
     dev: str = "cpu",
     results_path: str = default_path,
     env_name: str = "Pendulum-v1",  # Use a continuous action space env
@@ -293,7 +293,7 @@ def get_rllib_ppo_execute_fn(
         for iteration in range(iterations):
             result = trainer.train()
 
-            wandb_run.log(
+            stats_logger.log(
                 {
                     # "l_vf": result["info"]["learner"]["default_policy"]["learner_stats"]["vf_loss"],
                     # "l_pg": result["info"]["learner"]["default_policy"]["learner_stats"][
