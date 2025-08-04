@@ -805,13 +805,15 @@ class IncTemporalOnce(IncrementalizationPolicy):
         percentile = self.ctx.exec_cfg.incrementalization_percentile
 
         if DLBackendName.str_to_enum(self.ctx.exec_cfg.backend) == DLBackendName.TORCH:
-            block_size = 1
+            #block_size = 1
+            # NOTE: Torch consumes more memory than JAX, so we use a lower percentile
+            percentile -= 10
 
-        else:
-            # For temporal incrementalization, we use block_size=1 and always fully incrementalize
-            block_size = (
-                1 if self.any_window_access_in_dg else get_divisor_at_percentile(ub, percentile)
-            )
+        #else:
+        # For temporal incrementalization, we use block_size=1 and always fully incrementalize
+        block_size = (
+            1 if self.any_window_access_in_dg else get_divisor_at_percentile(ub, percentile)
+        )
 
         num_blocks = ub // block_size
         inc_var, block_idxs = (
