@@ -23,7 +23,7 @@ from tempo.utils.resource_monitor import ResourceMonitorManager
 """
 
 CACHING_ALLOC_TO_ITERS = {
-    True: 20,
+    True: 5,
     False: 5,
 }
 
