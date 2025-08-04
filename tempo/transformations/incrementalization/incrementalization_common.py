@@ -1236,7 +1236,8 @@ def _handle_dependency_edge(  # noqa: C901
                 indexed_src = symb_t.index_select(
                     hypothetical_inc_dim_depy,
                     block_idx,
-                ).unsqueeze(hypothetical_inc_dim_depy)
+                    keepdim=True
+                )
             else:
                 indexed_src = symb_t.index_slice(
                     hypothetical_inc_dim_depy,
