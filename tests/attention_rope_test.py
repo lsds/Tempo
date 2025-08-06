@@ -83,8 +83,8 @@ def test_mha_with_rope(exec_cfg: ExecutionConfig, backend: str) -> None:
         executor = ctx.compile({B: batch_size, S: max_seq_len})
         executor.execute()
 
-    x_pt = torch.tensor(np.array(sink_data["x"]), dtype=torch.float32)
-    out_tpo_pt = torch.tensor(np.array(sink_data["out"]), dtype=torch.float32)
+    x_pt = torch.tensor(np.asarray(sink_data["x"]), dtype=torch.float32)
+    out_tpo_pt = torch.tensor(np.asarray(sink_data["out"]), dtype=torch.float32)
 
     assert x_pt.shape == (batch_size, max_seq_len, embed_dim)
     assert out_tpo_pt.shape == (batch_size, max_seq_len, embed_dim)
@@ -94,8 +94,8 @@ def test_mha_with_rope(exec_cfg: ExecutionConfig, backend: str) -> None:
     mha_pt.eval()
     with torch.no_grad():
         # For out_proj, we'll copy the real weights from sink_data
-        o_w = torch.tensor(np.array(sink_data["o_w"]), dtype=torch.float32)
-        o_b = torch.tensor(np.array(sink_data["o_b"]), dtype=torch.float32)
+        o_w = torch.tensor(np.asarray(sink_data["o_w"]), dtype=torch.float32)
+        o_b = torch.tensor(np.asarray(sink_data["o_b"]), dtype=torch.float32)
         mha_pt.out_proj.weight.copy_(o_w)
         mha_pt.out_proj.bias.copy_(o_b)
 
@@ -121,12 +121,12 @@ def test_mha_with_rope(exec_cfg: ExecutionConfig, backend: str) -> None:
     head_dim = embed_dim // num_heads
 
     # Load Q/K/V from sink_data
-    q_w = torch.tensor(np.array(sink_data["q_w"]), dtype=torch.float32)
-    k_w = torch.tensor(np.array(sink_data["k_w"]), dtype=torch.float32)
-    v_w = torch.tensor(np.array(sink_data["v_w"]), dtype=torch.float32)
-    q_b = torch.tensor(np.array(sink_data["q_b"]), dtype=torch.float32)
-    k_b = torch.tensor(np.array(sink_data["k_b"]), dtype=torch.float32)
-    v_b = torch.tensor(np.array(sink_data["v_b"]), dtype=torch.float32)
+    q_w = torch.tensor(np.asarray(sink_data["q_w"]), dtype=torch.float32)
+    k_w = torch.tensor(np.asarray(sink_data["k_w"]), dtype=torch.float32)
+    v_w = torch.tensor(np.asarray(sink_data["v_w"]), dtype=torch.float32)
+    q_b = torch.tensor(np.asarray(sink_data["q_b"]), dtype=torch.float32)
+    k_b = torch.tensor(np.asarray(sink_data["k_b"]), dtype=torch.float32)
+    v_b = torch.tensor(np.asarray(sink_data["v_b"]), dtype=torch.float32)
 
     # Precompute Q/K/V in python
     x_flat = x_pt.reshape(-1, embed_dim)

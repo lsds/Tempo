@@ -51,7 +51,7 @@ def get_tempo_rl_train_config(
         # but we still enforce it here for reproducibility by disabling hybrid tensorstore.
         cfg.enable_hybrid_tensorstore = False
 
-        #NOTE: In the paper, incrementalization was not used until 3x64x64.
+        # NOTE: In the paper, incrementalization was not used until 3x64x64.
         # Enforce this here for reproducibility.
         cfg.enable_incrementalization = False
 
@@ -183,7 +183,7 @@ if __name__ == "__main__":
         # NOTE: Default obs shape for trivial env
         "obs_shape": (3, 4, 4),
         "seed": 0,
-        "dev": "gpu",
+        "dev": "fake-gpu",
         "iterations": 50,
         # PPO hyperparams
         "gamma": 0.99,
@@ -192,11 +192,11 @@ if __name__ == "__main__":
         "ent_coef": 0.01,
         "vf_coef": 0.5,
         # NOTE: Fixed param base used in large obs experiments (overwritten in small_to_med_scale)
-        "num_envs": 256,
-        "ep_len": 1000,
+        "num_envs": 32,
+        "ep_len": 250,
         "params_per_layer": 64,
         "num_layers": 2,
-        "sys_cfg": "tempo-jax",
+        "sys_cfg": "tempo-torch",
         "results_path": "./results/minimal_test_ppo",
         "vizualize": True,
     }
@@ -206,4 +206,4 @@ if __name__ == "__main__":
         **params,
     )
 
-    #exe.execute()
+    exe.execute()

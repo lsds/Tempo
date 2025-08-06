@@ -51,6 +51,7 @@ def compile_frontend(
         isl_ctx = get_isl_context(exec_cfg)
         compilation_ctx = CompilationCtx(dg, AnalysisCtx(isl_ctx), exec_cfg)
         from tempo.core import global_objects as glob
+
         glob.set_active_dg(dg)
 
         compilation_ctx.analysis_ctx._is_incremental_algo = any(

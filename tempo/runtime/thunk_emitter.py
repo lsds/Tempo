@@ -112,23 +112,6 @@ class ThunkEmitter(Generic[BackendTensorT], ABC):
         from tempo.runtime.backends.backend import DLBackend
 
         backend = DLBackend.get_backend(exec_cfg.backend)
-        # interp_exec_func = interp_exec_func_
-        # TODO: I don' actually think this helps, and its breaking encapsulation. Remove later.
-        #if backend.get_backend_name() == DLBackendName.TORCH:
-        #    # interp_exec_func = lambda xs: tuple(
-        #    #    o.contiguous()  # type: ignore
-        #    #    for o in interp_exec_func_(xs)
-        #    # )
-        #    interp_exec_func = interp_exec_func_
-
-        #    if len(input_shapes) > 0:
-        #        from torch.fx import symbolic_trace
-
-        #        interp_exec_func = symbolic_trace(interp_exec_func).forward
-        #    else:
-        #        interp_exec_func = interp_exec_func_
-        #else:
-        #    interp_exec_func = interp_exec_func_
 
         log.debug(
             "Codegening dataflow %s with example inputs %s",
@@ -149,9 +132,9 @@ class ThunkEmitter(Generic[BackendTensorT], ABC):
             for (s, dt, dev) in zip(input_shapes, input_dtypes, input_devs, strict=False)
         )
 
-        donatable_args: list[int] = []
+        donatable_args: tuple[int, ...] = ()
         if analysis_ctx._donatable_args is not None:
-            donatable_args = list(analysis_ctx.donatable_args[op_id])
+            donatable_args = tuple(analysis_ctx.donatable_args[op_id])
 
         if (
             exec_cfg.enable_inplace_write
@@ -197,7 +180,7 @@ class ThunkEmitter(Generic[BackendTensorT], ABC):
             exec_dev,
             exec_cfg,
             example_inputs,
-            tuple(donatable_args),
+            donatable_args,
             analysis_ctx,
             pg,
         )

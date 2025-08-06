@@ -217,7 +217,7 @@ def can_vectorize_basic(  # noqa: C901
         if dg.static_bounds.get(dim.as_bound(), small_dim) >= small_dim:
             return False
         ## NOTE: Vectorize only on trivial dims
-        #if (not is_trivial_dim(dg, dim)):
+        # if (not is_trivial_dim(dg, dim)):
         #    return False
 
     # Attempt to get the vectorization rule for the op - if there is none then we can't do

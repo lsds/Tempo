@@ -417,7 +417,15 @@ def is_window_access(e: ie.IndexAtom) -> bool:
         return False
     if e.start.is_constant() or e.stop.is_constant():
         return False
+    # NOTE: To catch statifyied 0:t+1 and t:T-1 cases,
+    # which produce something in between a window and block access
+    # NOTE: We only want t:min(t+w, T-1) and max(t-w, 0):t like cases.
+    num_vars = len(e.start.vars_used())
+    if num_vars > 1:
+        return False
     if is_block_access(e):
+        return False
+    if is_all_past_access(e) or is_all_future_access(e):
         return False
     return True
 
@@ -450,6 +458,12 @@ def is_const_block_access(e: ie.IndexAtom) -> bool:
     if not (e.start.is_constant() and e.stop.is_constant()):
         return False
     return True
+
+
+def is_range_access(e: ie.IndexAtom) -> bool:
+    if isinstance(e, ie.Slice):
+        return True
+    return False
 
 
 def is_block_access(e: ie.IndexAtom) -> bool:
@@ -535,6 +549,7 @@ def get_padding_for_slice(
     slice_of_interest: ie.Slice,
     ub_size: ie.IntIndexValueLike,
     domain_slice_var: ie.Symbol,
+    # TODO: we probably don't need this as the expressions should simplify to same thing?
     is_block: bool = False,
 ) -> Optional[Tuple[ie.IntIndexValueLike, ie.IntIndexValueLike]]:
     """Calculate padding values for a slice based on its type and goal padded size.
@@ -549,11 +564,9 @@ def get_padding_for_slice(
     """
     slice_lb = slice_of_interest.start
     slice_ub = slice_of_interest.stop
+    # TODO: step support
     slice_size = slice_ub - slice_lb
 
-    # if slice_of_interest.is_constant():
-    #    # For constant slices, no padding needed
-    #    return None
     slice_size = isl_utils.simplify_int_index_value(
         slice_size,
     )
@@ -598,27 +611,6 @@ def get_padding_for_slice(
         else:
             pad_amount = ub_size - slice_size
         return (pad_amount, 0)
-
-    # elif isinstance(
-    #    isl_utils.simplify_int_index_value(
-    #        (slice_ub - slice_lb), Domain.from_vars(slice_of_interest.vars_used())
-    #    ),
-    #    ie.ConstInt,
-    # ) and slice_ub.equivalent(
-    #    slice_lb.remap(
-    #        {
-    #            (
-    #                symb := (
-    #                    list(slice_lb.vars_used())[0]
-    #                    if not isinstance(slice_lb, ie.Add)
-    #                    else list(slice_lb.right_operand.vars_used())[0]
-    #                )
-    #            ): symb + 1
-    #        }
-    #    )
-    # ):
-    #    # For block access expressions like (b1*40):(((b1+1)*40))
-    #    return None
 
     else:
         raise ValueError(f"TODO: No padding handler for slice {slice_of_interest}")

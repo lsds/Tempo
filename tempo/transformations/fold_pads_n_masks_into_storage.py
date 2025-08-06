@@ -8,7 +8,7 @@ from tempo.core import isl_types as islt
 from tempo.core import tensor_ops as top
 from tempo.core.datatypes import OpInId, OpOutId, TensorId
 from tempo.core.dependence_graph import PDG, DependencyData, OpData
-from tempo.core.op_tags import STATIFY_PAD_ID_TAG
+from tempo.core.op_tags import BACKWARD_REGION_TAG, REGION_TAG, STATIFY_PAD_ID_TAG
 from tempo.core.symbolic_tensor import _get_symbolic_tensor_for_op_output
 from tempo.transformations.compilation_pass import CompilationCtx, CompilationPass
 from tempo.transformations.optimizer.dead_code_elimination import DeadCodeElimination
@@ -475,6 +475,14 @@ class FoldPadsNMasksIntoStorage(CompilationPass):
     def _remove_pad(
         self, new_dg: PDG, pad_op: top.PadOp, mask_value: Optional[float] = None
     ) -> None:
+        # NOTE: Pads introduced due to backward dynamism should be padded with zeros,
+        # which do not affect the gradient accumulation.
+        is_backward_pad = (
+            BACKWARD_REGION_TAG in pad_op.flat_tags.get(REGION_TAG, ()) and pad_op.is_any_pad()
+        )
+        if is_backward_pad and mask_value is None:
+            mask_value = 0.0
+
         ((dep_op, dep_data),) = new_dg.get_flat_direct_dependents(pad_op)
         ((depy_op, depy_data),) = new_dg.get_flat_direct_dependencies(pad_op)
 

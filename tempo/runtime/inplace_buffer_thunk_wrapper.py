@@ -77,7 +77,7 @@ def make_inplace_write_wrapper(
     output_dtypes: Sequence[DataType],
     interp_exec_func: Callable[[Tuple[BackendTensorT, ...]], Tuple[BackendTensorT, ...]],
     example_inputs: Tuple[BackendTensorT, ...],
-    donatable_args: List[int],
+    donatable_args: tuple[int, ...],
 ) -> Tuple[
     Callable[[Tuple[BackendTensorT, ...]], Tuple[BackendTensorT, ...]],
     Tuple[BackendTensorT, ...],
@@ -115,7 +115,7 @@ def make_inplace_write_wrapper(
     example_inputs = example_inputs + dummy_buffers + dummy_buffer_indices
     first_buf = number_of_original_inputs
     buf_args = range(first_buf, first_buf + len(dummy_buffers))
-    donatable_args.extend(buf_args)
+    donatable_args = donatable_args + tuple(buf_args)
     all_output_shapes = parent_graph.get_output_shapes_list(self_op)
     inplace_set_fns: List[
         Callable[
@@ -123,6 +123,7 @@ def make_inplace_write_wrapper(
             BackendTensorT,
         ]
     ] = []
+    num_idxs = tuple(num for _, num, _ in buffer_index_shapes_and_data_type)
 
     for slot, pos in enumerate(buffer_stored_output_tensor_positions):
         dummy_output_val = backend.zeros_tensor(
@@ -143,6 +144,7 @@ def make_inplace_write_wrapper(
         number_of_original_inputs,
         buffer_stored_output_tensor_positions,
         tuple(inplace_set_fns),
+        num_idxs,
     )
 
     if analysis_ctx._buffer_stored_output_tensor_positions is None:
@@ -203,6 +205,7 @@ def _make_inplace_buffer_write_thunk_wrapper(
         Callable[[BackendTensorT, Sequence[Union[int, slice]], BackendTensorT], BackendTensorT],
         ...,
     ],
+    num_idxs: Tuple[int, ...],
 ) -> Callable[[Tuple[BackendTensorT, ...]], Tuple[BackendTensorT, ...]]:
     n_buffers = len(output_positions)
 
@@ -217,7 +220,8 @@ def _make_inplace_buffer_write_thunk_wrapper(
             idxs = buffer_index_tensors[slot]
             value = outputs[output_positions[slot]]
             newbuf = buf
-            for idx in idxs:  # type: ignore
+            for i in range(num_idxs[slot]):  # type: ignore
+                idx = idxs[i]
                 newbuf = inplace_set_fns[slot](newbuf, idx, value)  # type: ignore[arg-type]
             updated_buffers.append(newbuf)
         final_out = tuple(

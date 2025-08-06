@@ -1,3 +1,5 @@
+from collections import defaultdict
+from collections.abc import Mapping
 from itertools import product
 from typing import Optional, Tuple
 
@@ -22,14 +24,15 @@ class MemoryEstimator:
         self.dg = ctx.dg
 
         # Setup a dict of bound size estimates
-        self.bound_size_estimates = dict(ctx.exec_cfg.bound_size_estimates)
+        self.bound_size_estimates: Mapping[ie.Symbol, int] = defaultdict(
+            lambda: ctx.exec_cfg.default_dim_upper_bound_size
+        )
+        self.bound_size_estimates.update(ctx.exec_cfg.bound_size_estimates)
         for bound, bound_def in ctx.dg.bound_defs.items():
             if isinstance(bound_def, int):
                 self.bound_size_estimates[bound] = bound_def
             elif isinstance(bound_def, ie.ConstInt):
                 self.bound_size_estimates[bound] = bound_def.const
-            elif bound not in self.bound_size_estimates:
-                self.bound_size_estimates[bound] = ctx.exec_cfg.default_dim_upper_bound_size
 
         # TODO: there likely is a better solution
         self.all_vars_and_bounds = dict(self.bound_size_estimates)

@@ -932,12 +932,35 @@ def less_than(left: MaybeSymbolicTensor, right: MaybeSymbolicTensor) -> Symbolic
 def logical_and(left: MaybeSymbolicTensor, right: MaybeSymbolicTensor) -> SymbolicTensor:
     left_ = lift_to_symbolic_tensor(left)
     right_ = lift_to_symbolic_tensor(right)
+    if type(left) is bool:
+        if left:
+            return right_
+        else:
+            return SymbolicTensor.zeros(right_.shape, dtype=dtypes.bool_)
+    if type(right) is bool:
+        if right:
+            return left_
+        else:
+            return SymbolicTensor.zeros(left_.shape, dtype=dtypes.bool_)
+
     return _register_one_out(top.AndOp, [left_, right_])
 
 
 def logical_or(left: MaybeSymbolicTensor, right: MaybeSymbolicTensor) -> SymbolicTensor:
     left_ = lift_to_symbolic_tensor(left)
     right_ = lift_to_symbolic_tensor(right)
+    if type(left) is bool:
+        if left:
+            return SymbolicTensor.ones(left_.shape, dtype=dtypes.bool_)
+        else:
+            return right_
+
+    if type(right) is bool:
+        if right:
+            return SymbolicTensor.ones(right_.shape, dtype=dtypes.bool_)
+        else:
+            return left_
+
     return _register_one_out(top.OrOp, [left_, right_])
 
 

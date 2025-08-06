@@ -28,7 +28,6 @@ class Incrementalize(Transformation):
 
         inc_rounds = 0
 
-
         while True:
             glob.set_active_dg(new_dg)
             mem_est = MemoryEstimator(self.current_compilation_ctx)

@@ -106,7 +106,8 @@ BLUE_SHADE_START, BLUE_SHADE_END = 52, 85
 # NOTE: This is used to stretch and compress memory usage, which comes from a different run,
 # to align with the GPU utilization/tranfer plots.
 ALIGNMENT_X_BEFORE = np.array([13, 28, 43, 58, 72, 87, 100])
-ALIGNMENT_X_AFTER = np.array([0, 16, 33, 50, 67, 84,100])
+ALIGNMENT_X_AFTER = np.array([0, 16, 33, 50, 67, 84, 100])
+
 
 # --- DATA LOADING ---
 def load_algo_specific_sched_data(

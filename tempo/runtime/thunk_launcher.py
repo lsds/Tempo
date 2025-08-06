@@ -389,19 +389,14 @@ class EvalSymbolThunkLauncher(BaseThunkLauncher[BackendTensorT]):
     def __post_init__(self) -> None:
         assert isinstance(self.op, top.EvalSymbolOp)
 
-        remapped = self.op.symbol.remap(self.domain_map)
-        remapped.cache_codegenerated_eval(self.loop_counters_and_bounds)
-
         dev = self.backend.to_backend_device_obj(self.device)
         dtype = self.backend.to_backend_datatype(self.op.dtype)
-        # lift = lambda x: self.backend.fast_int_lift(x, device=dev, dtype=dtype)
 
         idx = self.op.domain.find_variable_index(self.op.symbol)
         lift = lambda x: self.backend.fast_int_lift(x[idx], device=dev, dtype=dtype)
 
         object.__setattr__(self, "out_tensor", self.output_tensors[0])
         object.__setattr__(self, "lift", lift)
-        object.__setattr__(self, "remapped", remapped)
 
     def launch(self) -> None:
         val = self.out_expr_eval()
@@ -843,7 +838,6 @@ class BufferStoredTensorThunkLauncher(BaseThunkLauncher[BackendTensorT]):
         out_ts = self.out_expr_eval()
 
         args = tuple(fn(out_ts) for fn in self.arg_fns)  # no reflection
-
         outs = self.thunk(args, self.thunk_exec_ctx)  # type: ignore
         for val, write_fn in zip(outs, self.update_fns, strict=True):
             write_fn(out_ts, val)

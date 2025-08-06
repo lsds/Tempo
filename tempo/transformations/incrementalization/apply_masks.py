@@ -2,6 +2,7 @@ from typing import List, Tuple
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
+from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.datatypes import OpInId, OpOutId
 from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.core.op_tags import STATIFY_PAD_ID_TAG
@@ -42,8 +43,9 @@ def get_mask_value(op: top.TensorOp) -> float:
     return target_num
 
 
+# TODO: needs some refactoring work to simplify and document the logic here.
 def apply_mask_to_edge(
-    dg: PDG,
+    ctx: CompilationCtx,
     snk_op: top.TensorOp,
     edge_data: DependencyData,
     src_op: top.TensorOp,
@@ -51,6 +53,8 @@ def apply_mask_to_edge(
     masked_op_in_dim: int,
     pad_infos: List[PadInfo],
 ) -> None:
+    dg = ctx.dg
+
     log.info(
         "Applying mask to edge %s -%s-> %s on dim %d, with pad_infos: %s",
         snk_op,
@@ -64,80 +68,91 @@ def apply_mask_to_edge(
     # apply mask by modifying pdg
     symb_t = _get_symbolic_tensor_for_op_output(dg, src_op, OpOutId(edge_data.src_out_idx))
 
-    mask_val_symb_t = symb_t.full(mask_value, dtype=symb_t.dtype)
-    for i in range(len(symb_t.shape)):
-        mask_val_symb_t = mask_val_symb_t.unsqueeze(i)
     snk_in_shape = dg.get_input_shape(snk_op, edge_data.sink_in_idx)
-    dim_size = snk_in_shape.at(masked_op_in_dim)
-    mask_val_symb_t_expanded = mask_val_symb_t.expand(snk_in_shape)
+    mask_val_symb_t = symb_t.full(mask_value, dtype=symb_t.dtype).broadcast_to_shape(snk_in_shape)
+    padded_dim_size = snk_in_shape.at(masked_op_in_dim)
 
-    idxs = SymbolicTensor.arange(dim_size)
+    idxs = SymbolicTensor.arange(padded_dim_size)
 
     left_right_cond_exprs: List[Tuple[ie.IntIndexValue, ie.IntIndexValue]] = []
     for pad_info in pad_infos:
         lifted_how_padding_indexed = ie.lift_to_int_ie(pad_info.pad_idx_index_expr)
 
         # TODO: could get this from pad_op_in_shape[pad_op.dim]
-        new_slice_size = pad_info.src_inc_dim_access_expr.evaluate_shape(dg.static_bounds)[0]
-        lifted_new_slice_size = ie.lift_to_int_ie(new_slice_size)
+        non_padded_slice_size = pad_info.src_inc_dim_access_expr.evaluate_shape(dg.static_bounds)[0]
+        lifted_non_padded_slice_size = ie.lift_to_int_ie(non_padded_slice_size)
+        print(f"lifted_non_padded_slice_size: {lifted_non_padded_slice_size}")
+
         left_padding_remapped = ie.lift_to_int_ie(pad_info.padding[0]).remap(
             {dom_var: lifted_how_padding_indexed}
         )
 
-        new_slice_size_remapped = lifted_new_slice_size.remap({dom_var: lifted_how_padding_indexed})
+        non_padded_slice_size_remapped = lifted_non_padded_slice_size.remap(
+            {dom_var: lifted_how_padding_indexed}
+        )
 
-        # padding_zero_remapped_simplified = isl_utils.simplify_int_index_value(
-        #    padding_zero_remapped,
-        #    tuple(padding_zero_remapped.vars_used()),
-        #    known_symbols=dg.static_bounds,
-        # )
-        # new_slice_size_remapped_simplified = isl_utils.simplify_int_index_value(
-        #    new_slice_size_remapped,
-        #    tuple(new_slice_size_remapped.vars_used()),
-        #    known_symbols=dg.static_bounds,
-        # )
-        left_right_cond_exprs.append((left_padding_remapped, new_slice_size_remapped))
+        left_padding_remapped_simplified = isl_utils.simplify_int_index_value(
+            left_padding_remapped,
+            known_symbols=dg.static_bounds,
+            ctx=ctx.analysis_ctx.isl_ctx,
+        )
+        non_padded_slice_size_remapped_simplified = isl_utils.simplify_int_index_value(
+            non_padded_slice_size_remapped,
+            known_symbols=dg.static_bounds,
+            ctx=ctx.analysis_ctx.isl_ctx,
+        )
 
+        left_right_cond_exprs.append(
+            (left_padding_remapped_simplified, non_padded_slice_size_remapped_simplified)
+        )
+        # left_right_cond_exprs.append((left_padding_remapped, non_padded_slice_size_remapped))
+
+    # TODO: TBH, the pads should in theory all agree, so this max/min should not be needed
     max_of_all_lefts = ie.max(*[x[0] for x in left_right_cond_exprs])
     simplified_max_of_all_lefts = isl_utils.simplify_int_index_value(
         max_of_all_lefts,
         known_symbols=dg.static_bounds,
+        ctx=ctx.analysis_ctx.isl_ctx,
     )
-    # TODO: if max_of_all_lefts is just 0, we could skip it
-    min_of_all_rights = ie.min(*[x[1] for x in left_right_cond_exprs])
-    simplified_min_of_all_rights = isl_utils.simplify_int_index_value(
-        min_of_all_rights,
-        known_symbols=dg.static_bounds,
+    t_below_pad_left_amount = idxs.less_than(
+        SymbolicTensor.lift(simplified_max_of_all_lefts).broadcast_to_shape(idxs.shape)
     )
+
+    if all(ie.struct_eq(pad.padding[1], 0) for pad in pad_infos):
+        t_above_pad_right_amount = False
+    else:
+        min_of_all_rights = ie.min(*[x[1] for x in left_right_cond_exprs])
+        simplified_min_of_all_rights = isl_utils.simplify_int_index_value(
+            min_of_all_rights,
+            known_symbols=dg.static_bounds,
+            ctx=ctx.analysis_ctx.isl_ctx,
+        )
+        t_above_pad_right_amount = idxs.greater_than_or_equal(  # type: ignore
+            SymbolicTensor.lift(
+                simplified_max_of_all_lefts + simplified_min_of_all_rights
+            ).broadcast_to_shape(idxs.shape)
+        )
     # with dg.new_temp_var() as (tau, TAU):
-    #    is_pad_cond_ie = (tau < simplified_max_of_all_lefts) & (
-    #        tau >= simplified_max_of_all_lefts + simplified_min_of_all_rights
-    #    )
-    #    #log.info("is_pad_cond_ie: %s", is_pad_cond_ie)
+    #   is_pad_cond_ie = (tau < simplified_max_of_all_lefts) | (
+    #       tau >= simplified_max_of_all_lefts + simplified_min_of_all_rights
+    #   )
+    #   log.info("is_pad_cond_ie: %s", is_pad_cond_ie)
+    #   is_pad_cond_simplified = isl_utils.simplify_boolean_index_expr(
+    #       Domain.from_(is_pad_cond_ie.vars_used()),
+    #       is_pad_cond_ie,
+    #       known_symbols=dg.static_bounds,
+    #   )
+    #   log.info("is_pad_cond_simplified: %s", is_pad_cond_simplified)
 
-    # print(f"simplified_max_of_all_lefts: {simplified_max_of_all_lefts}")
-    # print(f"simplified_min_of_all_rights: {simplified_min_of_all_rights}")
-
-    lt = idxs.less_than(simplified_max_of_all_lefts)
-    gt = idxs.greater_than_or_equal(simplified_max_of_all_lefts + simplified_min_of_all_rights)
-
-    is_padding_cond = lt | gt
+    is_padding_cond = (
+        t_below_pad_left_amount | t_above_pad_right_amount
+    )  # .broadcast_to_shape(snk_in_shape)
     for i in range(len(snk_in_shape)):
         if i != masked_op_in_dim:
             is_padding_cond = is_padding_cond.unsqueeze(i)
-    is_padding_cond_expanded = is_padding_cond.expand(snk_in_shape)
+    is_padding_cond = is_padding_cond.expand(snk_in_shape)
 
-    masked_symb_t = is_padding_cond_expanded.where(mask_val_symb_t_expanded, symb_t)
-    # elif not ie.lift_to_int_ie(padding[1]).struct_eq(ie.ConstInt(0)):
-    #    # ValToVal-based mask
-    #    # TODO: in the future, we will need better condition checks for whether we can apply this
-    #    # type of mask. Right now, we are assuming that just because something is padded on the
-    #    # right, it is safe to apply a mask. This may not be the case.
-    #    # TODO: so apparently the val-to-val masks are problematic if the schedule ends up
-    #    # filling all values of the padded tensor. A fix is to add a control edge, used only in
-    #    # scheduling, to ensure the padded tensor is not fully filled before the mask is applied.
-
-    #    masked_symb_t = symb_t.nan_to_num(mask_value)
+    masked_symb_t = is_padding_cond.where(mask_val_symb_t, symb_t)
 
     masked_symb_t.op.tags[STATIFY_PAD_ID_TAG] = tuple(p.pad_id for p in pad_infos)
 

@@ -3,6 +3,7 @@ from functools import partial
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Type, Union
 
 import numpy as np
+import optree
 
 from tempo.core.analysis_ctx import AnalysisCtx
 from tempo.core.configs import ExecutionConfig
@@ -140,7 +141,7 @@ try:
                     "Preallocating %s bytes of pinned=%s CPU memory. This should take ~%s seconds.",
                     bytes_to_human_readable(amount),
                     exec_cfg.torch_pinned_memory_enabled,
-                    amount / (2 ** 30) if exec_cfg.torch_pinned_memory_enabled else 0.1,
+                    amount / (2**30) if exec_cfg.torch_pinned_memory_enabled else 0.1,
                 )
                 start_time = time.perf_counter_ns()
                 buffer = torch.empty(
@@ -404,6 +405,26 @@ try:
             return tensor.clone()
 
         @staticmethod
+        def _symbolically_trace_tempo_thunk(
+            execution_func: Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]],
+            inputs: Tuple[torch.Tensor, ...],
+        ) -> Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]]:
+            from torch.fx import symbolic_trace
+            from torch.fx._symbolic_trace import PH
+
+            any_nested_args = any(isinstance(x, tuple) for x in inputs)
+            if any_nested_args:
+                tracers = (optree.tree_map(lambda x: PH, inputs),)
+                traced_func_ = symbolic_trace(execution_func, concrete_args=tracers)
+            else:
+                traced_func_ = symbolic_trace(execution_func)
+
+            # print(f"traced_func_.code={traced_func_.code}")
+            traced_func = traced_func_.forward  # type: ignore
+
+            return traced_func  # type: ignore
+
+        @staticmethod
         def trace_codegen_thunk_jit_trace(
             execution_func: Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]],
             op_id: OpId,
@@ -419,10 +440,9 @@ try:
                 # Symbolic tracing instead
                 traced_func = execution_func
             else:
-                from torch.fx import symbolic_trace
-
-                traced_func_ = symbolic_trace(execution_func)
-                traced_func = traced_func_.forward  # type: ignore
+                execution_func = PyTorchBackend._symbolically_trace_tempo_thunk(
+                    execution_func, inputs
+                )
 
                 traced_func = torch.jit.trace(
                     execution_func,
@@ -458,10 +478,7 @@ try:
             # of the function, and does not analyse any other code. This means that as a result,
             # we get only the operations that are executed in the function, and not any other
             # stuff.
-            from torch.fx import symbolic_trace
-
-            traced_func = symbolic_trace(execution_func)
-            return traced_func.forward  # type: ignore
+            return PyTorchBackend._symbolically_trace_tempo_thunk(execution_func, inputs)
 
         @staticmethod
         def trace_codegen_thunk_torch_compile(
@@ -471,14 +488,6 @@ try:
             inputs: Tuple[torch.Tensor, ...],
             donatable_args: Sequence[int],
         ) -> Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]]:
-            #from torch.fx import symbolic_trace
-
-            #traced_func = symbolic_trace(execution_func)
-            #if "narrow" in traced_func.code:
-            #    return PyTorchBackend.trace_codegen_thunk_jit_trace(
-            #        traced_func.forward, op_id, exec_cfg, inputs, donatable_args
-            #    )
-
             # NOTE: Can only set mode or options. Modes set these options:
             # DEFAULTS:
             # {
@@ -500,23 +509,20 @@ try:
             #    "coordinate_descent_tuning": True,
             # },
             # }
+
             # NOTE: Torch.compile has trouble with no inputs
             if len(inputs) == 0:
                 return execution_func
 
-            from torch.fx import symbolic_trace
+            traced_func = PyTorchBackend._symbolically_trace_tempo_thunk(execution_func, inputs)
 
-            traced_func_ = symbolic_trace(execution_func)
-            traced_func = traced_func_.forward  # type: ignore
-
-            #if "narrow" in traced_func_.code:
+            # if "narrow" in traced_func_.code:
             #    log.info("Using JIT trace due to narrow in code for op %s", op_id)
             #    return PyTorchBackend.trace_codegen_thunk_jit_trace(
             #        execution_func, op_id, exec_cfg, inputs, donatable_args
             #    )
 
             params = {
-                # "model": traced_func.forward,
                 "model": traced_func,
                 "fullgraph": True,
                 "dynamic": False,
@@ -551,8 +557,6 @@ try:
             }
 
             params["options"] = opts
-
-
 
             exec_func = torch.compile(**params)
 

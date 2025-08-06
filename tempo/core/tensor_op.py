@@ -30,7 +30,7 @@ class TensorOp(ABC):
     )
 
     @property
-    def flat_tags(self) -> Dict[str, Set[str]]:
+    def flat_tags(self) -> Dict[str, List[Any]]:
         return {k: sorted(set(optree.tree_flatten(v)[0])) for k, v in self.tags.items()}
 
     @property

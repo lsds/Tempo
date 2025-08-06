@@ -387,6 +387,9 @@ class GroupDataflowRegions(CompilationPass):
         log.debug("Building conservative initial groupings")
         iterations, group_to_nodes = build_initial_groupings(self.ctx)
 
+        if not group_to_nodes:  # NOTE: no groupings were found
+            return self.ctx, False
+
         check_groups_are_dags(self.ctx.dg, group_to_nodes, "initial grouping")
 
         group_to_nodes, nonbasis_edges_fixed = self._fix_any_grouped_nonbasis_edges(

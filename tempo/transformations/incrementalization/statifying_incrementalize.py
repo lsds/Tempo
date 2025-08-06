@@ -275,8 +275,6 @@ def setup_round_ctx(
         all_dynamic_ops=all_dyn_ops,
     )
 
-    print(f"Incrementalizing based on ctx: {ctx}")
-
     return ctx
 
 
@@ -379,7 +377,7 @@ class StatifyingIncrementalize(Transformation):
                 ]
 
                 apply_mask_to_edge(
-                    new_dg,
+                    self.ctx,
                     mapped_snk_op,
                     edge_data,
                     mapped_src_op,

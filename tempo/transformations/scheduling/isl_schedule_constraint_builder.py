@@ -396,7 +396,7 @@ class IslScheduleConstraintsBuilder:
 
         return False
 
-    def _build_swap_constraints_single_exec(  # noqa: CCR001
+    def _build_swap_constraints_single_exec(
         self, simplify: bool = False, proximity: bool = False, coincidence: bool = False
     ) -> islt.UnionMap:
         validity = (not proximity) and (not coincidence)
@@ -647,28 +647,11 @@ class IslScheduleConstraintsBuilder:
         return constraints
 
     def _get_proximity_constraints(self) -> islt.UnionMap:
-        # NOTE: When we detect a windowed algorithm, do not generate proximity constraints
-        # to upper bounds.
-        # if self.any_window_access_in_dg:
-        #    edge_constraints = self._build_edge_constraints(
-        #        # lambda sink, src, expr: not any(is_block_access(e) for e in expr.members),
-        #        lambda sink, src, expr: not expr.accesses_bound(),
-        #        is_validity=False,
-        #    )
-        # else:
-        # NOTE: if incremental, we want proximity, else, we do not want proximity between backward and forward.
-        # NOTE: But, if
-
         edge_constraints = self._build_edge_constraints(
             lambda sink, src, expr: True,
             is_validity=False,
         )
 
-        # edge_constraints = self._build_edge_constraints(
-        #    lambda sink, src, expr: True, simplify_exprs=True
-        # )
-
-        constraints = edge_constraints
         gc_constraints = self._build_gc_constraints(True)
         constraints = edge_constraints.union(gc_constraints)
         if self.analysis_ctx._isl_execution_schedule is not None:
@@ -689,7 +672,6 @@ class IslScheduleConstraintsBuilder:
             isl.UnionMap: representing the coincidence constraints.
 
         """
-
 
         edge_constraints = self._build_edge_constraints(
             lambda sink, src, expr: True,

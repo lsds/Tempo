@@ -530,11 +530,11 @@ def index_slice_op_translation(
         and start_edge_data.is_unconditional_basis()
     )
 
-
     if op.is_static():
         assert isinstance(length, int)
 
         if can_optimize_narrow:
+            assert isinstance(start_op, top.ConstOp)
             value = start_op.uniform_value
 
             def index_slice_op_torch_thunk(

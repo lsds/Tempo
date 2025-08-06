@@ -23,7 +23,12 @@ from tempo.core.utils import bytes_to_human_readable
 from tempo.transformations.compilation_pass import Transformation
 from tempo.utils import isl as isl_utils
 from tempo.utils import logger
-from tempo.utils.dg_utils import is_block_access, is_const_block_access, is_window_access
+from tempo.utils.dg_utils import (
+    is_block_access,
+    is_const_block_access,
+    is_range_access,
+    is_window_access,
+)
 from tempo.utils.memory_estimator import MemoryEstimator
 
 log = logger.get_logger(__name__)
@@ -230,10 +235,7 @@ class AnalyseStorageMethods(Transformation):
 
         any_type_block_accesses = any_common_const_block_accesses or any_block_accesses
 
-        # assert (
-        #    sum([any_common_const_block_accesses, any_window_accesses, any_block_accesses]) <= 1
-        # ), f"Found conflicting access patters {[d.expr for _, d in dependents]} for op {op}"
-        any_range_accesses = any_type_block_accesses or any_window_accesses
+        any_range_accesses = any(is_range_access(m) for _, d in dependents for m in d.expr.members)
 
         default_prealloc_value_for_dtype = get_default_prealloc_value_for_dtype(
             new_dg.get_tensor_dtype(tensor_id)
@@ -244,7 +246,6 @@ class AnalyseStorageMethods(Transformation):
 
         if any_window_accesses and not any_type_block_accesses:
             dims_and_window_sizes = _get_window_sizes_per_dim(new_dg, op, dependents)
-            print(f"Op {op} with dependents {dependents} has window sizes {dims_and_window_sizes}")
             return CircularBufferStore(
                 prealloc_value=prealloc_value,
                 dims_and_base_buffer_sizes=tuple(dims_and_window_sizes),

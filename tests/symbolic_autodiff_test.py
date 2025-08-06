@@ -21,7 +21,7 @@ all_patterns = [
     "identity",
     "fixed_range",
     "all",
-    #"all_past", #NOTE: This is failing due to some off-by-one error. Let's fix it later.
+    "all_past",
     "all_future",
     "past_sliding_window",
     "future_sliding_window",
@@ -116,7 +116,7 @@ def test_ad(shape_str: str, backend: str, pattern: str, enable_optims: bool, exe
     torch.no_grad().__enter__()
     torch.set_grad_enabled(False).__enter__()
 
-    tpo_x_grads = []
+    tpo_x_grads = [None] * T_ub
     exec_cfg = replace(exec_cfg, backend=backend)
     if enable_optims:
         exec_cfg = replace(exec_cfg,
@@ -132,6 +132,10 @@ def test_ad(shape_str: str, backend: str, pattern: str, enable_optims: bool, exe
                            enable_inplace_write=True,
                            enable_lazy_slice=True,
                            inc_statify_block_size=T_ub // 4,
+                           enable_point_store_fallback=False,
+                           enable_dataflow_grouping=True,
+                           enable_codegen_dataflows=True,
+                           executor_debug_mode=False,
                            )
 
     ctx = TempoContext(exec_cfg, num_dims=1)
@@ -149,7 +153,10 @@ def test_ad(shape_str: str, backend: str, pattern: str, enable_optims: bool, exe
         z = (x[pat_tr(t)] * y[pat_tr(t)]).sum()
         with ctx.tag_region("backward"):
             z.backward()
-        x.grad.sink_udf(lambda x: tpo_x_grads.append(x))
+            def sink_fn(x, ts):
+                tpo_x_grads[ts[t]] = x
+
+        x.grad.sink_with_ts_udf(sink_fn)
 
         exec = ctx.compile({T: T_ub})
         exec.execute()
@@ -162,14 +169,14 @@ def test_ad(shape_str: str, backend: str, pattern: str, enable_optims: bool, exe
         assert x_t_torch_grad is not None
         assert x_t_tpo_grad.shape == x_ts[t_int].shape
         assert x_t_tpo_grad.shape == x_t_torch_grad.shape
-        assert not x_t_torch_grad.sum().isnan(), f"Torch grad contains NaNs"
-        assert not x_t_tpo_grad.sum().isnan(), f"Tempo grad contains NaNs"
+        assert not x_t_torch_grad.sum().isnan(), f"Torch grad contains NaNs, t={t_int}"
+        assert not x_t_tpo_grad.sum().isnan(), f"Tempo grad contains NaNs, t={t_int}"
         #print(f"t={t_int}, x_t_tpo_grad={x_t_tpo_grad}, x_t_torch_grad={x_t_torch_grad}")
-        assert torch.allclose(x_t_tpo_grad, x_t_torch_grad, atol=1e-5), f"t={t_int}"
+        assert torch.allclose(x_t_tpo_grad, x_t_torch_grad, atol=1e-5), f"t={t_int}, x_t_tpo_grad={x_t_tpo_grad}, x_t_torch_grad={x_t_torch_grad}"
     print("Grads match")
 
 if __name__ == "__main__":
-    cfg = ExecutionConfig.default()
-    cfg = replace(cfg, visualize_pipeline_stages=True)
+    cfg = ExecutionConfig.test_cfg()
+    cfg = replace(cfg, visualize_pipeline_stages=True, render_schedule=True, enable_incrementalization=True, validate_pipeline_stages=True)
     test_ad("4x4", "torch", "all_past", True, cfg)
     #test_ad("4x4", "torch", "all_future", True, cfg)

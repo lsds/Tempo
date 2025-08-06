@@ -176,7 +176,7 @@ will skip any experiments for which directories already exist.
 ### RLlib at large scale
 
 The RLlib baseline, in the large observation experiment, can consume all host memory,
-causing the machine to fail and require physical restart. 
+causing the machine to fail and require physical restart.
 For this reason, we have chosen to skip RLlib for this experiment by default.
 However, it can be enabled by passing only --skip_sys "cleanrlcache" to run_large_obs.py.
 

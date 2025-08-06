@@ -283,8 +283,8 @@ def main():
 
     runner = TempoBenchRunner(**base_cfg)
     runner.compile()
-    #runner.warmup()
-    #runner.run()
+    # runner.warmup()
+    # runner.run()
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ from tempo.utils import isl as isl_utils
 from tempo.utils import logger
 from tempo.utils.dg_utils import (
     get_padding_for_slice,
+    is_all_future_access,
+    is_all_past_access,
     is_expanded_dim,
     is_matmul_contracting_dim,
     is_non_dimensional_param,
@@ -975,9 +977,7 @@ def get_inced_padding_and_src_access_expr(
         src_inc_dim_access_expr = ie.slice_(slice_lb, slice_ub)
 
         how_to_index_padding = src_dom.basis_expr
-    elif (
-        slice_lb.is_constant() and not slice_ub.is_constant() and orig_var in slice_ub.vars_used()
-    ):  # c:t or c:t+1 case
+    elif is_all_past_access(slice_of_interest):  # c:t or c:t+1 case
         # NOTE: high confidence in correctness.
         # NOTE: In order to get a pad op with domain eq to src, for each t, we grab and pad
         # only the last block. Then, the src_inc_dim_access_expr will get index the padding
@@ -999,7 +999,7 @@ def get_inced_padding_and_src_access_expr(
             expr_idx_of_interest, how_to_index_padding_idx
         )
 
-    elif slice_ub.is_constant() and slice_lb.logical_eq(orig_var):  # t:T case
+    elif is_all_future_access(slice_of_interest):  # t:T case
         assert padding is not None
         src_inc_dim_access_expr = ie.slice_(
             slice_lb,
@@ -1230,13 +1230,9 @@ def _handle_dependency_edge(  # noqa: C901
                 DLBackendName.str_to_enum(inc_round_ctx.comp_ctx.exec_cfg.backend)
                 == DLBackendName.TORCH
             ):
-                block_idx = (
-                    inc_round_ctx.block_idx or SymbolicTensor.lift(inc_round_ctx.inc_var)
-                )
+                block_idx = inc_round_ctx.block_idx or SymbolicTensor.lift(inc_round_ctx.inc_var)
                 indexed_src = symb_t.index_select(
-                    hypothetical_inc_dim_depy,
-                    block_idx,
-                    keepdim=True
+                    hypothetical_inc_dim_depy, block_idx, keepdim=True
                 )
             else:
                 indexed_src = symb_t.index_slice(

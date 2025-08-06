@@ -1648,18 +1648,18 @@ def zeros_like(
 
 
 @overload
-def min(  # noqa: A001, A003, E704
+def min(  # noqa: A001, A003
     x: MaybeRecurrentTensor, dim: int = 1, keepdim: bool = False
 ) -> Tuple[RecurrentTensor, RecurrentTensor]: ...
 
 
 @overload
-def min(  # noqa: A001, A003, E704
+def min(  # noqa: A001, A003
     *xs: MaybeRecurrentTensor,
 ) -> Tuple[RecurrentTensor, RecurrentTensor]: ...
 
 
-def min(  # noqa: A001, A003, E704
+def min(  # noqa: A001, A003
     *args: MaybeRecurrentTensor, **kwargs: Any
 ) -> Tuple[RecurrentTensor, RecurrentTensor]:
     if len(args) == 1:
@@ -1679,18 +1679,18 @@ def min(  # noqa: A001, A003, E704
 
 
 @overload
-def max(  # noqa: A001, A003, E704
+def max(  # noqa: A001, A003
     x: MaybeRecurrentTensor, dim: int = 1, keepdim: bool = False
 ) -> Tuple[RecurrentTensor, RecurrentTensor]: ...
 
 
 @overload
-def max(  # noqa: A001, A003, E704
+def max(  # noqa: A001, A003
     *xs: MaybeRecurrentTensor,
 ) -> Tuple[RecurrentTensor, RecurrentTensor]: ...
 
 
-def max(  # noqa: A001, A003, E704
+def max(  # noqa: A001, A003
     *args: MaybeRecurrentTensor, **kwargs: Any
 ) -> Tuple[RecurrentTensor, RecurrentTensor]:
     if len(args) == 1:
