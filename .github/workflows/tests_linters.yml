@@ -1,6 +1,12 @@
 name: Tests and Linters
 
-on: [ pull_request ]
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
 jobs:
   tests-and-linters:
     name: "Python ${{ matrix.python-version }} on ${{ matrix.os }}"
