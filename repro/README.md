@@ -99,18 +99,18 @@ All scripts should offer usage help with --help.
 
 ## Resources and Time Taken
 
-End-to-end, the experiments take roughly 10 hours to complete, with few minutes of active time.
+End-to-end, the experiments take roughly ~4 hours to complete, with few minutes of active time.
 Most experiments will fully utilize the available GPUs, without CPU pressure.
 However, run_large_obs.py and run_algo_specific_sched.py will also consume up to 200GB
 of CPU memory due to the swapping involved.
 
 Breakdown:
 * run_block_size_microbenchmark.py: ~15 minutes
-* run_measure_tpt.py: ~1 hour
-* run_mem_usage.py: ~3 hours
-* run_small_to_med_scale.py: ~1.5 hours
-* run_large_obs.py: ~2 hours
-* run_algo_specific_sched.py: ~1 hour
+* run_measure_tpt.py: ~30 minutes
+* run_mem_usage.py: ~1 hour
+* run_small_to_med_scale.py: ~1 hour
+* run_large_obs.py: ~1 hour
+* run_algo_specific_sched.py: ~15 minutes
 
 ## Minimal Working Example
 
