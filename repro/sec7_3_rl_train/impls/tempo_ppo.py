@@ -183,7 +183,7 @@ if __name__ == "__main__":
         # NOTE: Default obs shape for trivial env
         "obs_shape": (3, 4, 4),
         "seed": 0,
-        "dev": "fake-gpu",
+        "dev": "gpu",
         "iterations": 50,
         # PPO hyperparams
         "gamma": 0.99,
