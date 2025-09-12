@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import typing
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from enum import IntEnum
-from typing import Iterable, List, Optional, Tuple, Union
+from math import prod
+
+import numpy as np
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
@@ -10,10 +14,11 @@ from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.datatypes import OpInId, OpOutId
 from tempo.core.dependence_graph import DependencyData, OpData
 from tempo.core.domain import Domain
+from tempo.core.dtype import dtypes
 from tempo.core.shape import Shape
 from tempo.core.symbolic_tensor import (
     SymbolicTensor,
-    _get_symbolic_tensor_for_op_output,
+    get_symbolic_tensor_for_op_output,
     lift_to_symbolic_tensor,
 )
 from tempo.transformations.optimizer.algebraic.match_replacer import MatchReplacer
@@ -28,7 +33,7 @@ from tempo.utils.dg_utils import (
 log = logger.get_logger(__name__)
 
 
-def is_const_uniform(op: top.TensorOp, value: Optional[int] = None) -> bool:
+def is_const_uniform(op: top.TensorOp, value: int | None = None) -> bool:
     return (
         isinstance(op, top.ConstOp)
         and op.is_uniform
@@ -46,7 +51,7 @@ class ZeroAddOptimization(MatchReplacer):
         other_op: top.TensorOp
         other_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.AddOp):
             return None
 
@@ -79,9 +84,7 @@ class ZeroAddOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the other operand
-        other_symb_t = _get_symbolic_tensor_for_op_output(
-            dg, mr.other_op, mr.other_data.src_out_idx
-        )
+        other_symb_t = get_symbolic_tensor_for_op_output(dg, mr.other_op, mr.other_data.src_out_idx)
         orig_dtype = dg.get_output_dtypes(op)[OpOutId(0)]
         other_symb_t = other_symb_t.to_dtype(orig_dtype)
 
@@ -97,7 +100,7 @@ class ZeroMulOptimization(MatchReplacer):
         zero_op: top.TensorOp
         zero_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.MulOp):
             return None
 
@@ -119,7 +122,7 @@ class ZeroMulOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the zero constant
-        zero_symb_t = _get_symbolic_tensor_for_op_output(dg, mr.zero_op, mr.zero_data.src_out_idx)
+        zero_symb_t = get_symbolic_tensor_for_op_output(dg, mr.zero_op, mr.zero_data.src_out_idx)
         orig_dtype = dg.get_output_dtypes(op)[OpOutId(0)]
         zero_symb_t = zero_symb_t.to_dtype(orig_dtype)
 
@@ -135,7 +138,7 @@ class ZeroDivOptimization(MatchReplacer):
         zero_op: top.TensorOp
         zero_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.DivOp):
             return None
 
@@ -163,7 +166,7 @@ class ZeroDivOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the zero constant
-        zero_symb_t = _get_symbolic_tensor_for_op_output(dg, mr.zero_op, mr.zero_data.src_out_idx)
+        zero_symb_t = get_symbolic_tensor_for_op_output(dg, mr.zero_op, mr.zero_data.src_out_idx)
         orig_dtype = dg.get_output_dtypes(op)[OpOutId(0)]
         zero_symb_t = zero_symb_t.to_dtype(orig_dtype)
 
@@ -181,7 +184,7 @@ class NegNegOptimization(MatchReplacer):
         inner_op: top.TensorOp
         inner_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.NegOp):
             return None
 
@@ -229,6 +232,129 @@ class NegNegOptimization(MatchReplacer):
             dg.remove_edge(dept, op, dept_data)
 
 
+class UnifConstAlgebraOptimization(MatchReplacer):
+    """Optimization: algebra of uniform consts -> uniform const"""
+
+    @dataclass
+    class Result:
+        unif_depys: list[tuple[top.ConstOp, DependencyData]]
+
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
+        valid_move_ops = (
+            top.SqueezeOp,
+            top.UnsqueezeOp,
+            top.ReshapeOp,
+            top.ExpandOp,
+            top.PadOp,
+            top.FlipOp,
+            top.PermuteOp,
+        )
+        if not (
+            isinstance(op, (top.ElementWiseOp, top.ReduceOp)) or isinstance(op, valid_move_ops)
+        ):
+            return None
+
+        dg = ctx.dg
+        depys = list(dg.get_flat_direct_dependencies(op))
+
+        all_depys_unif_const = all(is_const_uniform(d) for d, _ in depys)
+        if not all_depys_unif_const:
+            return None
+
+        all_basis_edges = all(
+            depy_data.is_unconditional() and depy_data.expr.struct_eq(depy.domain.basis_expr)
+            for depy, depy_data in depys
+        )
+        if not all_basis_edges:
+            return None
+
+        if isinstance(op, top.ReduceOp):
+            # NOTE: Otherwise we risk not being able to compute the reduction.
+            all_input_shapes_static = dg.get_input_shape(op, OpInId(0)).is_static()
+            if not all_input_shapes_static:
+                return None
+
+        if isinstance(op, top.PadOp):
+            const_depy = typing.cast(top.ConstOp, depys[0][0])
+            unif_const_0 = const_depy.uniform_value
+            pad_val_matches_const = op.mode == top.PadMode.CONSTANT and op.value == unif_const_0
+            pad_mode_any = op.mode == top.PadMode.ANY
+            if not (pad_val_matches_const or pad_mode_any):
+                return None
+
+        return UnifConstAlgebraOptimization.Result(
+            unif_depys=typing.cast(list[tuple[top.ConstOp, DependencyData]], depys),
+        )
+
+    def replace(self, ctx: CompilationCtx, op: top.TensorOp, mr: Result) -> None:
+        dg = ctx.dg
+
+        @dataclass
+        class FoldCtx:
+            unif_values: list[int | float | bool]
+            shapes: list[Shape]
+            op: top.TensorOp
+
+        top_to_lambda = {
+            top.MaxOp: lambda ctx: ctx.unif_values[0],
+            top.SumOp: lambda ctx: ctx.unif_values[0]
+            * prod(ctx.shapes[0].at(dim) for dim in ctx.op.dims),
+            top.NegOp: lambda ctx: -ctx.unif_values[0],
+            top.AddOp: lambda ctx: ctx.unif_values[0] + ctx.unif_values[1],
+            top.SubOp: lambda ctx: ctx.unif_values[0] - ctx.unif_values[1],
+            top.MulOp: lambda ctx: ctx.unif_values[0] * ctx.unif_values[1],
+            top.DivOp: lambda ctx: ctx.unif_values[0] / ctx.unif_values[1],
+            top.CastOp: lambda ctx: ctx.unif_values[0],  # TODO: needs a proper implementation no?
+            top.PowOp: lambda ctx: ctx.unif_values[0] ** ctx.unif_values[1],
+            top.AndOp: lambda ctx: ctx.unif_values[0] & ctx.unif_values[1],
+            top.OrOp: lambda ctx: ctx.unif_values[0] | ctx.unif_values[1],
+            top.NotOp: lambda ctx: ~ctx.unif_values[0],
+            top.ExpOp: lambda ctx: np.exp(ctx.unif_values[0]),
+            top.LnOp: lambda ctx: np.log(ctx.unif_values[0]),
+            top.SinOp: lambda ctx: np.sin(ctx.unif_values[0]),
+            top.SqrtOp: lambda ctx: np.sqrt(ctx.unif_values[0]),
+            top.WhereOp: lambda ctx: (
+                ctx.unif_values[1] if ctx.unif_values[0] else ctx.unif_values[2]
+            ),
+            # NOTE: For all the movement ops, we just return the first unif const.
+            top.SqueezeOp: lambda ctx: ctx.unif_values[0],
+            top.UnsqueezeOp: lambda ctx: ctx.unif_values[0],
+            top.ReshapeOp: lambda ctx: ctx.unif_values[0],
+            top.ExpandOp: lambda ctx: ctx.unif_values[0],
+            top.PadOp: lambda ctx: ctx.unif_values[0],
+            top.FlipOp: lambda ctx: ctx.unif_values[0],
+            top.PermuteOp: lambda ctx: ctx.unif_values[0],
+        }
+
+        unif_values = [depy.uniform_value for depy, _ in mr.unif_depys]
+        shapes = [depy.shape for depy, _ in mr.unif_depys]
+        fold_ctx = FoldCtx(unif_values=unif_values, shapes=shapes, op=op)
+
+        res = top_to_lambda[type(op)](fold_ctx)  # type: ignore
+        op_data = dg.ops_by_id[op.op_id]
+        np_dtype = dtypes.to_np(op_data.output_dtypes[OpOutId(0)])
+        new_op = top.ConstOp(
+            op_id=dg.get_next_op_id(),
+            domain=op.domain.copy(),
+            tags=dict(op.tags),
+            shape=op_data.output_shapes[OpOutId(0)],
+            dtype=op_data.output_dtypes[OpOutId(0)],
+            value=np.asarray(res, dtype=np_dtype),
+            is_uniform=True,
+        )
+        new_op_data = OpData(
+            op=new_op,
+            output_shapes=op_data.output_shapes,
+            output_dtypes=op_data.output_dtypes,
+        )
+        dg.insert_op(new_op_data)
+        dg.move_dependents(op, new_op)
+
+        for depy, depy_data in mr.unif_depys:
+            dg.remove_edge(op, depy, depy_data)
+        dg.remove_op(op)
+
+
 class ZeroSubOptimization(MatchReplacer):
     """Optimization: x - 0 -> x"""
 
@@ -239,7 +365,7 @@ class ZeroSubOptimization(MatchReplacer):
         other_op: top.TensorOp
         other_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.SubOp):
             return None
 
@@ -265,9 +391,7 @@ class ZeroSubOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the other operand
-        other_symb_t = _get_symbolic_tensor_for_op_output(
-            dg, mr.other_op, mr.other_data.src_out_idx
-        )
+        other_symb_t = get_symbolic_tensor_for_op_output(dg, mr.other_op, mr.other_data.src_out_idx)
         orig_dtype = dg.get_output_dtypes(op)[OpOutId(0)]
         other_symb_t = other_symb_t.to_dtype(orig_dtype)
 
@@ -285,7 +409,7 @@ class OneMulOptimization(MatchReplacer):
         other_op: top.TensorOp
         other_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.MulOp):
             return None
 
@@ -318,9 +442,7 @@ class OneMulOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the other operand
-        other_symb_t = _get_symbolic_tensor_for_op_output(
-            dg, mr.other_op, mr.other_data.src_out_idx
-        )
+        other_symb_t = get_symbolic_tensor_for_op_output(dg, mr.other_op, mr.other_data.src_out_idx)
         orig_dtype = dg.get_output_dtypes(op)[OpOutId(0)]
         other_symb_t = other_symb_t.to_dtype(orig_dtype)
 
@@ -338,7 +460,7 @@ class OneDivOptimization(MatchReplacer):
         other_op: top.TensorOp
         other_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.DivOp):
             return None
 
@@ -364,9 +486,7 @@ class OneDivOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the other operand
-        other_symb_t = _get_symbolic_tensor_for_op_output(
-            dg, mr.other_op, mr.other_data.src_out_idx
-        )
+        other_symb_t = get_symbolic_tensor_for_op_output(dg, mr.other_op, mr.other_data.src_out_idx)
         orig_dtype = dg.get_output_dtypes(op)[OpOutId(0)]
         other_symb_t = other_symb_t.to_dtype(orig_dtype)
 
@@ -385,7 +505,7 @@ class ExpLnOptimization(MatchReplacer):
         base_op: top.TensorOp
         base_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, (top.ExpOp, top.LnOp)):
             return None
 
@@ -459,7 +579,7 @@ class SqueezeUnsqueezeOptimization(MatchReplacer):
         base_op: top.TensorOp
         base_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         assert isinstance(op, (top.SqueezeOp, top.UnsqueezeOp)), (
             f"Expected SqueezeOp or UnsqueezeOp, got {type(op)}"
         )
@@ -537,7 +657,7 @@ class SliceSliceOptimization(MatchReplacer):
         inner_start_idx_op: top.TensorOp
         inner_start_idx_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.IndexSliceOp):
             return None
 
@@ -582,10 +702,10 @@ class SliceSliceOptimization(MatchReplacer):
         )
 
         # Get symbolic tensors for the start indices
-        outer_start_idx_symb_t = _get_symbolic_tensor_for_op_output(
+        outer_start_idx_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.outer_start_idx_op, mr.outer_start_idx_data.src_out_idx
         ).symbolic_index(mr.outer_start_idx_data.expr)
-        inner_start_idx_symb_t = _get_symbolic_tensor_for_op_output(
+        inner_start_idx_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.inner_start_idx_op, mr.inner_start_idx_data.src_out_idx
         ).symbolic_index(mr.inner_start_idx_data.expr)
 
@@ -593,7 +713,7 @@ class SliceSliceOptimization(MatchReplacer):
         start_combined = outer_start_idx_symb_t + inner_start_idx_symb_t
 
         # Create the new slice operation
-        inner_symb_t = _get_symbolic_tensor_for_op_output(
+        inner_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.inner_src_op, new_dep_data.src_out_idx
         ).symbolic_index(new_dep_data.expr)
 
@@ -616,7 +736,7 @@ class PermutePermuteOptimization(MatchReplacer):
         inner_depy_op: top.TensorOp
         inner_depy_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.PermuteOp):
             return None
 
@@ -666,7 +786,7 @@ class PermutePermuteOptimization(MatchReplacer):
         )
 
         # Create the new permute operation
-        symb_t = _get_symbolic_tensor_for_op_output(
+        symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.inner_depy_op, new_dep_data.src_out_idx
         ).symbolic_index(new_dep_data.expr)
         new_permute_op = symb_t.permute(new_dims).op
@@ -700,7 +820,7 @@ class ReshapeOptimization(MatchReplacer):
         operation_type: ReshapeOpType
         dim: int
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.ReshapeOp):
             return None
         dg = ctx.dg
@@ -738,7 +858,7 @@ class ReshapeOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the dependency
-        dep_symb_t = _get_symbolic_tensor_for_op_output(
+        dep_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.dep_op, mr.dep_data.src_out_idx
         ).symbolic_index(mr.dep_data.expr)
         if mr.operation_type == ReshapeOpType.UNSQUEEZE:
@@ -759,7 +879,7 @@ class SumDimSizeOneToSqueezeOptimization(MatchReplacer):
         dep_data: DependencyData
         dim: int
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.SumOp):
             return None
 
@@ -782,7 +902,7 @@ class SumDimSizeOneToSqueezeOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the dependency
-        dep_symb_t = _get_symbolic_tensor_for_op_output(
+        dep_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.dep_op, mr.dep_data.src_out_idx
         ).symbolic_index(mr.dep_data.expr)
 
@@ -801,7 +921,7 @@ class RedundantGatherOptimization(MatchReplacer):
         src_op: top.TensorOp
         src_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.GatherOp):
             return None
 
@@ -838,13 +958,13 @@ class RedundantConstIndexSelectOptimization(MatchReplacer):
 
     @dataclass
     class Result:
-        dependents_to_move: List[Tuple[top.TensorOp, DependencyData]]
+        dependents_to_move: list[tuple[top.TensorOp, DependencyData]]
         src_op: top.TensorOp
         src_data: DependencyData
         index_op: top.TensorOp
         index_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.IndexSelectOp):
             return None
 
@@ -887,14 +1007,14 @@ class RedundantSymbolConstIndexSelectOptimization(MatchReplacer):
 
     @dataclass
     class Result:
-        dependents_to_move: List[Tuple[top.TensorOp, DependencyData]]
+        dependents_to_move: list[tuple[top.TensorOp, DependencyData]]
         src_op: top.ConstOp
         src_data: DependencyData
         index_op: top.TensorOp
         index_data: DependencyData
-        const_value: Union[int, float]
+        const_value: int | float
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.IndexSelectOp):
             return None
 
@@ -959,13 +1079,13 @@ class RedundantSymbolIndexSelectOptimization(MatchReplacer):
 
     @dataclass
     class Result:
-        dependents_to_move: List[Tuple[top.TensorOp, DependencyData]]
+        dependents_to_move: list[tuple[top.TensorOp, DependencyData]]
         src_op: top.TensorOp
         src_data: DependencyData
         index_op: top.TensorOp
         index_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.IndexSelectOp):
             return None
 
@@ -1014,7 +1134,7 @@ class RedundantSymbolIndexSelectOptimization(MatchReplacer):
         # NOTE: manually move the dependents, because combining the edges is wrong due to the
         # temporal indexing we matched on.
         for dep, dep_data in mr.dependents_to_move:
-            src_symb_t = _get_symbolic_tensor_for_op_output(
+            src_symb_t = get_symbolic_tensor_for_op_output(
                 dg, mr.src_op, mr.src_data.src_out_idx
             ).symbolic_index(mr.src_data.expr)
             if op.dim != 0:
@@ -1048,7 +1168,7 @@ class ExpandSelectOptimization(MatchReplacer):
         expanded_src_op_data: DependencyData
         num_slices_expand_op_data: int
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.IndexSelectOp):
             return None
 
@@ -1093,11 +1213,11 @@ class ExpandSelectOptimization(MatchReplacer):
         dim = op.dim
 
         # Get the symbolic tensor for the expanded operation
-        expanded_src_t = _get_symbolic_tensor_for_op_output(
+        expanded_src_t = get_symbolic_tensor_for_op_output(
             dg, mr.expanded_src_op, mr.expanded_src_op_data.src_out_idx
         ).symbolic_index(mr.expanded_src_op_data.expr)
 
-        index_t = _get_symbolic_tensor_for_op_output(
+        index_t = get_symbolic_tensor_for_op_output(
             dg, mr.index_op, mr.index_op_data.src_out_idx
         ).symbolic_index(mr.index_op_data.expr)
         index_is_scalar = index_t.shape.is_scalar()
@@ -1136,7 +1256,7 @@ class IndexSelectTemporalSliceOptimization(MatchReplacer):
         symbol_idx: int
         dim: int
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.IndexSelectOp):
             return None
 
@@ -1181,7 +1301,7 @@ class IndexSelectTemporalSliceOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the tensor operation
-        tensor = _get_symbolic_tensor_for_op_output(dg, mr.tensor_op, mr.tensor_data.src_out_idx)
+        tensor = get_symbolic_tensor_for_op_output(dg, mr.tensor_op, mr.tensor_data.src_out_idx)
 
         # Create permutation to move the index dimension to the front
         perm_dims = list(range(len(tensor.shape)))
@@ -1223,7 +1343,7 @@ class PadExpandElideOptimization(MatchReplacer):
         expand_src_data: DependencyData
         dim: int
 
-    def match(self, ctx: CompilationCtx, pad_op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, pad_op: top.TensorOp) -> Result | None:
         if not isinstance(pad_op, top.PadOp):
             return None
 
@@ -1263,7 +1383,7 @@ class PadExpandElideOptimization(MatchReplacer):
         new_expand_shape = mr.expand_op.sizes.resize_dim(mr.dim, combined_size)
 
         # Get the symbolic tensor for the expand source operation
-        expand_src_t = _get_symbolic_tensor_for_op_output(
+        expand_src_t = get_symbolic_tensor_for_op_output(
             dg, mr.expand_src_op, mr.expand_src_data.src_out_idx
         ).symbolic_index(mr.expand_src_data.expr)
 
@@ -1283,15 +1403,13 @@ class PadPushdownOptimization(MatchReplacer):
     Handles non-unconditional_basis edges by combining edges and shifting pad_dim as needed.
     """
 
-    from typing import Tuple
-
     @dataclass
     class Result:
         pad_op: top.PadOp
         pad_data: DependencyData
         elem_op: top.TensorOp
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.PadOp):
             return None
         dg = ctx.dg
@@ -1412,7 +1530,7 @@ class MatMulToMulOptimization(MatchReplacer):
         dep2_op: top.TensorOp
         dep2_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.MatMulOp):
             return None
 
@@ -1448,10 +1566,10 @@ class MatMulToMulOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensors for both operands
-        dep1_symb_t = _get_symbolic_tensor_for_op_output(
+        dep1_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.dep1_op, mr.dep1_data.src_out_idx
         ).symbolic_index(mr.dep1_data.expr)
-        dep2_symb_t = _get_symbolic_tensor_for_op_output(
+        dep2_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.dep2_op, mr.dep2_data.src_out_idx
         ).symbolic_index(mr.dep2_data.expr)
 
@@ -1476,7 +1594,7 @@ class UnaryElementwiseMovementOptimization(MatchReplacer):
         mov_dep_op: top.TensorOp
         mov_dep_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         assert isinstance(op, top.UnaryElementWiseOp), (
             f"Expected UnaryElementWiseOp, got {type(op)}"
         )
@@ -1617,8 +1735,8 @@ class UnaryPushdownOptimization(MatchReplacer):
         self,
         ctx: CompilationCtx,
         un_op: top.TensorOp,
-        match_only_dirs: Optional[Iterable[PushDir]] = None,
-    ) -> Optional[Result]:
+        match_only_dirs: Iterable[PushDir] | None = None,
+    ) -> Result | None:
         if match_only_dirs is None:
             match_only_dirs = [PushDir.DOWN]  # , PushDir.UP
 
@@ -1667,7 +1785,7 @@ class UnaryPushdownOptimization(MatchReplacer):
         # TODO: this also needs to be adapted for push-up
 
         # Get the symbolic tensor for the dependency
-        un_depy_t = _get_symbolic_tensor_for_op_output(
+        un_depy_t = get_symbolic_tensor_for_op_output(
             dg, mr.un_depy_op, mr.un_depy_data.src_out_idx
         ).symbolic_index(mr.un_dept_data.expr)
 
@@ -1721,7 +1839,7 @@ class BinEWMovPushdownOptimization(MatchReplacer):
         mov2_depy_op: top.TensorOp
         mov2_depy_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         assert isinstance(op, (top.BinaryElementWiseOp, top.MatMulOp)), (
             f"Expected BinaryElementWiseOp or MatMulOp, got {type(op)}"
         )
@@ -1767,10 +1885,10 @@ class BinEWMovPushdownOptimization(MatchReplacer):
 
         # NOTE: if doing the movement would break broadcasting assumptions, we cant do it.
         if isinstance(op, top.ElementWiseOp):
-            mov1_depy_symb_t = _get_symbolic_tensor_for_op_output(
+            mov1_depy_symb_t = get_symbolic_tensor_for_op_output(
                 dg, mov1_depy_op, mov1_depy_data.src_out_idx
             ).symbolic_index(mov1_depy_data.expr)
-            mov2_depy_symb_t = _get_symbolic_tensor_for_op_output(
+            mov2_depy_symb_t = get_symbolic_tensor_for_op_output(
                 dg, mov2_depy_op, mov2_depy_data.src_out_idx
             ).symbolic_index(mov2_depy_data.expr)
             if not mov1_depy_symb_t.shape == mov2_depy_symb_t.shape:
@@ -1815,10 +1933,10 @@ class BinEWMovPushdownOptimization(MatchReplacer):
         )
 
         # Get symbolic tensors for the inner dependencies
-        mov1_depy_symb_t = _get_symbolic_tensor_for_op_output(
+        mov1_depy_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.mov1_depy_op, combined_edge_1.src_out_idx
         ).symbolic_index(combined_edge_1.expr)
-        mov2_depy_symb_t = _get_symbolic_tensor_for_op_output(
+        mov2_depy_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.mov2_depy_op, combined_edge_2.src_out_idx
         ).symbolic_index(combined_edge_2.expr)
 
@@ -1898,7 +2016,7 @@ class SumExpandToMulOptimization(MatchReplacer):
         sum_dim: int
         new_size: ie.IndexExpr
 
-    def match(self, ctx: CompilationCtx, red_op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, red_op: top.TensorOp) -> Result | None:
         if not isinstance(red_op, top.SumOp):
             return None
 
@@ -1943,7 +2061,7 @@ class SumExpandToMulOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get the symbolic tensor for the expand dependency
-        symb_t = _get_symbolic_tensor_for_op_output(
+        symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.expand_dep_op, mr.expand_dep_data.src_out_idx
         ).symbolic_index(mr.expand_dep_data.expr)
 
@@ -1965,7 +2083,7 @@ class SumSumOptimization(MatchReplacer):
         sum_sum_depy_data: DependencyData
         sum_sum_depy_op: top.TensorOp
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.SumOp):
             return None
 
@@ -2015,7 +2133,7 @@ class SumSumOptimization(MatchReplacer):
         )
 
         # Get the symbolic tensor for the inner operation with the combined expression
-        inner_symb_t = _get_symbolic_tensor_for_op_output(
+        inner_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.sum_sum_depy_op, combined_data.src_out_idx
         ).symbolic_index(combined_data.expr)
         # combined_shape = inner_symb_t.shape
@@ -2030,8 +2148,8 @@ class SumSumOptimization(MatchReplacer):
 
         # For each spatialized dimension,
         # determine if it come from the inner or outer sum op symbolic indexing.
-        inner_temporal_dims_reduced: List[int] = []
-        outer_temporal_dims_reduced: List[int] = []
+        inner_temporal_dims_reduced: list[int] = []
+        outer_temporal_dims_reduced: list[int] = []
         dim_idx = 0
         for i, var in enumerate(mr.sum_sum_depy_op.domain.variables):
             if not mr.sum_sum_depy_data.expr.members[i].is_point():
@@ -2116,7 +2234,7 @@ class MatMulReassocOptimization(MatchReplacer):
 
     def match(
         self, ctx: CompilationCtx, op: top.TensorOp
-    ) -> Optional[MatMulReassocOptimization.Result]:
+    ) -> MatMulReassocOptimization.Result | None:
         if not isinstance(op, top.MatMulOp):
             return None
 
@@ -2203,13 +2321,13 @@ class MatMulReassocOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get symbolic tensors for A, B, and C
-        A_symb = _get_symbolic_tensor_for_op_output(
+        A_symb = get_symbolic_tensor_for_op_output(
             dg, mr.A_op, mr.A_data.src_out_idx
         ).symbolic_index(mr.A_data.expr)
-        B_symb = _get_symbolic_tensor_for_op_output(
+        B_symb = get_symbolic_tensor_for_op_output(
             dg, mr.B_op, mr.B_data.src_out_idx
         ).symbolic_index(mr.B_data.expr)
-        C_symb = _get_symbolic_tensor_for_op_output(
+        C_symb = get_symbolic_tensor_for_op_output(
             dg, mr.C_op, mr.C_data.src_out_idx
         ).symbolic_index(mr.C_data.expr)
 
@@ -2240,7 +2358,7 @@ class MatMulPermuteOptimization(MatchReplacer):
         inner2_op: top.TensorOp
         inner2_data: DependencyData
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.MatMulOp):
             return None
 
@@ -2282,10 +2400,10 @@ class MatMulPermuteOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get symbolic tensors for the inner operations
-        inner1_symb_t = _get_symbolic_tensor_for_op_output(
+        inner1_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.inner1_op, mr.inner1_data.src_out_idx
         ).symbolic_index(mr.inner1_data.expr)
-        inner2_symb_t = _get_symbolic_tensor_for_op_output(
+        inner2_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.inner2_op, mr.inner2_data.src_out_idx
         ).symbolic_index(mr.inner2_data.expr)
 
@@ -2309,7 +2427,7 @@ class MatMulConstOptimization(MatchReplacer):
         other_data: DependencyData
         const_is_lhs: bool
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.MatMulOp):
             return None
 
@@ -2341,13 +2459,13 @@ class MatMulConstOptimization(MatchReplacer):
         dg = ctx.dg
 
         # Get symbolic tensors
-        const_symb_t = _get_symbolic_tensor_for_op_output(
+        const_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.const_op, mr.const_data.src_out_idx
         ).symbolic_index(mr.const_data.expr)
-        other_symb_t = _get_symbolic_tensor_for_op_output(
+        other_symb_t = get_symbolic_tensor_for_op_output(
             dg, mr.other_op, mr.other_data.src_out_idx
         ).symbolic_index(mr.other_data.expr)
-        matmul_symb_t = _get_symbolic_tensor_for_op_output(dg, op, OpOutId(0))
+        matmul_symb_t = get_symbolic_tensor_for_op_output(dg, op, OpOutId(0))
 
         # Determine which dimension to sum
         if mr.const_is_lhs:
@@ -2386,9 +2504,9 @@ class SumPermuteOptimization(MatchReplacer):
         perm_dep_op: top.TensorOp
         perm_dep_data: DependencyData
         skip_permute: bool
-        new_sum_dims: Optional[tuple[int, ...]] = None
+        new_sum_dims: tuple[int, ...] | None = None
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         if not isinstance(op, top.SumOp):
             return None
 
@@ -2464,7 +2582,7 @@ class SumPermuteOptimization(MatchReplacer):
             )
 
             # Create new sum operation with adjusted dimensions
-            perm_dep_symb_t = _get_symbolic_tensor_for_op_output(
+            perm_dep_symb_t = get_symbolic_tensor_for_op_output(
                 dg, mr.perm_dep_op, combined_edge.src_out_idx
             ).symbolic_index(combined_edge.expr)
 

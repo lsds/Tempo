@@ -1,6 +1,6 @@
 import sys
+from collections.abc import Callable
 from functools import partial
-from typing import Callable, Dict, Tuple, Type, Union
 
 import jax
 import jax.numpy as jnp
@@ -11,12 +11,11 @@ import tempo.core.tensor_ops as top
 from tempo.core import index_expr as ie
 from tempo.core.datatypes import OpInId, OpOutId
 from tempo.core.thunk import (
-    OpToThunkTranslationFn,
     Thunk,
-    ThunkEmissionCtx,
     ThunkExecutionCtx,
 )
-from tempo.runtime.thunk_emitter import ThunkEmitter
+from tempo.core.thunk_emitter import OpToThunkTranslationFn, ThunkEmissionCtx
+from tempo.runtime.thunk_emitter_base import ThunkEmitterBase
 from tempo.utils import logger
 
 log = logger.get_logger(__name__)
@@ -28,29 +27,28 @@ def rand_op_translation(
 ) -> Thunk[jnp.ndarray]:
     assert isinstance(op, top.RandOp)
 
-    from tempo.runtime.backends.jax.jax_backend import JaxBackend
+    backend = emit_ctx.backend
 
-    dtype = JaxBackend.to_backend_datatype(op.dtype)
-    device = JaxBackend.to_backend_device_obj(emit_ctx.dev)
+    dtype = backend.to_backend_datatype(op.dtype)
+    device = backend.to_backend_device_obj(emit_ctx.dev)
 
     shape = op.shape.try_resolve(emit_ctx.compile_time_known_symbol_values)
     # assert op.dtype == dtypes.float32
 
-    key = [
-        JaxBackend.to_device(
-            jax.random.PRNGKey(np.random.randint(0, sys.maxsize - 1)), device, compiling=True
-        )
-    ]
+    with emit_ctx.analysis_ctx.load_timer:
+        key = [
+            backend.to_device(
+                jax.random.PRNGKey(np.random.randint(0, sys.maxsize - 1)), device, compiling=True
+            )
+        ]
 
-    if shape.is_dynamic():
+    if op.is_dynamic():
 
         def split_and_uniform(
-            key: jnp.ndarray, shape_: Tuple[int, ...]
-        ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+            key: jnp.ndarray, shape_: tuple[int, ...]
+        ) -> tuple[jnp.ndarray, jnp.ndarray]:
             key_, subkey = jax.random.split(key)
-            val = JaxBackend.to_device(
-                jax.random.uniform(subkey, shape=shape_, dtype=dtype), device
-            )
+            val = backend.to_device(jax.random.uniform(subkey, shape=shape_, dtype=dtype), device)
             return key_, val
 
         jitted_split_and_uniform = jax.jit(
@@ -59,8 +57,8 @@ def rand_op_translation(
         )
 
         def rand_op_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             shape_ = shape.evaluate(exec_ctx.symbol_values)
             key_, val = jitted_split_and_uniform(key[0], shape_)
             key[0] = key_
@@ -69,7 +67,7 @@ def rand_op_translation(
     else:
         shape_ = shape.evaluate(emit_ctx.compile_time_known_symbol_values)
 
-        def split_and_uniform2(key: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        def split_and_uniform2(key: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
             key_, subkey = jax.random.split(key)
             val = jax.random.uniform(subkey, shape=shape_, dtype=dtype)
             return key_, val
@@ -82,8 +80,8 @@ def rand_op_translation(
         jitted_split_and_uniform2(key[0])
 
         def rand_op_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             key_, val = jitted_split_and_uniform2(key[0])
             key[0] = key_
             return (val,)
@@ -99,37 +97,32 @@ def const_op_translation(
     shape = op.shape.try_resolve(emit_ctx.compile_time_known_symbol_values)
     value = op.value
 
-    from tempo.runtime.backends.jax.jax_backend import JaxBackend
+    backend = emit_ctx.backend
 
-    device = JaxBackend.to_backend_device_obj(emit_ctx.dev)
+    device = backend.to_backend_device_obj(emit_ctx.dev)
 
-    dtype = JaxBackend.to_backend_datatype(op.dtype)
-    val = jnp.array(value, dtype=dtype, device=device)
+    dtype = backend.to_backend_datatype(op.dtype)
+    with emit_ctx.analysis_ctx.load_timer:
+        val = jnp.array(value, dtype=dtype, device=device)
 
-    # if shape.is_dynamic():
+    # NOTE: should never ocurr really...
+    if op.is_dynamic():
+        raise ValueError(f"ConstOp {op.op_id} is dynamic. This should never happen.")
 
-    #    def const_op_thunk(
-    #        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    #    ) -> Tuple[jnp.ndarray, ...]:
-    #        shape_ = shape.evaluate(exec_ctx.symbol_values)
-    #        return (jnp.broadcast_to(val, shape_),)
+        def const_op_thunk(
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
+            shape_ = shape.evaluate(exec_ctx.symbol_values)
+            return (jnp.broadcast_to(val, shape_),)
 
-    # else:
-    shape_ = shape.evaluate(emit_ctx.compile_time_known_symbol_values)
-    # if emit_ctx.exec_cfg.debug_mode:
+    else:
+        shape_ = shape.evaluate(emit_ctx.compile_time_known_symbol_values)
 
-    # else:
-    #    if val.shape == ():
-    #        if len(shape_) > 0:
-    #            val = jnp.expand_dims(val, tuple(range(len(shape_))))
-    #    else:
-    #        val = jnp.broadcast_to(val, shape_)
-
-    # NOTE: we do it this way so that the jit can recognize the expansion
-    def const_op_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
-        return (jnp.broadcast_to(val, shape_),)
+        # NOTE: we do it this way so that the jit can recognize the expansion
+        def const_op_thunk(
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
+            return (jnp.broadcast_to(val, shape_),)
 
     return const_op_thunk
 
@@ -141,12 +134,12 @@ def eval_symbol_op_translation(
     assert isinstance(op, top.EvalSymbolOp)
     shape = op.shape
 
-    from tempo.runtime.backends.jax.jax_backend import JaxBackend
+    backend = emit_ctx.backend
 
-    device = JaxBackend.to_backend_device_obj(emit_ctx.dev)
+    device = backend.to_backend_device_obj(emit_ctx.dev)
     assert shape.is_scalar()
     symbol_dtype = op.dtype
-    dtype = JaxBackend.to_backend_datatype(symbol_dtype)
+    dtype = backend.to_backend_datatype(symbol_dtype)
 
     def f(x: int) -> jnp.ndarray:
         return jnp.array(
@@ -162,8 +155,8 @@ def eval_symbol_op_translation(
     s = op.symbol
 
     def eval_symbol_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jitted_f(exec_ctx.symbol_values[s]),)
 
     return eval_symbol_op_jax_thunk
@@ -178,8 +171,8 @@ def flip_op_translation(
     assert isinstance(dim, int)
 
     def flip_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jnp.flip(inputs[0], axis=dim),)
 
     return flip_op_jax_thunk
@@ -197,8 +190,8 @@ def expand_op_translation(
     if sizes.is_dynamic():
 
         def expand_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             sizes_ = sizes.evaluate(exec_ctx.symbol_values)
             return (jnp.broadcast_to(inputs[0], sizes_),)
 
@@ -206,8 +199,8 @@ def expand_op_translation(
         sizes_ = sizes.evaluate(emit_ctx.compile_time_known_symbol_values)
 
         def expand_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             return (jnp.broadcast_to(inputs[0], sizes_),)
 
     return expand_op_jax_thunk
@@ -223,16 +216,16 @@ def reshape_op_translation(
     if shape.is_dynamic():
 
         def reshape_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             return (jnp.reshape(inputs[0], shape.evaluate(exec_ctx.symbol_values)),)
 
     else:
         shape_ = shape.evaluate(emit_ctx.compile_time_known_symbol_values)
 
         def reshape_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             return (jnp.reshape(inputs[0], shape_),)
 
     return reshape_op_jax_thunk
@@ -246,8 +239,8 @@ def permute_op_translation(
     dims = op.dims
 
     def permute_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jnp.permute_dims(inputs[0], dims),)
 
     return permute_op_jax_thunk
@@ -259,13 +252,13 @@ def cast_op_translation(
 ) -> Thunk[jnp.ndarray]:
     assert isinstance(op, top.CastOp)
 
-    from tempo.runtime.backends.jax.jax_backend import JaxBackend
+    backend = emit_ctx.backend
 
-    dtype = JaxBackend.to_backend_datatype(op.output_dtype)
+    dtype = backend.to_backend_datatype(op.output_dtype)
 
     def cast_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (inputs[0].astype(dtype),)
 
     return cast_op_jax_thunk
@@ -277,8 +270,8 @@ def _elementwise_unary_op_translation(
     jax_op: Callable[[jnp.ndarray], jnp.ndarray],
 ) -> Thunk[jnp.ndarray]:
     def elementwise_unary_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jax_op(inputs[0]),)
 
     return elementwise_unary_op_jax_thunk
@@ -291,8 +284,8 @@ def _elementwise_binary_op_translation(
 ) -> Thunk[jnp.ndarray]:
     # if emit_ctx.dg.parent_graph
     def elementwise_binary_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jax_op(inputs[0], inputs[1]),)
 
     return elementwise_binary_op_jax_thunk
@@ -305,8 +298,8 @@ def where_op_translation(
     assert isinstance(op, top.WhereOp)
 
     def where_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jnp.where(inputs[0], inputs[1], inputs[2]),)
 
     return where_op_jax_thunk
@@ -321,8 +314,8 @@ def sum_op_translation(
     keepdims = op.keepdim
 
     def sum_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         sum_res = jnp.sum(inputs[0], axis=dims, keepdims=keepdims)
         return (sum_res,)
 
@@ -338,8 +331,8 @@ def cumsum_op_translation(
     assert isinstance(dim, int)
 
     def cumsum_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jnp.cumsum(inputs[0], axis=dim),)
 
     return cumsum_op_jax_thunk
@@ -352,8 +345,8 @@ def matmul_op_translation(
     assert isinstance(op, top.MatMulOp)
 
     def matmul_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jnp.matmul(inputs[0], inputs[1]),)
 
     return matmul_op_jax_thunk
@@ -421,16 +414,16 @@ def conv_op_translation(
         fun = jit_conv_func if not op.transposed else jit_conv_t_func
 
         def conv_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             return fun(inputs[0], inputs[1])  # type: ignore
 
     else:
         fun = conv_t_func if op.transposed else conv_func
 
         def conv_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             input_, kernel_ = inputs
 
             input_ = input_.reshape(new_in_shape.evaluate(exec_ctx.symbol_values))
@@ -456,8 +449,8 @@ def max_op_translation(
     keepdims = op.keepdim
 
     def max_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         res = jnp.max(inputs[0], axis=dim, keepdims=keepdims)
 
         # NOTE: This already returns int32
@@ -475,8 +468,8 @@ def squeeze_op_translation(
     dim = op.dim
 
     def squeeze_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         # return (squeeze_p.impl(inputs[0], dimensions=(dim,)))
         return (jnp.squeeze(inputs[0], axis=dim),)
 
@@ -491,8 +484,8 @@ def unsqueeze_op_translation(
     dim = op.dim
 
     def unsqueeze_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jnp.expand_dims(inputs[0], axis=dim),)
 
     return unsqueeze_op_jax_thunk
@@ -506,8 +499,8 @@ def cat_op_translation(
     dim = op.dim
 
     def cat_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (jnp.concatenate(inputs, axis=dim),)
 
     return cat_op_jax_thunk
@@ -521,8 +514,8 @@ def gather_op_translation(
     dim = op.dim
 
     def gather_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         # Use `take_along_axis` to perform the gather
         gathered = jnp.take_along_axis(inputs[0], inputs[1], axis=dim)
 
@@ -547,8 +540,8 @@ def scatter_add_op_translation(
 
     # Seems to work for both static and dynamic shapes
     def scatter_add_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         sink, index, src = inputs[0], inputs[1], inputs[2]
 
         scatter_fn = partial(jax.lax.scatter_add, dimension_numbers=dnums)
@@ -577,8 +570,8 @@ def split_op_translation(
     assert isinstance(split_size, int)
 
     def split_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return tuple(jnp.split(inputs[0], indices_or_sections=num_splits, axis=dim))
 
     return split_op_jax_thunk
@@ -592,33 +585,24 @@ def index_slice_op_translation(
     dim = op.dim
     length = op.length
 
-    # NOTE: JAX is a bit schizo about inplace views, so we need to do some
-    #       gymnastics to get it to work.
-    # import torch
-    # import torch.utils.dlpack as tdl
-    # torch_from_dlpack = tdl.from_dlpack
-    # jax_from_dlpack = jax.dlpack.from_dlpack
-    # inplace_view = lambda x, idx: jax_from_dlpack(torch_from_dlpack(x)[idx])
-    # Unfortunately doesnt work:
-    # jaxlib.xla_extension.XlaRuntimeError: UNIMPLEMENTED: Only DLPack tensors with trivial
-    # (compact) striding are supported; i.e., tensors whose striding represents a transposition
-    # of the underlying buffer but not broadcasting. Dimensions were: [256,5,1,128],
-    # strides were [128000,128,1,1].
-
     dim_slice = jax.lax.dynamic_slice_in_dim
+
     if op.is_static():
-        assert isinstance(length, int)
+        assert isinstance(length, (int, ie.ConstInt)), (
+            f"length={length} must be an int, is {type(length)}"
+        )
+        length = int(length)
 
         def index_slice_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
-            return (dim_slice(inputs[0], inputs[1], length, dim),)
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
+            return (dim_slice(inputs[0], inputs[1], length, dim, allow_negative_indices=False),)
             # return (inputs[0].at[prebuilt_idx].get(),)
             # return (inplace_view(inputs[0], prebuilt_idx),)
 
     else:
 
-        def get_fast_eval(x: Union[int, ie.IntIndexValue]) -> Callable[[], int]:
+        def get_fast_eval(x: int | ie.IntIndexValue) -> Callable[[], int]:
             if isinstance(x, ie.IntIndexValue):
                 remapped = x.remap(emit_ctx.domain_map)
                 remapped.cache_codegenerated_eval(emit_ctx.loop_counters)
@@ -628,10 +612,12 @@ def index_slice_op_translation(
         length_eval = get_fast_eval(length)
 
         def index_slice_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             # return (inputs[0].at[nones + (slice(start_eval(), stop_eval(), step_eval()),)].get(),)
-            return (dim_slice(inputs[0], inputs[1], length_eval(), dim),)
+            return (
+                dim_slice(inputs[0], inputs[1], length_eval(), dim, allow_negative_indices=False),
+            )
             # return (
             #    inplace_view(
             #        inputs[0], nones + (slice(start_eval(), stop_eval(), step_eval()),)
@@ -648,15 +634,13 @@ def index_select_op_translation(
     assert isinstance(op, top.IndexSelectOp)
     dim = op.dim
 
-    from tempo.runtime.backends.jax.jax_backend import JaxBackend
-
-    device = JaxBackend.to_backend_device_obj(emit_ctx.dev)
+    device = emit_ctx.backend.to_backend_device_obj(emit_ctx.dev)
 
     jitted_take = jax.jit(partial(jnp.take, axis=dim), device=device, inline=True)
 
     def index_select_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         # return (jnp.take(inputs[0], inputs[1], axis=dim),)
         return (jitted_take(inputs[0], inputs[1]),)
 
@@ -675,8 +659,8 @@ def index_add_op_translation(
     if index_is_scalar:
 
         def index_add_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             calculated_dim = dim
             if dim < 0:
                 # To make sure negative dim actually represents the desired dim
@@ -689,8 +673,8 @@ def index_add_op_translation(
     else:
 
         def index_add_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             calculated_dim = dim
             if dim < 0:
                 shape_length = len(inputs[0].shape)
@@ -709,8 +693,8 @@ def merge_op_translation(
     assert isinstance(op, top.MergeOp)
 
     def merge_op_jax_thunk(
-        inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[jnp.ndarray, ...]:
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
         return (inputs[0],)
 
     return merge_op_jax_thunk
@@ -733,17 +717,38 @@ def val_to_val_op_translation(
     if jnp.isnan(in_val_array):
 
         def val_to_val_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             return (jnp.where(jnp.isnan(inputs[0]), out_val_array, inputs[0]),)
     else:
 
         def val_to_val_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[jnp.ndarray, ...]:
+            inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[jnp.ndarray, ...]:
             return (jnp.where(jnp.equal(inputs[0], in_val_array), out_val_array, inputs[0]),)
 
     return val_to_val_op_jax_thunk
+
+
+def sort_op_translation(
+    op: top.TensorOp,
+    emit_ctx: ThunkEmissionCtx[jnp.ndarray],
+) -> Thunk[jnp.ndarray]:
+    assert isinstance(op, top.SortOp)
+
+    dim = op.dim
+    stable = op.stable
+    descending = op.descending
+
+    def sort_op_jax_thunk(
+        inputs: tuple[jnp.ndarray, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[jnp.ndarray, ...]:
+        return (
+            jnp.sort(inputs[0], axis=dim, stable=stable, descending=descending),
+            jnp.argsort(inputs[0], axis=dim, stable=stable, descending=descending),
+        )
+
+    return sort_op_jax_thunk
 
 
 def pad_op_translation(
@@ -776,9 +781,9 @@ def pad_op_translation(
         padding = ((0, 0),) * op.dim + ((pad0, pad1),) + ((0, 0),) * (in_shape_len - op.dim - 1)
 
         def pad_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...],
+            inputs: tuple[jnp.ndarray, ...],
             exec_ctx: ThunkExecutionCtx,
-        ) -> Tuple[jnp.ndarray, ...]:
+        ) -> tuple[jnp.ndarray, ...]:
             return (
                 jnp.pad(
                     inputs[0],
@@ -794,35 +799,50 @@ def pad_op_translation(
             (0, 0),
         ] * (in_shape_len - op.dim - 1)
 
-        def get_fast_eval(
-            pad0: ie.IntIndexValueLike, pad1: ie.IntIndexValueLike
-        ) -> Callable[[], Tuple[Tuple[int, int], ...]]:
-            if isinstance(pad0, int):
-                pad0_eval = lambda: pad0
-            else:
-                pad0 = pad0.remap(emit_ctx.domain_map)  # type: ignore
-                pad0.cache_codegenerated_eval(emit_ctx.loop_counters)
-                pad0_eval = pad0.eval_fast
-            if isinstance(pad1, int):
-                pad1_eval = lambda: pad1
-            else:
-                pad1 = pad1.remap(emit_ctx.domain_map)  # type: ignore
-                pad1.cache_codegenerated_eval(emit_ctx.loop_counters)
-                pad1_eval = pad1.eval_fast
+        # def get_fast_eval(
+        #    pad0: ie.IntIndexValueLike, pad1: ie.IntIndexValueLike
+        # ) -> Callable[[], tuple[tuple[int, int], ...]]:
+        #    if isinstance(pad0, int):
+        #        pad0_eval = lambda: pad0
+        #    else:
+        #        pad0 = pad0.remap(emit_ctx.domain_map)  # type: ignore
+        #        pad0.cache_codegenerated_eval(emit_ctx.loop_counters)
+        #        pad0_eval = pad0.eval_fast
+        #    if isinstance(pad1, int):
+        #        pad1_eval = lambda: pad1
+        #    else:
+        #        pad1 = pad1.remap(emit_ctx.domain_map)  # type: ignore
+        #        pad1.cache_codegenerated_eval(emit_ctx.loop_counters)
+        #        pad1_eval = pad1.eval_fast
 
-            def eval_fast() -> Tuple[Tuple[int, int], ...]:
-                padding_loc[-1] = (pad0_eval(), pad1_eval())  # type: ignore
-                return tuple(reversed(padding_loc))
+        #    def eval_fast() -> tuple[tuple[int, int], ...]:
+        #        padding_loc[-1] = (pad0_eval(), pad1_eval())  # type: ignore
+        #        return tuple(reversed(padding_loc))
 
-            return eval_fast
+        #    return eval_fast
 
-        padding_eval = get_fast_eval(pad0, pad1)
+        # padding_eval = get_fast_eval(pad0, pad1)
+
+        # def pad_op_jax_thunk(
+        #    inputs: tuple[jnp.ndarray, ...],
+        #    exec_ctx: ThunkExecutionCtx,
+        # ) -> tuple[jnp.ndarray, ...]:
+        #    return (jnp.pad(inputs[0],
+        # pad_width=padding_eval(), mode=mode, constant_values=value),)
+
+        lifted_op_padding_0 = ie.lift_to_int_ie(op.padding[0])
+        lifted_op_padding_1 = ie.lift_to_int_ie(op.padding[1])
 
         def pad_op_jax_thunk(
-            inputs: Tuple[jnp.ndarray, ...],
+            inputs: tuple[jnp.ndarray, ...],
             exec_ctx: ThunkExecutionCtx,
-        ) -> Tuple[jnp.ndarray, ...]:
-            return (jnp.pad(inputs[0], pad_width=padding_eval(), mode=mode, constant_values=value),)
+        ) -> tuple[jnp.ndarray, ...]:
+            padding_loc[-1] = (
+                lifted_op_padding_0.evaluate(exec_ctx.symbol_values),
+                lifted_op_padding_1.evaluate(exec_ctx.symbol_values),
+            )  # type: ignore
+            padding = tuple(reversed(padding_loc))
+            return (jnp.pad(inputs[0], pad_width=padding, mode=mode, constant_values=value),)
 
     return pad_op_jax_thunk
 
@@ -835,7 +855,7 @@ def pad_op_translation(
 #    return op.desc.thunk_translation(op, emit_ctx)  # type: ignore
 
 
-TEMPO_TO_JAX: Dict[Type[top.TensorOp], OpToThunkTranslationFn[jnp.ndarray]] = {
+TEMPO_TO_JAX: dict[type[top.TensorOp], OpToThunkTranslationFn[jnp.ndarray]] = {
     top.RandOp: rand_op_translation,
     top.ConstOp: const_op_translation,
     top.EvalSymbolOp: eval_symbol_op_translation,
@@ -881,15 +901,26 @@ TEMPO_TO_JAX: Dict[Type[top.TensorOp], OpToThunkTranslationFn[jnp.ndarray]] = {
     # top.ExecuteDataflowSubgraphOp: execute_dataflow_op_translation,
     # top.UDFOp: udf_translation,
     top.IdentOp: lambda op, emit_ctx: lambda inputs, exec_ctx: inputs,
+    top.SortOp: sort_op_translation,
 }
 
 
-class JaxThunkEmitter(ThunkEmitter[jnp.ndarray]):
+class JaxThunkEmitter(ThunkEmitterBase[jnp.ndarray]):
     def _emit_thunk_for_op(
         self, op: top.TensorOp, ctx: ThunkEmissionCtx[jnp.ndarray]
     ) -> Thunk[jnp.ndarray]:
-        thunk = TEMPO_TO_JAX[type(op)](op, ctx)
-        return thunk
+        thunk_base = TEMPO_TO_JAX[type(op)](op, ctx)
+        if op.is_static() and not isinstance(op, top.RandOp):
+            jax_dev = ctx.backend.to_backend_device_obj(ctx.dev)
+            thunk_ = jax.jit(
+                lambda ins: thunk_base(ins, None),  # type: ignore
+                device=jax_dev,
+                inline=True,
+            )
+            thunk = lambda ins, ctx: thunk_(ins)
+        else:
+            thunk = thunk_base
+        return thunk  # type: ignore
 
 
 # RandOp

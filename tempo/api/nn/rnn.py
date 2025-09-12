@@ -1,5 +1,3 @@
-from typing import Tuple
-
 from tempo.api.nn.linear import Linear
 from tempo.api.nn.module import Module
 from tempo.api.recurrent_tensor import RecurrentTensor
@@ -77,8 +75,8 @@ class LSTMCell(Module):
         )
 
     def forward(
-        self, x: RecurrentTensor, hc: Tuple[RecurrentTensor, RecurrentTensor]
-    ) -> Tuple[RecurrentTensor, RecurrentTensor]:
+        self, x: RecurrentTensor, hc: tuple[RecurrentTensor, RecurrentTensor]
+    ) -> tuple[RecurrentTensor, RecurrentTensor]:
         h, c = hc
         gates: RecurrentTensor = self.ih_lin(x) + self.hh_lin(h)
         i, f, o, g = gates.chunk(4, dim=1)

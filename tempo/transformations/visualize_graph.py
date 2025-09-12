@@ -1,5 +1,4 @@
 import time
-from typing import Tuple
 
 from tempo.core.dependence_graph import PDG
 from tempo.core.dg_renderer import DGRenderer
@@ -14,7 +13,7 @@ class VisualizeGraph(Transformation):
     def name(self) -> str:
         return str(super().name() + "_" + self._name)
 
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         file_name = "./dgs/" + time.strftime("%Y%m%d-%H%M") + "/" + self._name
 
         renderer = DGRenderer(self.ctx, file_name)

@@ -1,5 +1,4 @@
 from itertools import combinations
-from typing import Tuple
 
 from tempo.core.dependence_graph import PDG
 from tempo.core.op_tags import NO_DEDUP_TAG
@@ -14,7 +13,7 @@ class DuplicateCodeElimination(Transformation):
     # find a node that has more than one dependent. If two of those dependents do the same
     # operation, on the same data, they are duplicates and we can remove one of them.
 
-    def _run(self) -> Tuple[PDG, bool]:  # noqa: C901
+    def _run(self) -> tuple[PDG, bool]:  # noqa: C901
         # new_dg = self.copy_dg()
         new_dg = self.ctx.dg
 

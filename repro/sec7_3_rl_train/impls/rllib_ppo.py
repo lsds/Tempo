@@ -30,7 +30,7 @@ class TrivialEnvGym(gym.Env):
 
     def __init__(
         self,
-        cfg: Dict = None,
+        cfg: dict = None,
     ):
         ep_len: int = cfg["ep_len"]
         observation_shape = cfg["obs_shape"]
@@ -61,7 +61,7 @@ class TrivialEnvGym(gym.Env):
     def seed(self, seed=None):
         return super().reset(seed=seed)
 
-    def reset(self, seed: int = None, options=None) -> Tuple[np.ndarray, Dict]:
+    def reset(self, seed: int = None, options=None) -> tuple[np.ndarray, dict]:
         if seed is not None:
             self.seed(seed)
         self.step_count = 0
@@ -72,7 +72,7 @@ class TrivialEnvGym(gym.Env):
         obs = np.full(self.obs_shape, self.state, dtype=np.float32)
         return obs, {}
 
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
         # if self.done:
         #    raise RuntimeError("Episode is done. Call reset() to start a new episode.")
 
@@ -103,11 +103,9 @@ class TrivialEnvGym(gym.Env):
 
         return obs, reward, terminated, truncated, {}
 
-    def render(self, mode: str = "human") -> None:
-        pass  # No rendering implemented
+    def render(self, mode: str = "human") -> None: ...  # No rendering implemented
 
-    def close(self):
-        pass  # No resources to clean up
+    def close(self): ...  # No resources to clean up
 
 
 # Define layer initialization function
@@ -206,7 +204,7 @@ def get_rllib_ppo_execute_fn(
     lambda_: float = 0.96,
     ent_coef: float = 0.01,
     vf_coef: float = 0.01,
-    obs_shape: Tuple[int, ...] = (3, 256, 256),
+    obs_shape: tuple[int, ...] = (3, 256, 256),
     ## RL-games-specific parameters
     minibatch_size: int = 32,
     **kwargs,

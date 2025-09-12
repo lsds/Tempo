@@ -112,7 +112,7 @@ ALIGNMENT_X_AFTER = np.array([0, 16, 33, 50, 67, 84, 100])
 # --- DATA LOADING ---
 def load_algo_specific_sched_data(
     base_path: str,
-) -> Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]]:
+) -> dict[str, dict[Any, dict[str, dict[str, Any]]]]:
     """Load algorithm-specific scheduling experiment data."""
     data = {}
 
@@ -140,11 +140,11 @@ def load_algo_specific_sched_data(
 
 
 def get_runtime_data(
-    data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]],
+    data: dict[str, dict[Any, dict[str, dict[str, Any]]]],
     objective: Any,
     use_caching: bool,
     restrict_to_three_iters: bool = False,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Get normalized monitor and log data for a specific configuration."""
     cache_str = "caching" if use_caching else "no_caching"
 
@@ -215,7 +215,7 @@ def get_merged_df(base_path: str) -> pd.DataFrame:
 
 # --- PLOTTING ---
 def plot_runtime_metrics(
-    data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]], out_pdf: str
+    data: dict[str, dict[Any, dict[str, dict[str, Any]]]], out_pdf: str
 ) -> plt.Figure:
     """Create runtime metrics plot showing GPU utilization over time for different objectives."""
     plt.rcParams.update({"font.size": 16})
@@ -306,7 +306,7 @@ def plot_runtime_metrics(
 
 
 def plot_iteration_time_comparison(
-    data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]], out_pdf: str
+    data: dict[str, dict[Any, dict[str, dict[str, Any]]]], out_pdf: str
 ) -> plt.Figure:
     """Create bar chart comparing iteration times across different objectives."""
     plt.rcParams.update({"font.size": 18})

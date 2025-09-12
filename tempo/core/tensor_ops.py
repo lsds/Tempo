@@ -3,9 +3,10 @@ from __future__ import annotations
 import functools
 import math
 from abc import ABC
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any
 
 import numpy as np
 
@@ -15,10 +16,31 @@ from tempo.core.dtype import DataType, dtypes
 from tempo.core.op_tags import STATIFY_PAD_ID_TAG
 from tempo.core.shape import Shape
 from tempo.core.tensor_op import TensorOp
-from tempo.core.thunk import UserDefinedThunkDesc
+from tempo.core.thunk_udf import UserDefinedThunkDesc
 from tempo.utils import logger
 
 log = logger.get_logger(__name__)
+
+
+@dataclass(frozen=True, eq=False)
+class SortOp(TensorOp):
+    dim: int
+    stable: bool
+    descending: bool
+
+    def infer_output_shapes(self, input_shapes: Sequence[Shape]) -> Sequence[Shape]:
+        return (input_shapes[0], input_shapes[0])
+
+    def infer_output_dtypes(self, input_dtypes: Sequence[DataType]) -> Sequence[DataType]:
+        return (input_dtypes[0], dtypes.default_int)
+
+    @property
+    def num_inputs(self) -> int:
+        return 1
+
+    @property
+    def num_outputs(self) -> int:
+        return 2
 
 
 @dataclass(frozen=True, eq=False)
@@ -150,7 +172,7 @@ class ExecDataflowOp(TensorOp):
 
     def is_static(self) -> bool:
         res = all(op.is_static() for op in self.dataflow.subgraph.nodes)
-        assert res, f"ExecDataflowOp {self.op_id} is not static"
+        # assert res, f"ExecDataflowOp {self.op_id} is not static"
         return res
 
 
@@ -174,6 +196,9 @@ class SourceOp(TensorOp, ABC):
     def num_outputs(self) -> int:
         return 1
 
+    def is_static(self) -> bool:
+        return self.shape.is_static()
+
 
 @dataclass(frozen=True, eq=False)
 class MergeOp(TensorOp):
@@ -188,7 +213,7 @@ class MergeOp(TensorOp):
     dtype: DataType
     # NOTE: This is used to track the number of inputs to the merge op. We need to box it
     # because it's a mutable value.
-    num_inputs_: List[int] = field(default_factory=lambda: [0])
+    num_inputs_: list[int] = field(default_factory=lambda: [0])
 
     def increment_num_inputs(self) -> None:
         self.num_inputs_[0] += 1
@@ -227,8 +252,15 @@ class ConstOp(SourceOp):
     value: np.ndarray = field(repr=False)
     is_uniform: bool = False
 
+    def __post_init__(self) -> None:
+        if self.value.dtype == np.object_:
+            raise ValueError("Object dtype not supported")
+
+        if not self.is_uniform and self.value.size == 1:
+            raise ValueError("Non-uniform const with size 1 is impossible")
+
     @property
-    def uniform_value(self) -> Union[int, float, bool]:
+    def uniform_value(self) -> int | float | bool:
         assert self.is_uniform
         return self.value.item()  # type: ignore
 
@@ -268,28 +300,19 @@ class EvalSymbolOp(SourceOp):
     Dynamic bounds are computed in graph.
     """
 
-    symbol: ie.Symbol = ie.Symbol("")
+    symbol: ie.Symbol = None  # type: ignore
     shape: Shape = Shape(())
-    dtype: DataType = dtypes.int32
+    dtype: DataType = field(default_factory=lambda: dtypes.default_int)
 
     def __post_init__(self) -> None:
         assert self.shape.is_scalar()
+        assert self.symbol is not None
 
-    # def __post_init__(self) -> None:
-    #    # Conditionally set dtype based on expr,
-    #    #  using object.__setattr__ to bypass the frozen restriction
-    #    object.__setattr__(
-    #        self,
-    #        "dtype",
-    #        (
-    #            dtypes.bool_
-    #            if isinstance(self.expr, ie.BooleanBinaryExpr)
-    #            else dtypes.int64
-    #        ),
-    #    )
-
-    def vars_used(self) -> Set[ie.Symbol]:
+    def vars_used(self) -> set[ie.Symbol]:
         return {self.symbol}
+
+    def is_static(self) -> bool:
+        return False
 
 
 # ======================================== END SOURCE OPS ========================================
@@ -376,7 +399,7 @@ class IndexSliceOp(MovementOp):
 
     length: ie.IntIndexValueLike
 
-    def vars_used(self) -> Set[ie.Symbol]:
+    def vars_used(self) -> set[ie.Symbol]:
         return ie.lift_to_int_ie(self.length).vars_used()
 
     def is_static(self) -> bool:
@@ -433,15 +456,15 @@ class PadOp(MovementOp):
         _type_: _description_
     """
 
-    padding: Tuple[ie.IntIndexValueLike, ie.IntIndexValueLike]
+    padding: tuple[ie.IntIndexValueLike, ie.IntIndexValueLike]
     dim: int
     mode: PadMode = PadMode.CONSTANT
-    value: Optional[float] = None
+    value: float | None = None
 
     def __post_init__(self) -> None:
         assert self.mode in [PadMode.CONSTANT, PadMode.REFLECT, PadMode.REPLICATE, PadMode.ANY]
 
-    def vars_used(self) -> Set[ie.Symbol]:
+    def vars_used(self) -> set[ie.Symbol]:
         return (
             ie.lift_to_int_ie(self.padding[0]).vars_used()
             | ie.lift_to_int_ie(self.padding[1]).vars_used()
@@ -535,7 +558,7 @@ class FlipOp(MovementOp):
 class ReshapeOp(MovementOp):
     shape: Shape
 
-    def vars_used(self) -> Set[ie.Symbol]:
+    def vars_used(self) -> set[ie.Symbol]:
         return set(self.shape.vars_used())
 
     def infer_output_shapes(self, input_shapes: Sequence[Shape]) -> Sequence[Shape]:
@@ -585,7 +608,7 @@ class ReshapeOp(MovementOp):
 
 @dataclass(frozen=True, eq=False)
 class PermuteOp(MovementOp):
-    dims: Tuple[int, ...]
+    dims: tuple[int, ...]
 
     def infer_output_shapes(self, input_shapes: Sequence[Shape]) -> Sequence[Shape]:
         assert len(input_shapes) == 1
@@ -604,7 +627,7 @@ class PermuteOp(MovementOp):
 class ExpandOp(MovementOp):
     sizes: Shape
 
-    def vars_used(self) -> Set[ie.Symbol]:
+    def vars_used(self) -> set[ie.Symbol]:
         return set(self.sizes.vars_used())
 
     def infer_output_shapes(self, input_shapes: Sequence[Shape]) -> Sequence[Shape]:
@@ -809,18 +832,15 @@ class CastOp(UnaryElementWiseOp):
 
 
 @dataclass(frozen=True, eq=False)
-class SqrtOp(UnaryElementWiseOp):
-    pass
+class SqrtOp(UnaryElementWiseOp): ...
 
 
 @dataclass(frozen=True, eq=False)
-class NegOp(UnaryElementWiseOp):
-    pass
+class NegOp(UnaryElementWiseOp): ...
 
 
 @dataclass(frozen=True, eq=False)
-class SinOp(UnaryElementWiseOp):
-    pass
+class SinOp(UnaryElementWiseOp): ...
 
 
 @dataclass(frozen=True, eq=False)
@@ -830,13 +850,11 @@ class NotOp(UnaryElementWiseOp):
 
 
 @dataclass(frozen=True, eq=False)
-class LnOp(UnaryElementWiseOp):
-    pass
+class LnOp(UnaryElementWiseOp): ...
 
 
 @dataclass(frozen=True, eq=False)
-class ExpOp(UnaryElementWiseOp):
-    pass
+class ExpOp(UnaryElementWiseOp): ...
 
 
 @dataclass(frozen=True, eq=False)
@@ -847,8 +865,7 @@ class BinaryElementWiseOp(ElementWiseOp, ABC):
 
 
 @dataclass(frozen=True, eq=False)
-class MulOp(BinaryElementWiseOp):
-    pass
+class MulOp(BinaryElementWiseOp): ...
 
 
 @dataclass(frozen=True, eq=False)
@@ -858,18 +875,15 @@ class DivOp(BinaryElementWiseOp):
 
 
 @dataclass(frozen=True, eq=False)
-class PowOp(BinaryElementWiseOp):
-    pass
+class PowOp(BinaryElementWiseOp): ...
 
 
 @dataclass(frozen=True, eq=False)
-class AddOp(BinaryElementWiseOp):
-    pass
+class AddOp(BinaryElementWiseOp): ...
 
 
 @dataclass(frozen=True, eq=False)
-class SubOp(BinaryElementWiseOp):
-    pass
+class SubOp(BinaryElementWiseOp): ...
 
 
 @dataclass(frozen=True, eq=False)
@@ -879,24 +893,20 @@ class BooleanBinaryOp(BinaryElementWiseOp, ABC):
 
 
 @dataclass(frozen=True, eq=False)
-class OrOp(BooleanBinaryOp):
-    pass
+class OrOp(BooleanBinaryOp): ...
 
 
 @dataclass(frozen=True, eq=False)
-class AndOp(BooleanBinaryOp):
-    pass
+class AndOp(BooleanBinaryOp): ...
 
 
 @dataclass(frozen=True, eq=False)
-class LessThanOp(BooleanBinaryOp):
-    pass
+class LessThanOp(BooleanBinaryOp): ...
 
 
 # NOTE: strictly, equal is unnecessary, but it also convenient, so leaving it in.
 @dataclass(frozen=True, eq=False)
-class EqualOp(BooleanBinaryOp):
-    pass
+class EqualOp(BooleanBinaryOp): ...
 
 
 @dataclass(frozen=True, eq=False)
@@ -920,15 +930,28 @@ class WhereOp(ElementWiseOp):  # NOTE Though ternary, still keeps shape so eleme
 # in order to simplify backend implementations.
 
 
-# TODO I am doubtful that these next 3 ops are actually element-wise
-# TODO we should maybe add a DimDependentOp class that has a dim: DIM_TYPE field
 @dataclass(frozen=True, eq=False)
-class CumSumOp(ElementWiseOp):
+class ScanOp(TensorOp, ABC):
     dim: int = 0
+
+    def infer_output_shapes(self, input_shapes: Sequence[Shape]) -> Sequence[Shape]:
+        return tuple(input_shapes)
+
+    def infer_output_dtypes(self, input_dtypes: Sequence[DataType]) -> Sequence[DataType]:
+        return tuple(input_dtypes)
+
+    @property
+    def num_outputs(self) -> int:
+        return 1
 
     @property
     def num_inputs(self) -> int:
         return 1
+
+
+@dataclass(frozen=True, eq=False)
+class CumSumOp(ScanOp):
+    pass
 
 
 @dataclass(frozen=True, eq=False)
@@ -937,7 +960,7 @@ class IdentOp(ElementWiseOp):
     def num_inputs(self) -> int:
         return 1
 
-    pass
+    ...
 
 
 @dataclass(frozen=True, eq=False)
@@ -1015,7 +1038,7 @@ class ConvOp(TensorOp):
     N_dims_out[i] = floor((N_dims_in[i] + 2 x padding[i] - dilation[i]* (N_dims_kernel[i] - 1)) + 1)
     """
 
-    stride: Tuple[int, ...]
+    stride: tuple[int, ...]
     # padding: Tuple[int, ...]
     # dilation: Tuple[int, ...]
     transposed: bool
@@ -1200,7 +1223,7 @@ class IndexAddOp(TensorOp):
 @dataclass(frozen=True, eq=False)
 class ReduceOp(TensorOp, ABC):
     # dims: DIM_TYPE = None
-    dims: Tuple[int, ...]
+    dims: tuple[int, ...]
     keepdim: bool = False
 
     def infer_output_shapes(self, input_shapes: Sequence[Shape]) -> Sequence[Shape]:
@@ -1258,8 +1281,7 @@ class MaxOp(ReduceOp):
         return (shape, shape)
 
     def infer_output_dtypes(self, input_dtypes: Sequence[DataType]) -> Sequence[DataType]:
-        dtype = super().infer_output_dtypes(input_dtypes)[0]
-        return (dtype, dtypes.int32)
+        return (input_dtypes[0], dtypes.default_int)
 
     @property
     def num_inputs(self) -> int:

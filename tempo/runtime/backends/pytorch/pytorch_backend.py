@@ -1,15 +1,17 @@
-import time
+from collections.abc import Callable, Sequence
 from functools import partial
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Type, Union
+from typing import Any
 
 import numpy as np
 import optree
 
 from tempo.core.analysis_ctx import AnalysisCtx
 from tempo.core.configs import ExecutionConfig
-from tempo.core.datatypes import OpId, PDGId
+from tempo.core.datatypes import OpId
 from tempo.core.dependence_graph import PDG
 from tempo.core.device import DeviceGroup, DeviceLike, device
+from tempo.core.dl_backend import DLBackend
+from tempo.core.dl_backends import DLBackendName
 from tempo.core.dtype import (
     INVERSE_TORCH_TO_TEMPO_DTYPES_DICT,
     TORCH_TO_TEMPO_DTYPES_DICT,
@@ -19,10 +21,10 @@ from tempo.core.dtype import (
 from tempo.core.fast_object_pool import ObjectPool
 from tempo.core.shape import StaticShape, StaticShapeLike
 from tempo.core.thunk import Thunk
+from tempo.core.thunk_emitter import ThunkEmitter
 from tempo.core.utils import bytes_to_human_readable
-from tempo.runtime.backends.backend import DLBackend, DLBackendName
-from tempo.runtime.thunk_emitter import ThunkEmitter
 from tempo.utils import logger
+from tempo.utils.common import Timer
 
 log = logger.get_logger(__name__)
 
@@ -44,19 +46,17 @@ try:
 
     op_src = torch.ops.aten
 
-    pinned_tensor_cache: Dict[Tuple[Tuple[int, ...], torch.dtype], ObjectPool[torch.Tensor]] = {}
-    pinned_memory_enabled = False
-
-    jit_kernel_cache: Dict[Tuple[PDGId, OpId], Thunk[torch.Tensor]] = {}
-
-    index_tensor: torch.Tensor = None
+    pinned_tensor_cache: dict[tuple[tuple[int, ...], torch.dtype], ObjectPool[torch.Tensor]] = {}
 
     class PyTorchBackend(DLBackend[torch.Tensor]):
         backend_cpu = torch.device("cpu")  # Set the class-level CPU device
+        pinned_memory_enabled = False
 
         # Use the imported dtype dicts
         TORCH_TO_TEMPO_DTYPES_DICT = TORCH_TO_TEMPO_DTYPES_DICT
         INVERSE_TORCH_TO_TEMPO_DTYPES_DICT = INVERSE_TORCH_TO_TEMPO_DTYPES_DICT
+
+        index_tensor: torch.Tensor = None  # type: ignore
 
         @staticmethod
         def configure(exec_cfg: ExecutionConfig) -> None:
@@ -89,6 +89,8 @@ try:
             np.random.seed(exec_cfg.seed)
             torch.manual_seed(exec_cfg.seed)
 
+            torch.use_deterministic_algorithms(False)
+            torch.backends.cudnn.deterministic = False
             torch.backends.cudnn.benchmark = True
             if exec_cfg.deterministic:
                 torch.use_deterministic_algorithms(True)
@@ -118,7 +120,7 @@ try:
             #    del buffer
 
             PyTorchBackend.index_tensor = torch.arange(
-                start=0, end=exec_cfg.M, dtype=torch.int32, device=dev_torch
+                start=0, end=exec_cfg.M, dtype=torch.int64, device=dev_torch
             )
 
             PyTorchBackend.pinned_memory_enabled = exec_cfg.torch_pinned_memory_enabled
@@ -143,26 +145,19 @@ try:
                     exec_cfg.torch_pinned_memory_enabled,
                     amount / (2**30) if exec_cfg.torch_pinned_memory_enabled else 0.1,
                 )
-                start_time = time.perf_counter_ns()
-                buffer = torch.empty(
-                    int(amount),
-                    dtype=torch.uint8,
-                    device=torch.device("cpu"),
-                    pin_memory=exec_cfg.torch_pinned_memory_enabled,
-                )
-                end_time = time.perf_counter_ns()
-                elapsed_s = (end_time - start_time) / 1e9
+                with Timer() as timer:
+                    buffer = torch.empty(
+                        int(amount),
+                        dtype=torch.uint8,
+                        device=torch.device("cpu"),
+                        pin_memory=exec_cfg.torch_pinned_memory_enabled,
+                    )
                 log.info(
                     "Preallocated %s bytes of CPU memory. This took %s seconds.",
                     bytes_to_human_readable(amount),
-                    elapsed_s,
+                    timer.elapsed_s,
                 )
                 del buffer
-
-        @staticmethod
-        def clear_jit_cache() -> None:
-            """Clear the jit cache."""
-            jit_kernel_cache.clear()
 
         @staticmethod
         def sync() -> None:
@@ -175,7 +170,7 @@ try:
             return DLBackendName.TORCH
 
         @staticmethod
-        def get_thunk_emitter_cls() -> Type[ThunkEmitter]:
+        def get_thunk_emitter_cls() -> type[ThunkEmitter]:
             from tempo.runtime.backends.pytorch.pytorch_thunk_emitter import PytorchThunkEmitter
 
             return PytorchThunkEmitter  # type:ignore
@@ -201,7 +196,7 @@ try:
             return tensor.device
 
         @staticmethod
-        def to_device(tensor: torch.Tensor, dev: Any) -> torch.Tensor:
+        def to_device(tensor: torch.Tensor, dev: Any, **kwargs: Any) -> torch.Tensor:
             if dev.type == tensor.device.type:
                 return tensor
             if dev.type == PyTorchBackend.backend_cpu.type:
@@ -234,30 +229,6 @@ try:
             )
             pinned_tensor_cache[key] = pool
             return pool
-            # example_shape = tensor.shape
-            # example_dtype = tensor.dtype
-            # example_device = tensor.device
-
-            ## Now
-            # print(
-            #    f"PREALLOCATING FOR example shape: {example_shape}, dtype: {example_dtype},
-            #  device: {example_device}"
-            # )
-            # expanded_shape = (1000,) + example_shape
-            # start_time = time.perf_counter_ns()
-            # t = torch.empty(
-            #    expanded_shape,
-            #    dtype=example_dtype,
-            #    device=PyTorchBackend.backend_cpu,
-            #    pin_memory=True,
-            # )
-            # end_time = time.perf_counter_ns()
-            # elapsed_ms = (end_time - start_time) / 1e6
-            ## Take 1000 views and store them in the pool
-            # pool.pool = [t[i] for i in range(1000)]
-            # print(f"Time taken - FILLING POOL: {elapsed_ms} ms")
-            # end_time = time.perf_counter_ns()
-            return pool
 
         @staticmethod
         def to_backend_datatype(dtype: DataType) -> Any:
@@ -285,27 +256,27 @@ try:
             return torch.from_dlpack(ext_tensor)
 
         @staticmethod
-        def zeros_tensor(shape: Tuple[int, ...], dtype: Any, dev: Any) -> torch.Tensor:
+        def zeros_tensor(shape: tuple[int, ...], dtype: Any, dev: Any) -> torch.Tensor:
             return torch.zeros(size=shape, dtype=dtype, device=dev)
 
         @staticmethod
-        def ones_tensor(shape: Tuple[int, ...], dtype: Any, dev: Any) -> torch.Tensor:
+        def ones_tensor(shape: tuple[int, ...], dtype: Any, dev: Any) -> torch.Tensor:
             return torch.ones(size=shape, dtype=dtype, device=dev)
 
         @staticmethod
         def full_tensor(
             fill_value: Any,
-            shape: Tuple[int, ...] = SCALAR_SHAPE,
-            dtype: Optional[Any] = None,
-            device: Optional[Any] = None,
+            shape: StaticShapeLike | None = None,
+            dtype: Any | None = None,
+            device: Any | None = None,
         ) -> torch.Tensor:
             return torch.full(size=shape, fill_value=fill_value, dtype=dtype, device=device)
 
         @staticmethod
         def fast_int_lift(
             fill_value: int,
-            dtype: Optional[Any] = None,
-            device: Optional[Any] = None,
+            dtype: Any | None = None,
+            device: Any | None = None,
         ) -> torch.Tensor:
             # return torch.full(size=(), fill_value=fill_value, dtype=dtype, device=device)
             # TODO: preallocate an arrange tensor of size M, return a view at index fill_value?
@@ -317,9 +288,9 @@ try:
         @staticmethod
         def lift_tensor(
             data: Any,
-            shape: Optional[Tuple[int, ...]] = None,
-            dtype: Optional[Any] = None,
-            device: Optional[Any] = None,
+            shape: StaticShapeLike | None = None,
+            dtype: Any | None = None,
+            device: Any | None = None,
         ) -> torch.Tensor:
             # If already a torch tensor, just move/cast as needed
             # if isinstance(data, torch.Tensor):
@@ -370,31 +341,31 @@ try:
             return partial(op_src.stack, dim=0)  # type:ignore
 
         @staticmethod
-        def reshape(tensor: torch.Tensor, shape: Tuple[int, ...]) -> torch.Tensor:
+        def reshape(tensor: torch.Tensor, shape: StaticShapeLike) -> torch.Tensor:
             return op_src.reshape(tensor, shape)  # type:ignore
 
         @staticmethod
-        def permute(tensor: torch.Tensor, axes: Tuple[int, ...]) -> torch.Tensor:
+        def permute(tensor: torch.Tensor, axes: Sequence[int]) -> torch.Tensor:
             return op_src.permute(tensor, axes)  # type:ignore
+
+        @staticmethod
+        def to_numpy(tensor: torch.Tensor) -> np.ndarray:
+            return tensor.detach().cpu().numpy()
 
         @staticmethod
         def get_inplace_set_fn(
             tensor: torch.Tensor,
-            item: Sequence[Union[int, slice]],
+            item: Sequence[int | slice],
             value: torch.Tensor,
             traceable: bool = False,
-        ) -> Callable[[torch.Tensor, Sequence[Union[int, slice]], torch.Tensor], torch.Tensor]:
+        ) -> Callable[[torch.Tensor, Sequence[int | slice], torch.Tensor], torch.Tensor]:
             if traceable:
 
-                def fn_(
-                    t: torch.Tensor, i: Sequence[Union[int, slice]], v: torch.Tensor
-                ) -> torch.Tensor:
+                def fn_(t: torch.Tensor, i: Sequence[int | slice], v: torch.Tensor) -> torch.Tensor:
                     return torch.index_put_(t, i, v)
             else:
 
-                def fn_(
-                    t: torch.Tensor, i: Sequence[Union[int, slice]], v: torch.Tensor
-                ) -> torch.Tensor:
+                def fn_(t: torch.Tensor, i: Sequence[int | slice], v: torch.Tensor) -> torch.Tensor:
                     t[i] = v
                     return t
 
@@ -406,9 +377,9 @@ try:
 
         @staticmethod
         def _symbolically_trace_tempo_thunk(
-            execution_func: Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]],
-            inputs: Tuple[torch.Tensor, ...],
-        ) -> Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]]:
+            execution_func: Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]],
+            inputs: Sequence[torch.Tensor],
+        ) -> Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]]:
             from torch.fx import symbolic_trace
             from torch.fx._symbolic_trace import PH
 
@@ -420,33 +391,40 @@ try:
                 traced_func_ = symbolic_trace(execution_func)
 
             # print(f"traced_func_.code={traced_func_.code}")
+            # for attr in dir(traced_func_):
+            #    if attr.startswith("_tensor_constant"):
+            #        attr_val = getattr(traced_func_, attr)
+            #        if isinstance(attr_val, int) or (
+            #            isinstance(attr_val, torch.Tensor) and attr_val.numel() == 1
+            #        ):
+            #            print(f"attr={attr} = {attr_val}")
             traced_func = traced_func_.forward  # type: ignore
 
             return traced_func  # type: ignore
 
         @staticmethod
         def trace_codegen_thunk_jit_trace(
-            execution_func: Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]],
+            execution_func: Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]],
             op_id: OpId,
             exec_cfg: ExecutionConfig,
-            inputs: Tuple[torch.Tensor, ...],
+            example_inputs: Sequence[torch.Tensor],
             donatable_args: Sequence[int],
-        ) -> Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]]:
+        ) -> Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]]:
             # execution_func = lambda ins: execution_func((i.contiguous() for i in ins))
             # execution_func = lambda ins: tuple(o.contiguous() for o in execution_func_(ins))
 
-            if len(inputs) == 0:
+            if len(example_inputs) == 0:
                 # If it has no inputs, we cannot trace it using tracer objects.
                 # Symbolic tracing instead
                 traced_func = execution_func
             else:
                 execution_func = PyTorchBackend._symbolically_trace_tempo_thunk(
-                    execution_func, inputs
+                    execution_func, example_inputs
                 )
 
                 traced_func = torch.jit.trace(
                     execution_func,
-                    (inputs,),
+                    (example_inputs,),
                     strict=True,
                     check_trace=False,
                     optimize=True,
@@ -468,12 +446,12 @@ try:
 
         @staticmethod
         def trace_codegen_thunk_symbolic_trace_only(
-            execution_func: Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]],
+            execution_func: Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]],
             op_id: OpId,
             exec_cfg: ExecutionConfig,
-            inputs: Tuple[torch.Tensor, ...],
+            inputs: Sequence[torch.Tensor],
             donatable_args: Sequence[int],
-        ) -> Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]]:
+        ) -> Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]]:
             # NOTE: Unlike torch.jit.trace, torch.fx.symbolic_trace performs actual tracing
             # of the function, and does not analyse any other code. This means that as a result,
             # we get only the operations that are executed in the function, and not any other
@@ -482,12 +460,12 @@ try:
 
         @staticmethod
         def trace_codegen_thunk_torch_compile(
-            execution_func: Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]],
+            execution_func: Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]],
             op_id: OpId,
             exec_cfg: ExecutionConfig,
-            inputs: Tuple[torch.Tensor, ...],
+            inputs: Sequence[torch.Tensor],
             donatable_args: Sequence[int],
-        ) -> Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]]:
+        ) -> Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]]:
             # NOTE: Can only set mode or options. Modes set these options:
             # DEFAULTS:
             # {
@@ -579,12 +557,12 @@ try:
 
         @staticmethod
         def trace_codegen_thunk_torch_export(
-            execution_func: Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]],
+            execution_func: Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]],
             op_id: OpId,
             exec_cfg: ExecutionConfig,
-            inputs: Tuple[torch.Tensor, ...],
+            inputs: Sequence[torch.Tensor],
             donatable_args: Sequence[int],
-        ) -> Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]]:
+        ) -> Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]]:
             # NOTE: Unlike torch.jit.trace, torch.fx.symbolic_trace performs actual tracing
             # of the function, and does not analyse any other code. This means that as a result,
             # we get only the operations that are executed in the function, and not any other
@@ -634,19 +612,15 @@ try:
 
         @staticmethod
         def trace_codegen_thunk(
-            execution_func: Callable[[Tuple[torch.Tensor, ...]], Tuple[torch.Tensor, ...]],
+            execution_func: Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]],
             op_id: OpId,
             dev: DeviceGroup,
             exec_cfg: ExecutionConfig,
-            inputs: Tuple[torch.Tensor, ...],
+            inputs: Sequence[torch.Tensor],
             donatable_args: Sequence[int],
             analysis_ctx: AnalysisCtx,
             parent_graph: PDG,
         ) -> Thunk[torch.Tensor]:
-            if (parent_graph.pdg_id, op_id) in jit_kernel_cache:
-                # log.info("Using cached JIT kernel for %s", op_id)
-                return jit_kernel_cache[(parent_graph.pdg_id, op_id)]
-
             # torch_dev = PyTorchBackend.to_backend_device_obj(dev)
 
             # def wrapped_fun(inputs_: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, ...]:
@@ -657,8 +631,6 @@ try:
             #    return tuple(o.contiguous() for o in outs)
 
             wrapped_fun = execution_func
-
-            log.info("Jitting (torch) op %s ", op_id)
 
             with torch.no_grad():
                 # NOTE: we have to do this because torch offers no way to set the device
@@ -689,10 +661,9 @@ try:
             # log.info(
             #   "Warming up the kernel for %s with input types %s", op_id, [type(i) for i in inputs]
             # )
-            fun(inputs)
+            # fun(inputs)
             # log.info("Kernel warmed up for %s", op_id)
             fn = lambda ins, ctx: fun(ins)  # type: ignore
-            jit_kernel_cache[(parent_graph.pdg_id, op_id)] = fn
 
             return fn
 

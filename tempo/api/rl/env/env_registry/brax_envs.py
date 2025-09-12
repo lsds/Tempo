@@ -5,7 +5,7 @@ from tempo.api.rl.env.wrappers import (
     DoneToTermTruncAPIConverterWrapper,
     ToBackendTensorTWrapper,
 )
-from tempo.runtime.backends.backend import DLBackendName
+from tempo.core.dl_backends import DLBackendName
 from tempo.utils import logger
 
 # Suppress specific deprecation warnings from JAX and related libraries
@@ -50,7 +50,7 @@ try:
 
         env = DoneToTermTruncAPIConverterWrapper(env, ctx.exec_cfg)
 
-        if DLBackendName.str_to_enum(ctx.exec_cfg.backend) != DLBackendName.JAX:
+        if ctx.exec_cfg.get_canonical_backend_name() != DLBackendName.JAX:
             to_backend = lambda x: ctx.backend.to_device(
                 ctx.backend.from_dlpack(x), ctx.exec_cfg.dev
             )

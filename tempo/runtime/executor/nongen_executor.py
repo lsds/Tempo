@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from collections.abc import Callable, Generator, MutableMapping
 
 # from multiprocessing.queues import Queue
 from functools import partial
-from typing import Callable, Dict, Generator, List, Optional, Type
 
 from tempo.core import index_expr as ie
 from tempo.core.datatypes import BackendTensorT, OpId
+from tempo.core.dl_backend import DLBackend
 from tempo.core.schedule.execution_schedule import (
     DeallocInstruction,
     ExecInstruction,
@@ -21,7 +21,6 @@ from tempo.core.schedule.execution_schedule import (
     SequentialBlock,
 )
 from tempo.core.symbol_dict import SymbolDict
-from tempo.runtime.backends.backend import DLBackend
 from tempo.runtime.executor.executor import Executor, ExecutorCtx
 from tempo.runtime.thunk_launcher import ThunkLauncherFactory, ThunkLauncherFactoryCtx
 from tempo.utils import logger
@@ -31,25 +30,25 @@ from tempo.utils import logger
 log = logger.get_logger(__name__)
 
 
-dispatch_map: Dict[  # type: ignore
+dispatch_map: dict[  # type: ignore
     InstructionType,
     Callable[
         [
             ScheduleItem,
             MutableMapping[ie.Symbol, int],
-            Type[DLBackend],
+            type[DLBackend],
         ],
-        Generator[bool, None, None],
+        Generator[bool],
     ],
 ] = {}
 
 
 class ExecOpProfiler:
-    def __init__(self, sync_after: bool = False, dl_backend: DLBackend = None) -> None:
-        self.ts: Dict[OpId, List[int]] = {}
+    def __init__(self, sync_after: bool = False, dl_backend: DLBackend | None = None) -> None:
+        self.ts: dict[OpId, list[int]] = {}
         self.sync_after = sync_after
         self.dl_backend = dl_backend
-        self._current_op: Optional[OpId] = None
+        self._current_op: OpId | None = None
 
     def start(self, op_id: OpId) -> None:
         import time
@@ -61,6 +60,7 @@ class ExecOpProfiler:
         import time
 
         if self.sync_after:
+            assert self.dl_backend is not None
             self.dl_backend.sync()
 
         elapsed = time.perf_counter_ns() - self._start_time
@@ -69,7 +69,7 @@ class ExecOpProfiler:
         self.ts[op_id].append(elapsed)
         self._current_op = None
 
-    def dump(self, file_path: Optional[str] = None) -> Dict[OpId, str]:
+    def dump(self, file_path: str | None = None) -> dict[OpId, str]:
         import json
 
         import numpy as np
@@ -92,7 +92,7 @@ class ExecOpProfiler:
 def _execute_op_instr_with_profiler(
     schedule_item: ExecInstruction,
     loop_counters_and_bound: MutableMapping[ie.Symbol, int],
-    bend: Type[DLBackend],
+    bend: type[DLBackend],
     profiler: ExecOpProfiler,
 ) -> None:
     op_id = schedule_item.op_id
@@ -104,7 +104,7 @@ def _execute_op_instr_with_profiler(
 def _execute_op_instr_with_try_catch(
     schedule_item: ExecInstruction,
     loop_counters_and_bound: MutableMapping[ie.Symbol, int],
-    bend: Type[DLBackend],
+    bend: type[DLBackend],
 ) -> None:
     # log.info("Executing thunk with op_id=%s at %s",
     # schedule_item.op_id, dict(loop_counters_and_bound.items()))
@@ -123,7 +123,7 @@ def _execute_op_instr_with_try_catch(
 def _execute_op_instr(
     schedule_item: ExecInstruction,
     loop_counters_and_bound: MutableMapping[ie.Symbol, int],
-    bend: Type[DLBackend],
+    bend: type[DLBackend],
 ) -> None:
     # log.info("Executing thunk with op_id=%s at %s",
     # schedule_item.op_id, dict(loop_counters_and_bound.items()))
@@ -142,7 +142,7 @@ def _execute_op_instr(
 def _execute_dealloc_instr(
     schedule_item: DeallocInstruction,
     loop_counters_and_bounds: MutableMapping[ie.Symbol, int],
-    bend: Type[DLBackend],
+    bend: type[DLBackend],
 ) -> None:
     schedule_item.thunk(schedule_item.index.eval_fast())  # type: ignore
 
@@ -150,7 +150,7 @@ def _execute_dealloc_instr(
 def _execute_offload_instr(
     schedule_item: OffloadInstruction,
     loop_counters_and_bounds: MutableMapping[ie.Symbol, int],
-    bend: Type[DLBackend],
+    bend: type[DLBackend],
 ) -> None:
     schedule_item.thunk(schedule_item.index.eval_fast())  # type: ignore
 
@@ -158,7 +158,7 @@ def _execute_offload_instr(
 def _execute_fetch_instr(
     schedule_item: FetchInstruction,
     loop_counters_and_bounds: MutableMapping[ie.Symbol, int],
-    bend: Type[DLBackend],
+    bend: type[DLBackend],
 ) -> None:
     schedule_item.thunk(schedule_item.index.eval_fast())  # type: ignore
 
@@ -166,7 +166,7 @@ def _execute_fetch_instr(
 def _execute_sequential_block(
     schedule_item: SequentialBlock,
     loop_counters_and_bounds: MutableMapping[ie.Symbol, int],
-    bend: Type[DLBackend],
+    bend: type[DLBackend],
 ) -> None:
     for inner_item in schedule_item.inner_block:
         if inner_item.instr_type == InstructionType.EXEC:
@@ -191,7 +191,7 @@ def _execute_sequential_block(
 def _execute_if_guard(
     schedule_item: IfGuard,
     loop_counters_and_bounds: MutableMapping[ie.Symbol, int],
-    bend: Type[DLBackend],
+    bend: type[DLBackend],
 ) -> None:
     cond: bool = schedule_item.if_cond.eval_fast()
     if cond:
@@ -214,7 +214,7 @@ def _execute_if_guard(
 def _execute_for_loop(  # noqa: C901
     schedule_item: ForLoop,
     loop_counters_and_bounds: MutableMapping[ie.Symbol, int],
-    bend: Type[DLBackend],
+    bend: type[DLBackend],
 ) -> None:
     # TODO logging
     counter_symbol = schedule_item.counter
@@ -349,14 +349,12 @@ class NonGenInterpreterExecutor(Executor[BackendTensorT]):
         thunk_emitter = thunk_emitter_class()
 
         ctx = ThunkLauncherFactoryCtx(
-            self.dg,
             thunk_emitter,
             self.executor_ctx.external_state_store,
             self.executor_ctx.tensor_store,
-            self.executor_ctx.exec_cfg,
             self.backend,
             self.loop_counters_and_bounds,
-            self.executor_ctx.analysis_ctx,
+            self.executor_ctx.compilation_ctx,
         )
         factory = ThunkLauncherFactory(ctx)
 
@@ -417,15 +415,14 @@ class NonGenInterpreterExecutor(Executor[BackendTensorT]):
 
         return loop_counters_and_bounds
 
-    def shutdown(self) -> None:
-        pass
+    def shutdown(self) -> None: ...
 
     def reset(self) -> None:
         # TODO fix the close issue with envs
         # self.executor_ctx.external_state_store.global_clean_up()
         self.executor_ctx.tensor_store.flush()
 
-    def tick(self) -> Generator[bool, None, None]:
+    def tick(self) -> Generator[bool]:
         raise NotImplementedError
 
     def execute(self) -> None:
@@ -445,4 +442,4 @@ class NonGenInterpreterExecutor(Executor[BackendTensorT]):
 
     def execute_until_barrier(self, barrier_name: str) -> None:
         # TODO
-        pass
+        ...

@@ -1,6 +1,7 @@
 import numbers
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, ClassVar, Dict, Optional, Sequence
+from typing import Any, ClassVar
 
 import numpy as np
 import optree
@@ -59,11 +60,11 @@ class DataLoaderDesc:
     _id_counter: ClassVar[int] = 0
 
     dataset_factory: Callable[[], TorchDataset]
-    batch_size: Optional[int]
+    batch_size: int | None
     shuffle: bool
     num_workers: int
     dataset_info: DatasetInfo
-    kwargs: Dict[str, Any]
+    kwargs: dict[str, Any]
     unique_id: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:

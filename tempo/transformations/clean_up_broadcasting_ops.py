@@ -1,5 +1,4 @@
 from dataclasses import replace
-from typing import Tuple
 
 import numpy as np
 
@@ -9,7 +8,7 @@ from tempo.core.datatypes import OpInId, OpOutId
 from tempo.core.dependence_graph import PDG, OpData
 from tempo.core.domain import Domain
 from tempo.core.shape import Shape
-from tempo.core.symbolic_tensor import _get_symbolic_tensor_for_op_output
+from tempo.core.symbolic_tensor import get_symbolic_tensor_for_op_output
 from tempo.transformations.compilation_pass import CompilationCtx, Transformation
 from tempo.utils import logger
 
@@ -37,7 +36,7 @@ def _rem_elementwise_bcast(dg: PDG, op: top.TensorOp) -> bool:  # noqa: C901
                     # This is because it reduces the load on this elementwise op, and may
                     # allow for further optimizations.
                     op_data.output_shapes[OpOutId(0)] = bcast_shape
-                    op_symb_t = _get_symbolic_tensor_for_op_output(dg, op, OpOutId(0))
+                    op_symb_t = get_symbolic_tensor_for_op_output(dg, op, OpOutId(0))
                     expanded = op_symb_t.expand(original_out_shape)
                     dg.move_dependents(op, expanded.op)
                     log.debug(
@@ -88,7 +87,7 @@ def _rem_elementwise_bcast(dg: PDG, op: top.TensorOp) -> bool:  # noqa: C901
                 bcast_shape = Shape.broadcast(*op_input_shapes)
                 if bcast_shape != original_out_shape:
                     op_data.output_shapes[OpOutId(0)] = bcast_shape
-                    op_symb_t = _get_symbolic_tensor_for_op_output(dg, op, OpOutId(0))
+                    op_symb_t = get_symbolic_tensor_for_op_output(dg, op, OpOutId(0))
 
                     ## NOTE: if expand is not needed, this will return the original op
                     expanded = op_symb_t.expand(original_out_shape)
@@ -139,7 +138,7 @@ def _rem_matmul_bcast(dg: PDG, op: top.MatMulOp) -> bool:
             if inferred_shape != original_out_shape:
                 ## NOTE: Have to change shape b4 get_symbolic_tensor_for_op_output
                 op_op_data.output_shapes[OpOutId(0)] = inferred_shape
-                op_symb_t = _get_symbolic_tensor_for_op_output(dg, op, OpOutId(0))
+                op_symb_t = get_symbolic_tensor_for_op_output(dg, op, OpOutId(0))
                 expanded = op_symb_t.expand(original_out_shape)
                 dg.move_dependents(op, expanded.op)
 
@@ -161,7 +160,7 @@ class CleanUpBroadcastingOps(Transformation):
     def __init__(self, ctx: CompilationCtx) -> None:
         super().__init__(ctx)
 
-    def _run(self) -> Tuple[PDG, bool]:  # noqa: C901
+    def _run(self) -> tuple[PDG, bool]:  # noqa: C901
         new_dg = self.ctx.dg
         glob.set_active_dg(new_dg)
 

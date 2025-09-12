@@ -1,6 +1,7 @@
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Tuple
+from collections.abc import Callable, Sequence
 
 from repro.data_loading import ERROR_TXT_FILE, LOG_CSV_FILE, MONITOR_CSV_FILE
 from repro.launch_lib import StatsLogger
@@ -42,22 +43,22 @@ SYS = [
 ]
 
 
-def is_small_to_med_scale_experiment(obs_shape: Tuple[int, ...]) -> bool:
+def is_small_to_med_scale_experiment(obs_shape: tuple[int, ...]) -> bool:
     return obs_shape[-1] == 4
 
 
-def is_large_obs(obs_shape: Tuple[int, ...]) -> bool:
+def is_large_obs(obs_shape: tuple[int, ...]) -> bool:
     return obs_shape[-1] >= 128
 
 
 def sweep_param(
     param_name: str,
-    values: List[Any],
-    params_base: Dict[str, Any],
+    values: list[Any],
+    params_base: dict[str, Any],
     base_path: str,
     exclude_sys: Sequence[str] = (),
-    name_function: Callable[[Dict[str, Any]], str] = None,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    name_function: Callable[[dict[str, Any]], str] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     par = []
     seq = []
 
@@ -180,7 +181,7 @@ def run_experiment(  # noqa: C901
         stats_logger.finish(quiet=True)
 
 
-def get_experiment_name_and_results_path(base_path: str, kwargs: Dict[str, Any]) -> Tuple[str, str]:
+def get_experiment_name_and_results_path(base_path: str, kwargs: dict[str, Any]) -> tuple[str, str]:
     s = kwargs["sys_cfg"]
     nl = kwargs["num_layers"]
     pp = kwargs["params_per_layer"]
@@ -196,7 +197,7 @@ def get_experiment_name_and_results_path(base_path: str, kwargs: Dict[str, Any])
 
 
 def name_from_params(
-    s: str, nl: int, pp: int, ne: int, el: int, os: Tuple[int, ...], ca: bool = True
+    s: str, nl: int, pp: int, ne: int, el: int, os: tuple[int, ...], ca: bool = True
 ) -> str:
     os_str = "x".join(map(str, os))
     name = f"{s}_num_layers{nl}_params_per_layer{pp}_ep_len{el}_num_envs{ne}_obs_shape{os_str}"

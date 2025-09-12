@@ -1,8 +1,5 @@
-from typing import Dict, Set, Tuple
-
 import islpy as isl
 
-from tempo.core import isl_types as islt
 from tempo.core import tensor_ops as top
 from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.datatypes import OpInId, OpOutId
@@ -17,9 +14,9 @@ log = logger.get_logger(__name__)
 def update_domain(  # noqa: C901
     new_dg: PDG,
     op: top.TensorOp,
-    params_set: islt.Set,
-    bounds_cache: Dict[top.TensorOp, islt.Set],
-    map_cache: Dict[Tuple[top.TensorOp, OpOutId, top.TensorOp, OpInId], islt.Map],
+    params_set: isl.Set,
+    bounds_cache: dict[top.TensorOp, isl.Set],
+    map_cache: dict[tuple[top.TensorOp, OpOutId, top.TensorOp, OpInId], isl.Map],
     ctx: CompilationCtx,
 ) -> bool:
     op = new_dg.ops_by_id[op.op_id].op
@@ -87,7 +84,7 @@ class PropagateDomainConditions(Transformation):
     This process continues until no more domain conditions can be propagated.
     """
 
-    def _run(self) -> Tuple[PDG, bool]:  # noqa: C901
+    def _run(self) -> tuple[PDG, bool]:  # noqa: C901
         new_dg = self.ctx.dg
         isl_ctx = self.ctx.analysis_ctx.isl_ctx
 
@@ -95,15 +92,15 @@ class PropagateDomainConditions(Transformation):
         params_set = isl.Set.read_from_str(isl_ctx, f"[{universe_params_str}] -> {{ : }}")
 
         modified = False
-        bounds_cache: Dict[top.TensorOp, islt.Set] = {}
-        map_cache: Dict[Tuple[top.TensorOp, OpOutId, top.TensorOp, OpInId], islt.Map] = {}
+        bounds_cache: dict[top.TensorOp, isl.Set] = {}
+        map_cache: dict[tuple[top.TensorOp, OpOutId, top.TensorOp, OpInId], isl.Map] = {}
 
         # This loop will keep going until no more domain conditions can be propagated
         trip_count = 0
         modifications = 0
-        to_propagate: Set[top.TensorOp] = set(new_dg.nodes)
+        to_propagate: set[top.TensorOp] = set(new_dg.nodes)
         while to_propagate:
-            new_to_propagate: Set[top.TensorOp] = set()
+            new_to_propagate: set[top.TensorOp] = set()
             for op in to_propagate:
                 modded = update_domain(new_dg, op, params_set, bounds_cache, map_cache, self.ctx)
                 if modded:

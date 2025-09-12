@@ -68,7 +68,7 @@ def run_experiment(  # noqa: C901
 # NOTE: Section 7.3: Fig 14
 def build_algo_specific_sched_obs_configs(
     results_path: str = DEFAULT_RESULTS_PATH,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     base_path = str(Path(results_path) / ALGO_SPECIFIC_SCHED_DIR)
 
     params_base = {

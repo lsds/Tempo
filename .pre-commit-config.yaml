@@ -1,17 +1,23 @@
-default_stages: [ "commit", "commit-msg", "push" ]
+default_stages: ["pre-commit", "commit-msg", "pre-push"]
 default_language_version:
   python: python3
 
 exclude: ^examples/llama/
 
 repos:
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.20.0
+    hooks:
+      - id: pyupgrade
+        args: [--py310-plus]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
     rev: v0.12.1
     hooks:
       # Run the linter.
       - id: ruff
-        args: [ --fix ]
+        args: [--fix]
         files: ^tempo/
       # Run the formatter.
       - id: ruff-format
@@ -29,10 +35,10 @@ repos:
         name: "Mixed line ending fixer"
       - id: check-yaml
         name: "Yaml checker"
-        args: [ '--unsafe' ]
+        args: ["--unsafe"]
       - id: trailing-whitespace
         name: "Trailing whitespace fixer"
-        args: ['--markdown-linebreak-ext=md']
+        args: ["--markdown-linebreak-ext=md"]
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.16.1
@@ -41,15 +47,13 @@ repos:
         name: "Static type checker"
         files: tempo/.*\.py$
 
-
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
     rev: v9.22.0
     hooks:
       - id: commitlint
         name: "Commit linter"
-        stages: [ commit-msg ]
-        additional_dependencies: [ '@commitlint/config-conventional' ]
-
+        stages: [commit-msg]
+        additional_dependencies: ["@commitlint/config-conventional"]
 
   - repo: https://github.com/kynan/nbstripout
     rev: 0.8.1

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence
+from typing import Any
 
 from torch.utils.data import Dataset as TorchDataset
 
@@ -21,7 +22,7 @@ class DataLoader:
     @staticmethod
     def from_torch_dataset(
         dataset_factory: Callable[[], TorchDataset],
-        batch_size: Optional[int] = None,
+        batch_size: int | None = None,
         shuffle: bool = False,
         num_workers: int = 0,
         **kwargs: Any,

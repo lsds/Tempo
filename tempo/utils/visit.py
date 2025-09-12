@@ -33,7 +33,7 @@ def when(param_type):
     return f
 
 
-class Dispatcher(object):
+class Dispatcher:
     def __init__(self, param_name, fn):
         inspect.currentframe().f_back.f_back
         self.param_index = self.__argspec(fn).args.index(param_name)

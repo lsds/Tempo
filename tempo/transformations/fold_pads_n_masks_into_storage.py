@@ -1,15 +1,16 @@
 import dataclasses
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Union
+
+import islpy as isl
 
 from tempo.core import global_objects as glob
 from tempo.core import index_expr as ie
-from tempo.core import isl_types as islt
 from tempo.core import tensor_ops as top
-from tempo.core.datatypes import OpInId, OpOutId, TensorId
+from tempo.core.datatypes import OpId, OpInId, OpOutId, TensorId
 from tempo.core.dependence_graph import PDG, DependencyData, OpData
 from tempo.core.op_tags import BACKWARD_REGION_TAG, REGION_TAG, STATIFY_PAD_ID_TAG
-from tempo.core.symbolic_tensor import _get_symbolic_tensor_for_op_output
+from tempo.core.symbolic_tensor import get_symbolic_tensor_for_op_output
 from tempo.transformations.compilation_pass import CompilationCtx, CompilationPass
 from tempo.transformations.optimizer.dead_code_elimination import DeadCodeElimination
 from tempo.utils import isl as isl_utils
@@ -47,8 +48,8 @@ MASK_VALUE_TYPE = Union[float, int, bool]
 
 
 # TODO: instead of using tags, use this
-def find_mask_affecting_pads(dg: PDG, mask_op: MASK_TYPE) -> List[top.PadOp]:
-    affecting_pads: Set[top.PadOp] = set()
+def find_mask_affecting_pads(dg: PDG, mask_op: MASK_TYPE) -> list[top.PadOp]:
+    affecting_pads: set[top.PadOp] = set()
     masked_dim = 0  # TODO how to find this??
 
     # TODO: one idea, though brittle, is to get the recursive dependencies on inID(0), reverse them,
@@ -74,9 +75,9 @@ def find_mask_affecting_pads(dg: PDG, mask_op: MASK_TYPE) -> List[top.PadOp]:
         dg: PDG,
         op: top.TensorOp,
         op_out_dim: int,
-        op_in_dims: Dict[OpInId, int],
+        op_in_dims: dict[OpInId, int],
         ctx: Any,
-    ) -> Tuple[PDG, Any]:
+    ) -> tuple[PDG, Any]:
         if isinstance(op, top.PadOp) and op.dim == op_out_dim and op.is_mask_pad():
             affecting_pads.add(op)
 
@@ -95,8 +96,8 @@ def find_mask_affecting_pads(dg: PDG, mask_op: MASK_TYPE) -> List[top.PadOp]:
 
 
 def _get_sched_and_phys_expr_for_combinable_pad_op(
-    new_dg: PDG, pad_op: top.PadOp, isl_ctx: islt.Context
-) -> Tuple[ie.IndexSequence, ie.IndexSequence, DependencyData]:
+    new_dg: PDG, pad_op: top.PadOp, isl_ctx: isl.Context
+) -> tuple[ie.IndexSequence, ie.IndexSequence, DependencyData]:
     ((dep_op, dep_data),) = new_dg.get_flat_direct_dependents(pad_op)
     ((depy_op, depy_data),) = new_dg.get_flat_direct_dependencies(pad_op)
     t_index = _get_pad_dim_temporal_index(depy_data, pad_op)
@@ -173,7 +174,7 @@ def is_mask_op(op: top.TensorOp) -> bool:
     ) is not None
 
 
-def is_valid_for_control_edge(mask_op: MASK_TYPE, affecting_pad_ops: Set[top.PadOp]) -> bool:
+def is_valid_for_control_edge(mask_op: MASK_TYPE, affecting_pad_ops: set[top.PadOp]) -> bool:
     for pad_op in affecting_pad_ops:
         if not ie.struct_eq(pad_op.padding[0], 0):
             return False
@@ -181,23 +182,25 @@ def is_valid_for_control_edge(mask_op: MASK_TYPE, affecting_pad_ops: Set[top.Pad
 
 
 def has_invalid_ops_between_mask_and_pads(
-    dg: PDG, mask_op: MASK_TYPE, affecting_pad_ops: Set[top.PadOp]
+    dg: PDG, mask_op: MASK_TYPE, affecting_pad_ops: set[top.PadOp]
 ) -> bool:
+    no_merge_op_set = [o for o in dg.nodes if not isinstance(o, top.MergeOp)]
+    induced_dg = dg.induced_subgraph(OpId(-1), no_merge_op_set)
     for pad_op in affecting_pad_ops:
-        paths = dg.get_paths_between(mask_op, pad_op)
-        for path in paths:
-            for op in path[1:-1]:  # Skip mask_op and pad_op
-                if not isinstance(op, (top.MovementOp)):
-                    return True
+        path = induced_dg.get_ops_between(mask_op, pad_op, include_endpoints=False)
+        for op in path:  # Skip mask_op and pad_op
+            # TODO: improve this so we can remove more masks
+            if not isinstance(op, (top.MovementOp)):
+                return True
     return False
 
 
 def can_remove_mask(
     dg: PDG,
     mask_op: MASK_TYPE,
-    masks_with_consistent_pad_conversions: List[MASK_TYPE],
-    affecting_pad_ops: Set[top.PadOp],
-    pad_conversions_and_values: Dict[top.PadOp, MASK_VALUE_TYPE],
+    masks_with_consistent_pad_conversions: list[MASK_TYPE],
+    affecting_pad_ops: set[top.PadOp],
+    pad_conversions_and_values: dict[top.PadOp, MASK_VALUE_TYPE],
 ) -> bool:
     # NOTE: All affecting pads must have a consistent pad conversion.
     if mask_op not in masks_with_consistent_pad_conversions:
@@ -217,7 +220,7 @@ def can_remove_mask(
 
 
 def _remove_mask(
-    new_dg: PDG, mask_op: MASK_TYPE, affecting_pad_ops: Set[top.PadOp], isl_ctx: islt.Context
+    new_dg: PDG, mask_op: MASK_TYPE, affecting_pad_ops: set[top.PadOp], isl_ctx: isl.Context
 ) -> None:
     if isinstance(mask_op, top.ValToValOp):
         ((non_masked_op, non_masked_data),) = new_dg.get_flat_direct_dependencies(mask_op)
@@ -271,8 +274,8 @@ def find_masks_for_pad_op(
     pad_op: top.PadOp,
     dim: int,
     pad_mask_uuid: str,
-) -> List[MASK_TYPE]:
-    masks: List[MASK_TYPE] = []
+) -> list[MASK_TYPE]:
+    masks: list[MASK_TYPE] = []
 
     def should_recurr(
         dg: PDG,
@@ -290,10 +293,10 @@ def find_masks_for_pad_op(
         op: top.TensorOp,
         edge_data: DependencyData,
         src_op: top.TensorOp,
-        op_out_dim: Dict[OpOutId, int],
+        op_out_dim: dict[OpOutId, int],
         op_in_dim: int,
         state: Any,
-    ) -> Tuple[PDG, Any]:
+    ) -> tuple[PDG, Any]:
         print(f"Path from {pad_op}: {op}")
         if is_mask_op(src_op) and pad_mask_uuid in src_op.tags.get(STATIFY_PAD_ID_TAG, []):
             assert isinstance(src_op, (top.ValToValOp, top.WhereOp))
@@ -321,7 +324,7 @@ class FoldPadsNMasksIntoStorage(CompilationPass):
     def __init__(self, ctx: CompilationCtx):
         super().__init__(ctx)
 
-    def _run(self) -> Tuple[CompilationCtx, bool]:
+    def _run(self) -> tuple[CompilationCtx, bool]:
         new_dg = self.ctx.dg
         masks_removed = 0
         pads_removed = 0
@@ -332,7 +335,7 @@ class FoldPadsNMasksIntoStorage(CompilationPass):
         ops = list(new_dg.nodes)
 
         masking_pads = [op for op in ops if isinstance(op, top.PadOp) and op.is_mask_pad()]
-        mask_ops: List[MASK_TYPE] = [op for op in ops if is_mask_op(op)]  # type: ignore
+        mask_ops: list[MASK_TYPE] = [op for op in ops if is_mask_op(op)]  # type: ignore
 
         (
             pad_conversions_and_values,
@@ -341,7 +344,7 @@ class FoldPadsNMasksIntoStorage(CompilationPass):
         ) = self._get_pad_conversions_and_no_conflict_masks(new_dg, masking_pads, mask_ops)
 
         # Just invert pad_op_to_affected_mask_ops
-        mask_op_to_affecting_pad_ops: Dict[MASK_TYPE, Set[top.PadOp]] = {}
+        mask_op_to_affecting_pad_ops: dict[MASK_TYPE, set[top.PadOp]] = {}
         for pad_op, mask_ops in pad_op_to_affected_mask_ops.items():
             for mask_op in mask_ops:
                 mask_op_to_affecting_pad_ops.setdefault(mask_op, set()).add(pad_op)
@@ -405,8 +408,8 @@ class FoldPadsNMasksIntoStorage(CompilationPass):
         return new_ctx, masks_removed > 0 or pads_removed > 0
 
     def _convert_pads(
-        self, new_dg: PDG, pad_conversions: Dict[top.PadOp, MASK_VALUE_TYPE]
-    ) -> Dict[top.PadOp, top.PadOp]:
+        self, new_dg: PDG, pad_conversions: dict[top.PadOp, MASK_VALUE_TYPE]
+    ) -> dict[top.PadOp, top.PadOp]:
         pad_op_conversions = {}
         for pad_op, mask_val in pad_conversions.items():
             replacement_pad_op = dataclasses.replace(
@@ -417,20 +420,20 @@ class FoldPadsNMasksIntoStorage(CompilationPass):
         return pad_op_conversions
 
     def _get_pad_conversions_and_no_conflict_masks(
-        self, new_dg: PDG, mask_pads: List[top.PadOp], mask_ops: List[MASK_TYPE]
-    ) -> Tuple[Dict[top.PadOp, MASK_VALUE_TYPE], List[MASK_TYPE], Dict[top.PadOp, Set[MASK_TYPE]]]:
+        self, new_dg: PDG, mask_pads: list[top.PadOp], mask_ops: list[MASK_TYPE]
+    ) -> tuple[dict[top.PadOp, MASK_VALUE_TYPE], list[MASK_TYPE], dict[top.PadOp, set[MASK_TYPE]]]:
         # print("--------------------------------")
         # print(f"All mask pads ({len(mask_pads)}): {mask_pads}")
         # print("--------------------------------")
         # print(f"All mask ops ({len(mask_ops)}): {mask_ops}")
         # print("--------------------------------")
         id_to_pad = {pad_op.tags[STATIFY_PAD_ID_TAG]: pad_op for pad_op in mask_pads}
-        pad_id_to_mask_values: Dict[str, Set[MASK_VALUE_TYPE]] = defaultdict(set)
-        pad_id_to_mask_value_counts: Dict[str, Dict[MASK_VALUE_TYPE, int]] = defaultdict(
-            lambda: defaultdict(lambda: 0)
+        pad_id_to_mask_values: dict[str, set[MASK_VALUE_TYPE]] = defaultdict(set)
+        pad_id_to_mask_value_counts: dict[str, dict[MASK_VALUE_TYPE, int]] = defaultdict(
+            lambda: defaultdict(int)
         )
-        pad_id_to_mask_ops: Dict[str, List[MASK_TYPE]] = defaultdict(list)
-        pad_op_to_affected_mask_ops: Dict[top.PadOp, Set[MASK_TYPE]] = defaultdict(set)
+        pad_id_to_mask_ops: dict[str, list[MASK_TYPE]] = defaultdict(list)
+        pad_op_to_affected_mask_ops: dict[top.PadOp, set[MASK_TYPE]] = defaultdict(set)
 
         for mask_op in mask_ops:
             for pad_id in mask_op.tags[STATIFY_PAD_ID_TAG]:
@@ -443,7 +446,7 @@ class FoldPadsNMasksIntoStorage(CompilationPass):
         # print(f"pad_id_to_mask_values: {pad_id_to_mask_values}")
         # print(f"pad_id_to_mask_value_counts: {pad_id_to_mask_value_counts}")
 
-        pad_conversions_and_values: Dict[top.PadOp, MASK_VALUE_TYPE] = {}
+        pad_conversions_and_values: dict[top.PadOp, MASK_VALUE_TYPE] = {}
         for pad_id, mask_value_counts in pad_id_to_mask_value_counts.items():
             if len(mask_value_counts) == 1:
                 pad_conversions_and_values[id_to_pad[pad_id]] = next(iter(mask_value_counts.keys()))
@@ -472,9 +475,7 @@ class FoldPadsNMasksIntoStorage(CompilationPass):
             pad_op_to_affected_mask_ops,
         )
 
-    def _remove_pad(
-        self, new_dg: PDG, pad_op: top.PadOp, mask_value: Optional[float] = None
-    ) -> None:
+    def _remove_pad(self, new_dg: PDG, pad_op: top.PadOp, mask_value: float | None = None) -> None:
         # NOTE: Pads introduced due to backward dynamism should be padded with zeros,
         # which do not affect the gradient accumulation.
         is_backward_pad = (
@@ -531,7 +532,7 @@ class FoldPadsNMasksIntoStorage(CompilationPass):
                 depy_data, _isl_expr=isl_sched_expr, expr=physical_access_expr
             )
             ident_op = top.IdentOp(new_dg.get_next_op_id(), depy_op.domain, pad_op.tags)
-            pad_symb_t = _get_symbolic_tensor_for_op_output(new_dg, pad_op, OpOutId(0))
+            pad_symb_t = get_symbolic_tensor_for_op_output(new_dg, pad_op, OpOutId(0))
             ident_op_data = OpData(
                 ident_op,
                 output_shapes={OpOutId(0): pad_symb_t.spatial_shape},

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple, Union
 
 import optree
 
@@ -17,14 +16,14 @@ from tempo.core import index_expr as ie
 
 class Network(Module, ABC):
     def __call__(
-        self, obs: Union[ObservationsRecurrentTensor, RecurrentTensor]
-    ) -> Tuple[ActionsRecurrentTensor, Optional[ValueRecurrentTensor]]:
+        self, obs: ObservationsRecurrentTensor | RecurrentTensor
+    ) -> tuple[ActionsRecurrentTensor, ValueRecurrentTensor | None]:
         return self.forward(obs)  # type: ignore
 
     @abstractmethod
     def forward(
-        self, obs: Union[ObservationsRecurrentTensor, RecurrentTensor]
-    ) -> Tuple[Optional[ActionsRecurrentTensor], Optional[ValueRecurrentTensor]]:
+        self, obs: ObservationsRecurrentTensor | RecurrentTensor
+    ) -> tuple[ActionsRecurrentTensor | None, ValueRecurrentTensor | None]:
         raise NotImplementedError
 
     @abstractmethod
@@ -32,7 +31,7 @@ class Network(Module, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def log_prob(self, actions: Union[ActionsRecurrentTensor, RecurrentTensor]) -> RecurrentTensor:
+    def log_prob(self, actions: ActionsRecurrentTensor | RecurrentTensor) -> RecurrentTensor:
         raise NotImplementedError
 
     @abstractmethod
@@ -43,7 +42,7 @@ class Network(Module, ABC):
         self,
         target: Network,
         tau: float,
-        update_var: Optional[ie.Symbol] = None,
+        update_var: ie.Symbol | None = None,
         update_freq: int = 1,
     ) -> None:
         if tau > 1 or tau < 0:
@@ -88,7 +87,7 @@ class Network(Module, ABC):
             target_state,  # type: ignore
         )
 
-    def copy_every(self, num_steps: int = 1, var: Optional[ie.Symbol] = None) -> None:
+    def copy_every(self, num_steps: int = 1, var: ie.Symbol | None = None) -> None:
         self.polyak_update(self, 1.0, update_var=var, update_freq=num_steps)
 
     # @staticmethod

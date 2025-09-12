@@ -1,7 +1,6 @@
 import dataclasses
 import os
 import time
-from typing import Optional, Set
 
 import optree
 from graphviz import Digraph
@@ -49,14 +48,14 @@ class DGRenderer:
     def __init__(
         self,
         ctx: CompilationCtx,
-        out_fname: Optional[str] = None,
+        out_fname: str | None = None,
     ):
         dg = ctx.dg
         self.dg = dg
         self.ctx = ctx
         self.mem_est = MemoryEstimator(ctx)
 
-        self.highlight_ops: Set[top.TensorOp] = set()
+        self.highlight_ops: set[top.TensorOp] = set()
 
         if out_fname is None:
             # Use the current time to make a directory
@@ -110,7 +109,7 @@ class DGRenderer:
         dg: PDG,
         location: str,
         name: str,
-        annotation: Optional[str] = None,
+        annotation: str | None = None,
     ) -> None:
         # create the directory
         os.makedirs(location, exist_ok=True)
@@ -132,7 +131,6 @@ class DGRenderer:
             except Exception as e:
                 log.error("Error rendering op %s: %s", op_data.op, e)
                 print(op_data.op.creation_traceback)
-                raise e
         for u, v, dep_data in dg.get_all_edges(include_control=True):
             self._render_edge(dg, dot, u, v, dep_data)
 
@@ -222,10 +220,12 @@ class DGRenderer:
             op_size_bytes = 0
 
         label = f"{op_str}\n"
+        in_shapes = []
         try:
-            label += f"in_shapes: {str(dg.get_input_shapes_list(op_data.op))}\n"
+            in_shapes = dg.get_input_shapes_list(op)
         except Exception:
-            label += "in_shapes: UNKNOWN\n"
+            pass
+        label += f"in_shapes: {str(in_shapes)}\n"
         label += f"out_shapes: {str(op_data.output_shapes)}\n"
         label += f"out_dtypes: {str(op_data.output_dtypes)}\n"
         label += f"domain: {str(op.domain)}\n"  # if not is_dataflow else ""
@@ -237,7 +237,7 @@ class DGRenderer:
         label += f"total memory:{bytes_to_human_readable(op_size_bytes)}\n"
         out_tensor_point_sizes = [
             bytes_to_human_readable(
-                self.mem_est.estimate_tensor_point_size_bytes(op.op_id, OpOutId(out))
+                self.mem_est.try_estimate_tensor_point_size_bytes(op.op_id, OpOutId(out))
             )
             for out in range(op.num_outputs)
         ]
@@ -258,17 +258,25 @@ class DGRenderer:
 
         # TODO: add more checks
         wrong = False
-        try:
-            if isinstance(op, top.ElementWiseOp):
-                if not Shape.can_broadcast(*dg.get_input_shapes_list(op)):
-                    wrong = True
-                    label += "Broadcast mismatch\n"
+        if isinstance(op, top.ElementWiseOp):
+            if not Shape.can_broadcast(*in_shapes):
+                wrong = True
+                label += "Wrong: Broadcast mismatch\n"
+        infered_out_shapes = {
+            OpOutId(i): o for i, o in enumerate(op.infer_output_shapes(in_shapes))
+        }
+        if infered_out_shapes != op_data.output_shapes:
+            wrong = True
+            label += "Wrong: Infered output shape mismatch\n"
 
-            dynamic = any(s.is_dynamic() for s in dg.get_input_shapes_list(op)) or any(
-                s.is_dynamic() for s in op_data.output_shapes.values()
-            )
-        except Exception:
-            dynamic = False
+        dynamic = (
+            op.is_dynamic()
+            or any(s.is_dynamic() for s in in_shapes)
+            or any(s.is_dynamic() for s in op_data.output_shapes.values())
+        )
+
+        if dynamic:
+            label += "Dynamic shape\n"
 
         dot.node(
             str(op.op_id),

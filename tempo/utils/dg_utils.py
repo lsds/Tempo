@@ -1,6 +1,6 @@
 import dataclasses
-from collections.abc import Callable
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
@@ -26,7 +26,7 @@ def is_index_src_tensor_param(dg: PDG, op: top.TensorOp) -> bool:
     for dep, dep_data in dependents:
         dep_is_indexop = isinstance(dep, top.IndexSelectOp) or isinstance(dep, top.IndexAddOp)
         is_idx_param = dep_data.sink_in_idx == OpInId(
-            (0 if isinstance(dep, top.IndexSelectOp) else 2)
+            0 if isinstance(dep, top.IndexSelectOp) else 2
         )
         if dep_is_indexop and is_idx_param:
             return True
@@ -67,7 +67,7 @@ def is_non_dimensional_param(dg: PDG, op: top.TensorOp) -> bool:
     return is_index_index_param(dg, op) or is_slice_start_param(dg, op) or is_conv_kernel(dg, op)
 
 
-def is_expanded_dim(dg: PDG, op: top.TensorOp, dim: Optional[int]) -> bool:
+def is_expanded_dim(dg: PDG, op: top.TensorOp, dim: int | None) -> bool:
     if isinstance(op, top.ExpandOp):
         assert dim is not None, "dim was not provided"
         original_shape = dg.get_input_shape(op, OpInId(0))
@@ -100,9 +100,9 @@ def propagate_dim_through_op(  # noqa: C901
     op: TensorOp,
     input_shapes: Sequence[Shape],
     dim: int,
-    in_id: Optional[OpInId],
+    in_id: OpInId | None,
     in_to_out: bool = False,
-) -> Dict[Union[OpInId, OpOutId], int]:
+) -> dict[OpInId | OpOutId, int]:
     """
     Propagates a dimension of interest
     through an operation, adjusting it based on how the operation
@@ -237,7 +237,7 @@ def propagate_dim_through_op_out_to_in(
     op: TensorOp,
     input_shapes: Sequence[Shape],
     dim: int,
-) -> Dict[OpInId, int]:
+) -> dict[OpInId, int]:
     return propagate_dim_through_op(  # type: ignore
         dg, op, input_shapes, dim, in_id=None, in_to_out=False
     )
@@ -249,7 +249,7 @@ def propagate_dim_through_op_in_to_out(
     input_shapes: Sequence[Shape],
     dim: int,
     in_id: OpInId,
-) -> Dict[OpOutId, int]:
+) -> dict[OpOutId, int]:
     return propagate_dim_through_op(  # type: ignore
         dg, op, input_shapes, dim, in_id=in_id, in_to_out=True
     )
@@ -261,9 +261,9 @@ def recursively_follow_op_in_dim_through_dependencies(
     op_in_id: OpInId,
     op_in_dim: int,
     should_recurr: Callable[[PDG, TensorOp, DependencyData, TensorOp, int, int, Any], bool],
-    effect: Callable[[PDG, TensorOp, int, Dict[OpInId, int], Any], Tuple[PDG, Any]],
+    effect: Callable[[PDG, TensorOp, int, dict[OpInId, int], Any], tuple[PDG, Any]],
     initial_ctx: Any = None,
-) -> Tuple[PDG, int]:
+) -> tuple[PDG, int]:
     """
     Recursively traverses the dependency graph, adjusting the dimension,
     applying the effect function to each op, and recursing into its dependencies until:
@@ -310,9 +310,9 @@ def recursively_follow_op_out_dim_through_dependencies(
     op: TensorOp,
     op_out_dim: int,
     should_recurr: Callable[[PDG, TensorOp, DependencyData, TensorOp, int, int, Any], bool],
-    effect: Callable[[PDG, TensorOp, int, Dict[OpInId, int], Any], Tuple[PDG, Any]],
+    effect: Callable[[PDG, TensorOp, int, dict[OpInId, int], Any], tuple[PDG, Any]],
     initial_ctx: Any = None,
-) -> Tuple[PDG, int]:
+) -> tuple[PDG, int]:
     """
     Recursively traverses the dependency graph, adjusting the dimension,
     applying the effect function to each op, and recursing into its dependencies until:
@@ -372,10 +372,10 @@ def recursively_follow_dim_through_dependents_until_elimination(
     # TODO: add ctx to should_recurr
     should_recurr: Callable[[PDG, TensorOp, DependencyData, TensorOp, int, int], bool],
     effect: Callable[
-        [PDG, TensorOp, DependencyData, TensorOp, Dict[OpOutId, int], int, Any], Tuple[PDG, Any]
+        [PDG, TensorOp, DependencyData, TensorOp, dict[OpOutId, int], int, Any], tuple[PDG, Any]
     ],
     initial_ctx: Any = None,
-) -> Tuple[PDG, int]:
+) -> tuple[PDG, int]:
     """We are propagating towards the dependents of op, and came from src_op through edge_data.
 
     Should recurr is a function taking:
@@ -415,17 +415,19 @@ def is_window_access(e: ie.IndexAtom) -> bool:
     # for when near bounds.
     if not isinstance(e, ie.Slice):
         return False
-    if e.start.is_constant() or e.stop.is_constant():
-        return False
     # NOTE: To catch statifyied 0:t+1 and t:T-1 cases,
     # which produce something in between a window and block access
     # NOTE: We only want t:min(t+w, T-1) and max(t-w, 0):t like cases.
     num_vars = len(e.start.vars_used())
     if num_vars > 1:
         return False
+    if is_const_block_access(e):
+        return False
     if is_block_access(e):
         return False
     if is_all_past_access(e) or is_all_future_access(e):
+        return False
+    if is_proto_block_access(e):
         return False
     return True
 
@@ -474,11 +476,9 @@ def is_block_access(e: ie.IndexAtom) -> bool:
     if not isinstance(e, ie.Slice):
         return False
 
-    # print(f"is_block_access: {e}")
     size = e.stop - e.start
-    # print(f"    size: {size}")
     simplified_size = isl_utils.simplify_int_index_value(size)
-    # print(f"    simplified_size: {simplified_size}")
+    # simplified_size = isl_utils.int_index_val_max(size)
     is_const_int_sized = isinstance(simplified_size, ie.ConstInt)
     if not is_const_int_sized:
         return False
@@ -498,7 +498,37 @@ def is_block_access(e: ie.IndexAtom) -> bool:
     return False
 
 
-def get_block_access_var(e: ie.IndexAtom) -> Optional[ie.Symbol]:
+def is_proto_block_access(e: ie.IndexAtom) -> bool:
+    """
+    For expressions with a temporarily fixed start or end like:
+    d1-(d1%4):d1+1
+    This expression has a sliding end, but the start jumps every 4 steps when entering a new block.
+
+    d1:d1 + (4 - (d1%4)) + 1
+    This expression has a sliding start, but the end jumps every 4 steps when entering a new block.
+    """
+    if not isinstance(e, ie.Slice):
+        return False
+    if is_block_access(e):
+        return False
+
+    # TODO: This is not a perfect method, but it works for now.
+    # NOTE: What we want is something like:
+    # - detect which side has a modulo (start in this case)
+    # - take the other side, subtracting 1 if it is upper bound,
+    #     and subtract/add (depending on side) the same modulo
+    # expression.
+    # Check for symbolic equality between the two sides.
+    start_has = e.start.any_child(lambda x: isinstance(x, ie.Modulos))
+    stop_has = e.stop.any_child(lambda x: isinstance(x, ie.Modulos))
+
+    if start_has == stop_has:
+        return False
+
+    return True
+
+
+def get_block_access_var(e: ie.IndexAtom) -> ie.Symbol | None:
     if not is_block_access(e):
         return None
 
@@ -530,7 +560,7 @@ def is_initialization_merge(dg: PDG, op: top.MergeOp) -> bool:
     return False
 
 
-def branch_cond_is_eq_0(dg: PDG, branch_0_cond: Optional[ie.IndexAtom]) -> bool:
+def branch_cond_is_eq_0(dg: PDG, branch_0_cond: ie.IndexAtom | None) -> bool:
     if branch_0_cond is None:
         return False
     return isinstance(branch_0_cond, ie.Equal) and (
@@ -551,7 +581,7 @@ def get_padding_for_slice(
     domain_slice_var: ie.Symbol,
     # TODO: we probably don't need this as the expressions should simplify to same thing?
     is_block: bool = False,
-) -> Optional[Tuple[ie.IntIndexValueLike, ie.IntIndexValueLike]]:
+) -> tuple[ie.IntIndexValueLike, ie.IntIndexValueLike] | None:
     """Calculate padding values for a slice based on its type and goal padded size.
 
     Args:
@@ -671,7 +701,7 @@ def move_select_dependents_two_steps(
     from_: TensorOp,
     to: TensorOp,
     through: DependencyData,
-    dependents_to_move: Sequence[Tuple[TensorOp, DependencyData]],
+    dependents_to_move: Sequence[tuple[TensorOp, DependencyData]],
 ) -> Sequence[DependencyData]:
     """Moves dependents of `from_` to `to`, through connecting edge `through`.
     Maintains edge correctness by combining edges."""

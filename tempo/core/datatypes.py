@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, NewType, Protocol, Tuple, TypeVar, Union
+from typing import Any, NewType, Protocol, TypeVar, Union
 
 from optree import PyTree
 
@@ -12,8 +12,7 @@ PDGId = NewType("PDGId", int)
 
 NestedList = Any
 
-
-DIM_TYPE = Union[int, Tuple[int, ...], None]
+DIM_TYPE = Union[int, tuple[int, ...], None]
 
 
 @dataclass(frozen=True)
@@ -22,20 +21,17 @@ class TensorId:
     output_id: OpOutId
 
 
-IndexType = Union[int, slice, Tuple[Union[int, slice], ...]]
+IndexType = Union[int, slice, tuple[Union[int, slice], ...]]
 
 
 class TempoTensorProtocol(Protocol):
     @property
-    def shape(self) -> Tuple[int, ...]:
-        pass
+    def shape(self) -> tuple[int, ...]: ...
 
     @property
-    def dtype(self) -> Any:
-        pass
+    def dtype(self) -> Any: ...
 
-    def __getitem__(self, key: IndexType) -> TempoTensorProtocol:
-        pass
+    def __getitem__(self, key: IndexType) -> TempoTensorProtocol: ...
 
     # @property
     # def device(self) -> Any:

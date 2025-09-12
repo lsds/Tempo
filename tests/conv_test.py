@@ -1,7 +1,3 @@
-
-
-
-
 #def test_shape_inference(exec_cfg: ExecutionConfig) -> None:
 #
 #    with TempoContext(exec_cfg, num_dims=0):

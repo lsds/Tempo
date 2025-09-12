@@ -29,6 +29,7 @@ test_run/
 debug_run/
 debug_runs/
 results/
+results_profile/
 examples/experiments/attn_microbench/results/
 data/
 !tempo/api/data/

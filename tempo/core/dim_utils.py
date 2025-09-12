@@ -1,18 +1,32 @@
 import builtins
-from typing import Any, Tuple, Union
+from typing import Any
 
 from tempo.core import index_expr as ie
 from tempo.core.datatypes import DIM_TYPE
 from tempo.core.shape import Shape
 
 
-def normalize_negative_dim(dim: int, shape: Shape, unsq: bool = False) -> int:
-    if isinstance(dim, int) and dim < 0:
-        dim = builtins.max(len(shape) + dim + (1 if unsq else 0), 0)
+def normalize_negative_dim(dim: int, shape: Shape, allow_end: bool = False) -> int:
+    """
+    Normalize possibly-negative `dim`.
+
+    - If allow_end=False: valid dims are [-rank, rank-1].
+    - If allow_end=True:  valid dims are [-(rank+1), rank]. This is used for unsqueeze-like ops.
+    """
+    rank = len(shape)
+    lower = -(rank + (1 if allow_end else 0))
+    upper = rank if allow_end else rank - 1
+
+    if dim < lower or dim > upper:
+        raise IndexError(f"dim {dim} out of range for rank {rank} (allowed range {lower}..{upper})")
+
+    if dim < 0:
+        dim += rank + (1 if allow_end else 0)
+
     return dim
 
 
-def normalize_negative_dim_tuple(dim: Tuple[int, ...], shape: Shape) -> Tuple[int, ...]:
+def normalize_negative_dim_tuple(dim: tuple[int, ...], shape: Shape) -> tuple[int, ...]:
     return tuple(d + len(shape) if isinstance(d, int) and d < 0 else d for d in dim)
 
 
@@ -27,7 +41,7 @@ def normalize_negative_dims(dim: DIM_TYPE, shape: Shape) -> DIM_TYPE:
         raise TypeError(f"Expected None, int or tuple of ints, got {type(dim)}")
 
 
-def normalize_dims(dim: DIM_TYPE, shape: Shape) -> Tuple[int, ...]:
+def normalize_dims(dim: DIM_TYPE, shape: Shape) -> tuple[int, ...]:
     dims = normalize_negative_dims(dim, shape)
     if isinstance(dims, int):
         return (dims,)
@@ -40,8 +54,8 @@ def normalize_dims(dim: DIM_TYPE, shape: Shape) -> Tuple[int, ...]:
 
 
 def normalize_ellipsis_indexes(
-    item: Tuple[Any, ...], default_idxs: Tuple[ie.IndexAtom, ...]
-) -> Tuple[Any, ...]:
+    item: tuple[Any, ...], default_idxs: tuple[ie.IndexAtom, ...]
+) -> tuple[Any, ...]:
     """If there is an ellipsis in the index, expand any missing dims with default_idxs.
     Dims to the left of the ellipsis are assumed to be correctly positioned, while
     dims to the right of the ellipsis are assumed to be the last.
@@ -63,8 +77,8 @@ def normalize_ellipsis_indexes(
 
 
 def normalize_empty_colon_indexes(
-    item: Tuple[Any, ...], default_idxs: Tuple[ie.IndexAtom, ...]
-) -> Tuple[Any, ...]:
+    item: tuple[Any, ...], default_idxs: tuple[ie.IndexAtom, ...]
+) -> tuple[Any, ...]:
     # NOTE: Handles ,:, indexes
     item2 = []
     for i, idx in enumerate(item):
@@ -77,8 +91,8 @@ def normalize_empty_colon_indexes(
 
 
 def normalize_negative_indexes(
-    item: Tuple[Any, ...], dim_sizes: Tuple[ie.IntIndexValue, ...]
-) -> Tuple[Any, ...]:
+    item: tuple[Any, ...], dim_sizes: tuple[ie.IntIndexValue, ...]
+) -> tuple[Any, ...]:
     item2 = []
     for i, idx in enumerate(item):
         if isinstance(idx, int) and idx < 0:
@@ -89,10 +103,10 @@ def normalize_negative_indexes(
 
 
 def normalize_indexes(
-    item: Tuple[Any, ...],
-    default_idxs: Tuple[ie.IndexAtom, ...],
-    dim_sizes: Tuple[ie.IntIndexValue, ...],
-) -> Tuple[Any, ...]:
+    item: tuple[Any, ...],
+    default_idxs: tuple[ie.IndexAtom, ...],
+    dim_sizes: tuple[ie.IntIndexValue, ...],
+) -> tuple[Any, ...]:
     item = normalize_ellipsis_indexes(item, default_idxs)
     item = normalize_empty_colon_indexes(item, default_idxs)
     item = normalize_negative_indexes(item, dim_sizes)
@@ -100,9 +114,9 @@ def normalize_indexes(
 
 
 def normalize_slice_indexes(
-    padding: Tuple[Union[Tuple[int, int], int], ...],
-    dim_sizes: Tuple[Union[ie.IntIndexValue, int], ...],
-) -> Tuple[Any, ...]:
+    padding: tuple[tuple[int, int] | int, ...],
+    dim_sizes: tuple[ie.IntIndexValue | int, ...],
+) -> tuple[Any, ...]:
     padding = list(padding)
     padding += [(0, 0)] * (len(dim_sizes) - len(padding))
 
@@ -120,3 +134,47 @@ def normalize_slice_indexes(
         else:
             raise ValueError(f"Invalid padding: {pad}")
     return tuple(new_pad)
+
+
+def normalize_neg_1s_in_shape_reshape(curr_shape: Shape, requested_shape: Shape) -> Shape:
+    for s in requested_shape:
+        if isinstance(s, int) and s < 0:
+            assert s == -1, f"Only negative dimension allowed is -1, got {s}"
+
+    num_neg_dims = builtins.sum(1 for s in requested_shape if isinstance(s, int) and s < 0)
+    if num_neg_dims == 0:
+        return requested_shape
+    if num_neg_dims > 1:
+        raise ValueError(
+            f"Cannot have more than one negative dimension in reshape, got {requested_shape}"
+        )
+
+    total_elems = curr_shape.prod()
+    prod_of_known_dims = Shape(
+        tuple(
+            s for s in requested_shape if (isinstance(s, int) and s >= 0) or not isinstance(s, int)
+        )
+    ).prod()
+
+    if isinstance(total_elems, int) and isinstance(prod_of_known_dims, int):
+        if total_elems % prod_of_known_dims != 0:
+            raise ValueError(
+                f"Reshape cannot infer the missing dimension for shape {requested_shape} \
+                and tensor shape {curr_shape}"
+            )
+    neg_one_val = total_elems // prod_of_known_dims
+    return Shape(tuple(neg_one_val if ie.struct_eq(s, -1) else s for s in requested_shape))
+
+
+def normalize_neg_1s_in_shape_expand(curr_shape: Shape, sizes: Shape) -> Shape:
+    # TODO: for every -1, should just match the curr_shape.
+    assert len(curr_shape) == len(sizes), (
+        f"{curr_shape=} and {sizes=} must have the same length for expand"
+    )
+    res_shape = []
+    for s1, s2 in zip(curr_shape, sizes, strict=True):
+        if ie.struct_eq(s2, -1):
+            res_shape.append(s1)
+        else:
+            res_shape.append(s2)
+    return Shape.from_(tuple(res_shape))

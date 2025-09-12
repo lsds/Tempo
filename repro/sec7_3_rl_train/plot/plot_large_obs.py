@@ -20,6 +20,8 @@ from repro.sec7_3_rl_train.run_large_obs import (
 )
 from repro.sec7_3_rl_train.shared import RL_TRAIN_DIR, SYS, get_experiment_name_and_results_path
 
+SWEEP_KEY_DISPLAY = {k: "x".join([str(k_) for k_ in k]) for k in OBS_SHAPE_SWEEPS["obs_shape"]}
+
 
 def get_merged_df(base_path: str) -> pd.DataFrame:
     systems = [sys for sys in SYS if sys != "cleanrlcache"]
@@ -75,19 +77,24 @@ def plot_large_obs(results_path: str = DEFAULT_RESULTS_PATH, plots_path: str = D
     framework_order = FRAMEWORKS_ORDERED.copy()
     framework_order.remove("cleanrlcache")
 
+    print(df_merged[["framework", "sweep_value", "gpu_mem_peak"]])
+
     print("Generating panel plot...")
     fig = create_generic_metrics_panel(
         sweep_dfs=[df_merged],
         frameworks_ordered=framework_order,
         metrics=["iter_mean", "gpu_util", "gpu_mem", "cpu_mem"],
         sweep_keys=sweep_keys,
+        sweep_key_display=[SWEEP_KEY_DISPLAY],
         sweep_values_ordered=sweep_values_ordered,
-        figsize=(13, 9.5),
+        figsize=(15, 12),  # 8.5
         bbox_to_anchor=(0.5, 1.05),
-        gridspec_kw={"hspace": 0.35, "height_ratios": [1, 1, 1, 1]},
+        # gridspec_kw = {"hspace": 0.15, "wspace": 0.02}
+        gridspec_kw={"hspace": 0.15, "wspace": 0.02, "height_ratios": [1, 1, 1, 1]},
         show_mean_peak_legend_on_percent_plot_number=1,
-        y_lim_iter_time=(pow(10, -1), pow(10, 2.5)),
-        text_size=18,
+        y_lim_iter_time=(pow(10, -1), pow(10, 1.4)),
+        text_size=23,
+        add_legend=False,
     )
 
     print("Saving plot...")

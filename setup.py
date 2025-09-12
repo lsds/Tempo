@@ -1,9 +1,7 @@
-from typing import List
-
 import setuptools
 
 
-def read_requirements(file: str) -> List[str]:
+def read_requirements(file: str) -> list[str]:
     """Returns content of given requirements file."""
     return [line for line in open(file) if not (line.startswith("#") or line.startswith("--"))]
 

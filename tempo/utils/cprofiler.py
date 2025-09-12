@@ -4,7 +4,7 @@ import contextlib
 import cProfile
 from pathlib import Path
 from types import TracebackType
-from typing import ContextManager, Optional, Type
+from typing import ContextManager
 
 
 class Profiler:
@@ -18,13 +18,13 @@ class Profiler:
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> Optional[bool]:
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
         self.pr.__exit__(exc_type, exc_val, exc_tb)
         self.pr.dump_stats(self.results_path / "profile.prof")
-        self.pr.print_stats()
+        # self.pr.print_stats()
         return None
 
     @staticmethod

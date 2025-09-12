@@ -4,8 +4,8 @@ from tempo.core import index_expr as ie
 
 
 def test_simplifications():
-    t = ie.Symbol("t")
-    T = ie.Symbol("T", is_bound=True)
+    t = ie.Symbol("t", idx=0)
+    T = ie.Symbol("T", is_bound=True, idx=1)
     e = t * 1 + 3 - 3 + T - T
     assert e.struct_eq(e)
 
@@ -14,8 +14,8 @@ def test_index_expr_api():
     ie.IntIndexValue.__eq__ = ie.IntIndexValue.symb_eq  # type: ignore
     ie.IntIndexValue.__ne__ = ie.IntIndexValue.symb_ne  # type: ignore
 
-    t = ie.Symbol("t")
-    T = ie.Symbol("T", is_bound=True)
+    t = ie.Symbol("t", idx=0)
+    T = ie.Symbol("T", is_bound=True, idx=1)
     e = (t + t * 2 == t - 3) & (T <= 3)
 
     e2 = ie.And(
@@ -32,10 +32,10 @@ def test_index_expr_api():
 
 
 def test_piecewise():
-    i = ie.Symbol("i")
-    I = ie.Symbol("I", is_bound=True)
-    t = ie.Symbol("t")
-    T = ie.Symbol("T", is_bound=True)
+    i = ie.Symbol("i", idx=0)
+    I = ie.Symbol("I", is_bound=True, idx=1)
+    t = ie.Symbol("t", idx=2)
+    T = ie.Symbol("T", is_bound=True, idx=3)
     e0 = t + 1
     branches = e0.enumerate_all_cond_branches()
     assert len(branches) == 1
@@ -55,10 +55,10 @@ def test_eval_symbol_index_expr():
     dictionary = {}
 
     for i in range(1000):
-        s = ie.Symbol(f"i{i}")
+        s = ie.Symbol(f"i{i}", idx=i * 2)
         dictionary[s] = i
 
-    s = ie.Symbol("i1")
+    s = ie.Symbol("i1", idx=1000*2)
     assert (s + 3).evaluate(dictionary) == 4
 
 
@@ -66,8 +66,8 @@ if __name__ == "__main__":
     ie.IntIndexValue.__eq__ = ie.IntIndexValue.symb_eq  # type: ignore
     ie.IntIndexValue.__ne__ = ie.IntIndexValue.symb_ne  # type: ignore
 
-    t = ie.Symbol("t")
-    T = ie.Symbol("T", is_bound=True)
+    t = ie.Symbol("t", idx=0)
+    T = ie.Symbol("T", is_bound=True, idx=1)
 
     e = (t + t * 2 == t - 3) & (T <= 3)
 

@@ -1,10 +1,9 @@
+import dataclasses
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Set, Tuple
 
 import islpy as isl
 
-from tempo.core import isl_types as islt
 from tempo.core import tensor_ops as top
 from tempo.core.analysis_ctx import AnalysisCtx
 from tempo.core.compilation_ctx import CompilationCtx
@@ -28,8 +27,8 @@ log = logger.get_logger(__name__)
 
 def _find_donatable_args_conservative(  # noqa: C901
     new_dg: PDG, analysis_ctx: AnalysisCtx, op: top.TensorOp
-) -> Set[int]:
-    donatable_args: Set[int] = set()
+) -> set[int]:
+    donatable_args: set[int] = set()
     for depy_op, dep_data in new_dg.get_flat_direct_dependencies(op):
         # NOTE: If it is not a point, it requires concatenation, and thus, can be donated.
         # That is, unless it is stored in a block tensor.
@@ -145,26 +144,23 @@ def _find_donatable_args_isl_vectorized(  # noqa: C901
     ctx: CompilationCtx,
     analysis_ctx: AnalysisCtx,
     op: top.TensorOp,
-    known_donations: Set[int],
-) -> Set[int]:
+    known_donations: set[int],
+) -> set[int]:
     dg = ctx.dg
     analysis_ctx = ctx.analysis_ctx
     schedule = analysis_ctx.isl_execution_schedule
     isl_ctx = ctx.analysis_ctx.isl_ctx
-    sched_map: islt.UnionMap = schedule.get_map()
+    sched_map: isl.UnionMap = schedule.get_map()
 
-    # universe_bounds_str = ",".join(
-    #    [
-    #        (f"{b}={dg.static_bounds[b]}" if b in dg.static_bounds else f"{b}")
-    #        for b in dg.universe.parameters
-    #    ]
-    # )
     universe_params_str, _ = get_parameters_and_var_bounds_strs(dg.universe)
     params_set = isl.Set(f"[{universe_params_str}] -> {{ : }}", context=isl_ctx)
 
-    donatable_args: Set[int] = set()
+    donatable_args: set[int] = set()
 
     our_name = op_id_to_exec_name(op.op_id)
+
+    assert analysis_ctx._cached_schedule_constraints is not None
+    curr_val_constraints = analysis_ctx._cached_schedule_constraints.validity
 
     # Iterate the dependencies we are interested in possibly donating
     for dy_op, dy_data in dg.get_flat_direct_dependencies(op):
@@ -204,7 +200,7 @@ def _find_donatable_args_isl_vectorized(  # noqa: C901
         dy_dom = rename_union_set_tuples(dy_isl_dom, dy_name).intersect_params(params_set)
         dy_dom_identity = dy_dom.identity()  # Maps each domain point to itself
 
-        dep_map: islt.UnionMap = dependence_to_isl_map(  # op[p] -> dy[e(p)]
+        dep_map: isl.UnionMap = dependence_to_isl_map(  # op[p] -> dy[e(p)]
             dy_data.expr,
             op.domain,
             dy_op.domain,
@@ -224,14 +220,13 @@ def _find_donatable_args_isl_vectorized(  # noqa: C901
 
         our_points_scheduled = dy_dom.apply(our_composed_map)
 
-        additional_val_constraints = None
         for competitor_op, competitor_data in dg.get_tensor_flat_direct_dependents(
             TensorId(dy_op.op_id, dy_data.src_out_idx)
         ):
             if competitor_op.op_id == op.op_id:
                 continue
             competitor_name = op_id_to_exec_name(competitor_op.op_id)
-            competitor_dep_map: islt.UnionMap = dependence_to_isl_map(
+            competitor_dep_map: isl.UnionMap = dependence_to_isl_map(
                 competitor_data.expr,
                 competitor_op.domain,
                 dy_op.domain,
@@ -309,34 +304,27 @@ def _find_donatable_args_isl_vectorized(  # noqa: C901
                     can_donate = False
                     break
 
-                additional_val_constraint = (
-                    dy_dom_identity.apply_range(our_rev_dep_map)
-                    .apply_domain(competitor_rev_map)
-                    .intersect_range(our_dom)
-                    .intersect_domain(competitor_dom)
-                )
-                if additional_val_constraints is None:
-                    additional_val_constraints = additional_val_constraint
-                else:
-                    additional_val_constraints = additional_val_constraints.union(
-                        additional_val_constraint
-                    )
         if can_donate:
             donatable_args.add(dy_data.sink_in_idx)
-            if additional_val_constraints is not None:
-                if analysis_ctx._additional_val_constraints is None:
-                    analysis_ctx._additional_val_constraints = additional_val_constraints
-                else:
-                    analysis_ctx._additional_val_constraints = (
-                        analysis_ctx._additional_val_constraints.union(additional_val_constraints)
-                    )
+            additional_val_constraint = (
+                dy_dom_identity.apply_range(our_rev_dep_map)
+                .apply_domain(competitor_rev_map)
+                .intersect_range(our_dom)
+                .intersect_domain(competitor_dom)
+            )
+            curr_val_constraints = curr_val_constraints.union(additional_val_constraint)
+
+    analysis_ctx._cached_schedule_constraints = dataclasses.replace(
+        analysis_ctx._cached_schedule_constraints,
+        validity=curr_val_constraints,
+    )
 
     return donatable_args
 
 
 def _filter_undonatable_args(
-    exec_cfg: ExecutionConfig, dg: PDG, op: top.TensorOp, args_to_donate: Tuple[int, ...]
-) -> Tuple[int, ...]:
+    exec_cfg: ExecutionConfig, dg: PDG, op: top.TensorOp, args_to_donate: tuple[int, ...]
+) -> tuple[int, ...]:
     for i, (depy_op, depy_data) in enumerate(dg.get_flat_direct_dependencies(op)):
         if (
             i in args_to_donate
@@ -349,8 +337,8 @@ def _filter_undonatable_args(
 
 
 def _donate_only_needed_args(
-    dg: PDG, op: top.TensorOp, args_to_donate: Tuple[int, ...]
-) -> Tuple[int, ...]:
+    dg: PDG, op: top.TensorOp, args_to_donate: tuple[int, ...]
+) -> tuple[int, ...]:
     # If it is a UDF, we cannot donate any arguments to it.
     if isinstance(op, top.UDFOp):
         return ()
@@ -362,21 +350,21 @@ def _donate_only_needed_args(
     # We first find the outputs that are covered by a donation
     shapes = dg.get_output_shapes(op)
     dtypes = dg.get_output_dtypes(op)
-    oid_to_spec: Dict[OpOutId, Tuple[Shape, DataType]] = {
+    oid_to_spec: dict[OpOutId, tuple[Shape, DataType]] = {
         oid: (
             shapes[oid].simplify().try_resolve(dg.static_bounds).simplify(),
             dtypes[oid],
         )
         for oid in shapes
     }
-    spec_to_oid: Dict[Tuple[Shape, DataType], Set[OpOutId]] = {
+    spec_to_oid: dict[tuple[Shape, DataType], set[OpOutId]] = {
         spec: set() for _, spec in oid_to_spec.items()
     }
     for oid, spec in oid_to_spec.items():
         spec_to_oid[spec].add(oid)
 
-    outputs_covered_by_donation: Set[OpOutId] = set()
-    donations_to_keep: Set[int] = set()
+    outputs_covered_by_donation: set[OpOutId] = set()
+    donations_to_keep: set[int] = set()
     if isinstance(op, top.MergeOp):
         assert len(args_to_donate) > 0
         outputs_covered_by_donation.add(OpOutId(0))
@@ -404,13 +392,13 @@ def _donate_only_needed_args(
 
 
 class AnalyseDonations(Transformation):
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         new_dg = self.ctx.dg
 
-        tensor_is_donated: Dict[TensorId, bool] = defaultdict(lambda: False)
-        donation_map: Dict[OpId, Tuple[int, ...]] = {}
-        all_donation_map: Dict[OpId, Tuple[int, ...]] = {}
-        donated_to: Dict[TensorId, Tuple[top.TensorOp, DependencyData]] = {}
+        tensor_is_donated: dict[TensorId, bool] = defaultdict(bool)
+        donation_map: dict[OpId, tuple[int, ...]] = {}
+        all_donation_map: dict[OpId, tuple[int, ...]] = {}
+        donated_to: dict[TensorId, tuple[top.TensorOp, DependencyData]] = {}
 
         total_args = 0
         donated_args = 0

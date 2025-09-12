@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import partial
 from os import PathLike
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Tuple, Union
+from typing import Any
 
 import optree
 import torch
@@ -13,15 +13,15 @@ from tempo.api.recurrent_tensor import RecurrentTensor
 from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT
 from tempo.core.device import device
+from tempo.core.dl_backend import DLBackend
 from tempo.core.dtype import DataType, DataTypeLike, dtypes
 from tempo.core.index_expr import Symbol
 from tempo.core.shape import Shape
-from tempo.runtime.backends.backend import DLBackend
 from tempo.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-StateDictT = Dict[str, BackendTensorT]
+StateDictT = dict[str, BackendTensorT]
 
 
 def flatten_state_dict(state_dict: StateDictT) -> StateDictT:
@@ -70,15 +70,15 @@ class StateDictLoader:
 
     def __init__(
         self,
-        state_dict: Optional[StateDictT],
-        current_path: Tuple[str, ...] = (),
-        used_symbols: Optional[Set[Symbol]] = None,
+        state_dict: StateDictT | None,
+        current_path: tuple[str, ...] = (),
+        used_symbols: set[Symbol] | None = None,
     ):
-        self._current_path: Tuple[str, ...] = tuple(current_path)
-        self._used_symbols: Set[Symbol] = set(used_symbols) if used_symbols is not None else set()
-        self.state_dict: Optional[StateDictT] = state_dict
+        self._current_path: tuple[str, ...] = tuple(current_path)
+        self._used_symbols: set[Symbol] = set(used_symbols) if used_symbols is not None else set()
+        self.state_dict: StateDictT | None = state_dict
 
-    def _replace_placeholders(self, pattern: str, mapping: Dict[Symbol, int]) -> str:
+    def _replace_placeholders(self, pattern: str, mapping: dict[Symbol, int]) -> str:
         """Replace placeholders in a pattern with actual symbol values."""
         result = pattern
         assert self._used_symbols.issubset(set(mapping.keys())), (
@@ -95,12 +95,12 @@ class StateDictLoader:
     def empty() -> StateDictLoader:
         return StateDictLoader(None)
 
-    def get_structure(self) -> Dict[str, Tuple[Shape, DataType]]:
+    def get_structure(self) -> dict[str, tuple[Shape, DataType]]:
         """Get the structure of the state dict."""
         if self.state_dict is None:
             return {}
 
-        def get_tensor_structure(tensor: BackendTensorT) -> Tuple[Shape, DataType]:
+        def get_tensor_structure(tensor: BackendTensorT) -> tuple[Shape, DataType]:
             shape = Shape.from_(tensor.shape)
             dtype = dtypes.implied(tensor)
 
@@ -152,7 +152,7 @@ class StateDictLoader:
 
         key = ".".join(self._current_path + (suffix,))
 
-        logger.info("Registering state dict initializer for tensor %s", key)
+        logger.debug("Registering state dict initializer for tensor %s", key)
 
         return partial(
             RecurrentTensor.init_from_statedict,
@@ -161,7 +161,7 @@ class StateDictLoader:
             skip_cast_dev_and_bend=True,
         )
 
-    def append(self, component: Union[str, Symbol]) -> StateDictLoader:
+    def append(self, component: str | Symbol) -> StateDictLoader:
         """Append a component to the current path (string builder pattern)."""
 
         if isinstance(component, Symbol):

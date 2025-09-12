@@ -1,17 +1,17 @@
 import math
+from collections.abc import Mapping
 from functools import partial
-from typing import Dict, List, Mapping, Set, Tuple, Union
 
 from tempo.core import index_expr as ie
 from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT, TensorId
 from tempo.core.device import DeviceGroup
+from tempo.core.dl_backend import DLBackend
 from tempo.core.domain import Domain
 from tempo.core.dtype import DataType, dtypes
 from tempo.core.shape import Shape
 from tempo.core.storage_methods import BlockStore
 from tempo.core.utils import enum_block_points
-from tempo.runtime.backends.backend import DLBackend
 from tempo.runtime.tensor_store.tensor_store import PreallocRuntimeTensor
 from tempo.utils import isl as isl_utils
 from tempo.utils import logger
@@ -73,9 +73,9 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         }
 
         self.points_per_block = 0
-        self.block_modulos: Tuple[int, ...] = ()
+        self.block_modulos: tuple[int, ...] = ()
         # Build block shape
-        block_shape: Tuple[int, ...] = ()
+        block_shape: tuple[int, ...] = ()
         self.storage_info = storage_info
         for d, block_size in storage_info.dims_and_base_buffer_sizes:
             size = block_size or dim_sizes[d.as_bound()]
@@ -99,11 +99,11 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         self.block_shape = block_shape
 
         self.bend_dtype = self.backend.to_backend_datatype(dtype)
-        self.bend_int64 = self.backend.to_backend_datatype(dtypes.int64)
+        self.bend_int = self.backend.to_backend_datatype(dtypes.default_int)
 
-        self._storage_map: Dict[Tuple[int, ...], BackendTensorT] = {}
-        self._dealloc_counters: Dict[Tuple[int, ...], int] = {}
-        self._block_points_on_cpu: Dict[Tuple[int, ...], Set[Tuple[int, ...]]] = {}
+        self._storage_map: dict[tuple[int, ...], BackendTensorT] = {}
+        self._dealloc_counters: dict[tuple[int, ...], int] = {}
+        self._block_points_on_cpu: dict[tuple[int, ...], set[tuple[int, ...]]] = {}
 
         self._mem_used_per_block = math.prod(self.block_shape) * self.dtype.repr_bytes
 
@@ -119,26 +119,20 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         example_val = example_tensor[0]
         self.inplace_set = self.backend.get_inplace_set_fn(
             example_tensor,
-            (self.backend.zeros_tensor(shape=(), dtype=self.bend_int64, dev=self.dev),),
+            (self.backend.zeros_tensor(shape=(), dtype=self.bend_int, dev=self.dev),),
             example_val,
         )  # type: ignore
 
         # Extract pointwise and block dimensions
         self.pointwise_domain_size = len(self.pointwise_domain)
 
-        ## NOTE: ASSUMPTION: Block dims always come after pointwise dims
-        # print(f"{self.tensor_id} -> {storage_info}")
-        # assert all(
-        #    self.full_domain.find_variable_index(d[0]) >= self.pointwise_domain_size
-        #    for d in storage_info.dims_and_block_sizes
-        # ), f"Block dims must come after pointwise dims. \
-        #  {self.full_domain} {self.pointwise_domain}"
+        self.should_lazy_slice = self.exec_cfg.can_lazy_slice()
 
     def extract_key_and_index(
-        self, item: Tuple[Union[int, slice], ...]
-    ) -> Tuple[Tuple[int, ...], Tuple[Union[int, slice], ...]]:
-        buffer_key: List[int] = []
-        intra_buffer_index: List[Union[int, slice]] = []
+        self, item: tuple[int | slice, ...]
+    ) -> tuple[tuple[int, ...], tuple[int | slice, ...]]:
+        buffer_key: list[int] = []
+        intra_buffer_index: list[int | slice] = []
 
         # Process each dimension in the order they appear in the domain
         for dim_idx, dim_item in enumerate(item):
@@ -171,7 +165,7 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
 
         return tuple(buffer_key), tuple(intra_buffer_index)  # type: ignore
 
-    def _get_or_create_buffer(self, key: Tuple[int, ...]) -> BackendTensorT:
+    def _get_or_create_buffer(self, key: tuple[int, ...]) -> BackendTensorT:
         """Get or create a buffer for the given key."""
         if key not in self._storage_map:
             # If no block, borrow one from the pool
@@ -195,7 +189,7 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         res: bool = self.tensor_id == other.tensor_id
         return res
 
-    def __getitem__(self, item: Tuple[Union[int, slice], ...]) -> BackendTensorT:
+    def __getitem__(self, item: tuple[int | slice, ...]) -> BackendTensorT:
         # log.info("%s: GET @ %s", self.tensor_id, item)
         key, index = self.extract_key_and_index(item)
 
@@ -207,16 +201,20 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         if type(index[0]) is slice:
             if index[0].stop - index[0].start == self.block_shape[0]:
                 indexed = block
-            else:
-                # NOTE: add support for block tensor lazy slicing in the wrapper
+            elif self.should_lazy_slice:
                 # NOTE: this happens when there is an access of static size smaller than
                 # the max block access size
                 indexed = (block, index[0].start)  # type: ignore
+            else:
+                indexed = block[index]  # type: ignore
         else:
-            indexed = block[index]  # type: ignore
+            if self.should_lazy_slice:
+                indexed = (block, index[0])  # type: ignore
+            else:
+                indexed = block[index]  # type: ignore
         return indexed  # type: ignore
 
-    def all_int_fast_path(self, item: Tuple[int, ...]) -> BackendTensorT:
+    def all_int_fast_path(self, item: tuple[int, ...]) -> BackendTensorT:
         # log.info("%s: GET @ %s", self.tensor_id, item)
         key, index = self.extract_write_key_and_indexes(item)
         index = index[0]  # NOTE: index is a tuple of tuples because of circular buffer compat
@@ -224,9 +222,13 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         # log.info("TID %s, GET with item %s led to block key %s and block index %s.",
         #  self.tensor_id, item, key, index)
         block = self._storage_map[key]
-        return block[index]  # type: ignore
+        if self.should_lazy_slice:
+            indexed = (block, index)  # type: ignore
+        else:
+            indexed = block[index]  # type: ignore
+        return indexed  # type: ignore
 
-    def __setitem__(self, item: Tuple[Union[int, slice], ...], value: BackendTensorT) -> None:
+    def __setitem__(self, item: tuple[int | slice, ...], value: BackendTensorT) -> None:
         # log.info("%s: SET @ %s", self.tensor_id, item)
         key, index = self.extract_key_and_index(item)
         # log.info("TID %s, SET with item %s led to block key %s and block index %s.",
@@ -236,12 +238,12 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         # Set the value in the block
         self._storage_map[key] = self.inplace_set(
             block,
-            (self.backend.full_tensor(index[0], shape=(), dtype=self.bend_int64, device=self.dev),),
+            (self.backend.full_tensor(index[0], shape=(), dtype=self.bend_int, device=self.dev),),
             value,
         )
         # assert block.unsafe_buffer_pointer() == self._storage_map[key].unsafe_buffer_pointer()
 
-    def all_int_fast_path_set(self, item: Tuple[int, ...], value: BackendTensorT) -> None:
+    def all_int_fast_path_set(self, item: tuple[int, ...], value: BackendTensorT) -> None:
         # log.info("%s: SET @ %s", self.tensor_id, item)
         key, index = self.extract_write_key_and_indexes(item)
         index = index[0]  # NOTE: index is a tuple of tuples because of circular buffer compat
@@ -255,7 +257,7 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         #  {value.shape=}, {self.block_shape=}", flush=True)
         self._storage_map[key] = self.inplace_set(
             block,
-            (self.backend.full_tensor(index[0], shape=(), dtype=self.bend_int64, device=self.dev),),
+            (self.backend.full_tensor(index[0], shape=(), dtype=self.bend_int, device=self.dev),),
             value,
         )
 
@@ -264,7 +266,7 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         self._storage_map.clear()
         self._dealloc_counters.clear()
 
-    def deallocate_point(self, item: Tuple[int, ...]) -> None:
+    def deallocate_point(self, item: tuple[int, ...]) -> None:
         # log.info("%s: DEA @ %s", self.tensor_id, item)
         # Decrement the counter and deallocate the block if needed
         key, _ = self.extract_write_key_and_indexes(item)
@@ -285,15 +287,15 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
             # Delete if present in offload and fetch counters
             self._block_points_on_cpu.pop(key, None)
 
-    def offload_point(self, item: Tuple[int, ...]) -> None:
+    def offload_point(self, item: tuple[int, ...]) -> None:
         # log.info("%s: OFF @ %s", self.tensor_id, item)
         self.offload_block(item)
 
-    def fetch_point(self, item: Tuple[int, ...]) -> None:
+    def fetch_point(self, item: tuple[int, ...]) -> None:
         # log.info("%s: FET @ %s", self.tensor_id, item)
         self.fetch_block(item)
 
-    def deallocate_block(self, item: Tuple[Union[int, slice], ...]) -> None:
+    def deallocate_block(self, item: tuple[int | slice, ...]) -> None:
         # log.info("%s: DEA @ %s", self.tensor_id, item)
         # Decrement the counter and deallocate the block if needed
         key, index = self.extract_key_and_index(item)
@@ -319,7 +321,7 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
                 # Delete if present in offload and fetch counters
                 self._block_points_on_cpu.pop(k, None)
 
-    def offload_block(self, item: Tuple[Union[int, slice], ...]) -> None:
+    def offload_block(self, item: tuple[int | slice, ...]) -> None:
         # log.info("%s: OFF @ %s", self.tensor_id, item)
         # Offload the block when the counter reaches the block size
         key, index = self.extract_key_and_index(item)
@@ -336,7 +338,7 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
                 item = self.backend.to_cpu(old_block)
                 self._storage_map[k] = item  # type: ignore
 
-    def fetch_block(self, item: Tuple[Union[int, slice], ...]) -> None:
+    def fetch_block(self, item: tuple[int | slice, ...]) -> None:
         # log.info("%s: FET @ %s", self.tensor_id, item)
         key, index = self.extract_key_and_index(item)
 
@@ -366,21 +368,21 @@ class BlockRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
     def mem_usage_bytes(self) -> int:
         return self._mem_used_per_block * len(self._storage_map)
 
-    def replace_backing_buffer(self, key: Tuple[int, ...], buffer: BackendTensorT) -> None:
+    def replace_backing_buffer(self, key: tuple[int, ...], buffer: BackendTensorT) -> None:
         if key not in self._storage_map:
             raise KeyError(f"Key {key} not found when replacing the block buffer.")
         self._storage_map[key] = buffer
 
-    def get_backing_buffer(self, key: Tuple[int, ...]) -> BackendTensorT:
+    def get_backing_buffer(self, key: tuple[int, ...]) -> BackendTensorT:
         """Gets the backing buffer for the given key."""
         return self._get_or_create_buffer(key)
 
     def extract_write_key_and_indexes(
-        self, item: Tuple[int, ...]
-    ) -> Tuple[Tuple[int, ...], Tuple[Tuple[int, ...], ...]]:
+        self, item: tuple[int, ...]
+    ) -> tuple[tuple[int, ...], tuple[tuple[int, ...], ...]]:
         """Extracts the write key and indexes from the given item."""
-        buffer_key: List[int] = []
-        intra_buffer_index: List[int] = []
+        buffer_key: list[int] = []
+        intra_buffer_index: list[int] = []
 
         # Process each dimension in the order they appear in the domain
         for dim_idx, dim_item in enumerate(item):

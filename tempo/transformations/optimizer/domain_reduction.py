@@ -1,5 +1,4 @@
 import functools
-from typing import Tuple
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
@@ -47,7 +46,7 @@ def all_dependents_are_point(dg: PDG, op: top.TensorOp, reduction_dim: ie.Symbol
 
 
 class DomainReduction(Transformation):
-    def _run(self) -> Tuple[PDG, bool]:  # noqa: C901
+    def _run(self) -> tuple[PDG, bool]:  # noqa: C901
         new_dg = self.ctx.dg
         dims_removed_count = 0
 

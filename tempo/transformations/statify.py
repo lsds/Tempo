@@ -1,5 +1,4 @@
 import dataclasses
-from typing import Tuple
 
 import numpy as np
 
@@ -23,7 +22,7 @@ class Statify(Transformation):
         Transformation (_type_): _description_
     """
 
-    def _run(self) -> Tuple[PDG, bool]:  # noqa: C901
+    def _run(self) -> tuple[PDG, bool]:  # noqa: C901
         new_dg = self.ctx.dg  # self.copy_dg()
         count = 0
 

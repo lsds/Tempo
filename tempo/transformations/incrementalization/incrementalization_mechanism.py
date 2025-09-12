@@ -1,23 +1,30 @@
 import dataclasses
-import uuid
-from enum import IntEnum, auto
-from typing import Any, Callable, Dict, Optional, Sequence, Set, Tuple, Type, Union
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
 from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.datatypes import OpInId, OpOutId
 from tempo.core.dependence_graph import PDG, DependencyData, OpData
+from tempo.core.dl_backends import DLBackendName
 from tempo.core.domain import Domain
 from tempo.core.dtype import dtypes
 from tempo.core.op_tags import STATIFY_PAD_ID_TAG
 from tempo.core.shape import Shape
 from tempo.core.symbolic_tensor import (
     SymbolicTensor,
-    _get_symbolic_tensor_for_op_output,
+    get_symbolic_tensor_for_op_output,
 )
 from tempo.core.tensor_op import TensorOp
-from tempo.runtime.backends.backend import DLBackendName
+from tempo.transformations.incrementalization.inc_core import (
+    IncKind,
+    IncRoundCtx,
+    IncStartOp,
+    NonIncedDepyAccessInfo,
+    PadInfo,
+)
+from tempo.transformations.incrementalization.inc_rules import INC_RULES
 from tempo.transformations.optimizer.dead_code_elimination import DeadCodeElimination
 from tempo.utils import isl as isl_utils
 from tempo.utils import logger
@@ -66,34 +73,23 @@ log = logger.get_logger(__name__)
 # For similar reasons, it does not make sense to incrementalize the dimension
 # which is being padded in a padding op and such, especially if the padding is dynamic.
 
-# TODO: Discuss padding.
 
 # TODO do we want to add support for inc'ing MergeOps?
 
 
-class IncKind(IntEnum):
-    MEMORY = auto()
-    STATIFYING = auto()
-    # INTRA_OP_PARALLEL = auto() #TODO
-    # INTER_OP_PARALLEL = auto()
-
-
-@dataclasses.dataclass(frozen=True)
-class PadInfo:
-    padding: Tuple[ie.IntIndexValueLike, ie.IntIndexValueLike]
-    how_to_index_padding: ie.IndexSequence
-    pad_idx_index_expr: ie.IntIndexValueLike
-    src_inc_dim_access_expr: ie.IndexAtom
-    pad_id: str = dataclasses.field(default_factory=lambda: f"{uuid.uuid4()}")
-
-
-@dataclasses.dataclass(frozen=True)
-class NonIncedDepyAccessInfo:
-    src_op: top.TensorOp
-    access_expr: ie.IndexSequence
-    dim_access_expr: ie.IndexAtom
-    num_slices_before: int
-    pad_info: Optional[PadInfo]
+def get_int_inc_var_ub(new_dg: PDG, inc_var_UB: ie.Symbol) -> int:
+    if inc_var_UB not in new_dg.dynamic_bounds:
+        inc_var_UB_max_val = new_dg.static_bounds[inc_var_UB]
+    else:
+        real_ub = new_dg.dynamic_bounds[inc_var_UB]
+        inc_var_UB_max_val_ = isl_utils.int_index_val_max(
+            real_ub,
+            known_symbols=new_dg.static_bounds,
+        )
+        assert isinstance(inc_var_UB_max_val_, ie.ConstInt)
+        inc_var_UB_max_val = inc_var_UB_max_val_.const
+    assert inc_var_UB_max_val is not None
+    return inc_var_UB_max_val
 
 
 def get_or_create_inc_symbol(
@@ -121,7 +117,7 @@ def create_inc_symbol_and_block_idxs(
     upper_bound: ie.IntIndexValueLike,
     inc_var_name: str = "di",
     allow_reuse_symbol: bool = True,
-) -> Tuple[ie.Symbol, SymbolicTensor]:
+) -> tuple[ie.Symbol, SymbolicTensor]:
     inc_var = get_or_create_inc_symbol(dg, inc_round, upper_bound, inc_var_name, allow_reuse_symbol)
 
     block_idxs = create_block_idxs(block_size, inc_var)
@@ -140,59 +136,15 @@ def create_block_idxs(block_size: int, inc_var: ie.Symbol) -> SymbolicTensor:
     return block_idxs
 
 
-# TODO: Do we really need both of these?
-IncStartOp = Union[top.ReduceOp, top.MatMulOp]
-ALLOWED_START_OPS = (top.SumOp, top.MaxOp, top.MatMulOp)
-
-
-@dataclasses.dataclass(frozen=True)
-class IncRoundCtx:
-    kind: IncKind
-    inc_start_ops: Set[IncStartOp]
-    start_op_inputs_and_dims: Dict[IncStartOp, Sequence[Tuple[OpInId, int]]]
-    inc_var: ie.Symbol
-    dim_size: ie.IntIndexValueLike
-    block_size: int
-    block_idx: SymbolicTensor
-    num_blocks: ie.IntIndexValue
-    comp_ctx: CompilationCtx
-    needs_incrementalization: Callable[[top.TensorOp, CompilationCtx, bool], bool]
-    finalize_incremental: bool = False
-    # The following are filled in by the incrementalization pass itself
-    op_mapping: Dict[top.TensorOp, top.TensorOp] = dataclasses.field(default_factory=dict)
-    dim_position_map: Dict[top.TensorOp, int] = dataclasses.field(default_factory=dict)
-    padding_applied: Dict[top.TensorOp, PadInfo] = dataclasses.field(default_factory=dict)
-    all_dynamic_ops: Set[top.TensorOp] = dataclasses.field(default_factory=set)
-    max_depth: Optional[int] = None
-
-    def __post_init__(self) -> None:
-        if (not self.finalize_incremental) and self.kind == IncKind.STATIFYING:
-            raise ValueError("Statifying inc does not support all at once finalizing.")
-
-    def __str__(self) -> str:
-        return (
-            f"IncRoundCtx("
-            f"\tinc_start_ops={self.inc_start_ops}, "
-            f"\tstart_op_inputs_and_dims={self.start_op_inputs_and_dims}, "
-            f"\tinc_var={self.inc_var}, "
-            f"\tdim_size={self.dim_size}, "
-            f"\tblock_size={self.block_size}, "
-            f"\tblock_idx={self.block_idx}, "
-            f"\tfinalize_incremental={self.finalize_incremental}, "
-            f"\tall_dynamic_ops={self.all_dynamic_ops}"
-            f")"
-        )
-
-
 def _finalize_reduce_op(
     new_dg: PDG,
     op: top.ReduceOp,
-    start_op_depys: Sequence[Tuple[TensorOp, DependencyData, int]],
+    start_op_depys: Sequence[tuple[TensorOp, DependencyData, int]],
     inc_round_ctx: IncRoundCtx,
     inc_var_UB_max_val: int,
     inp_inc_dim0: int,
     old_op_data: OpData,
-) -> Tuple[SymbolicTensor, SymbolicTensor]:
+) -> tuple[SymbolicTensor, SymbolicTensor]:
     """Handle finalization of reduce operations during incrementalization."""
     assert len(start_op_depys) == 1, (
         f"Expected exactly one dependency for {op}, got {start_op_depys}"
@@ -220,8 +172,8 @@ def _finalize_reduce_op(
     )
 
     # 3. Apply finalizing reduction manually
-    first_red_symb_t = _get_symbolic_tensor_for_op_output(new_dg, new_initial_red_op, OpOutId(0))
-    if inc_var_UB_max_val == 1:
+    first_red_symb_t = get_symbolic_tensor_for_op_output(new_dg, new_initial_red_op, OpOutId(0))
+    if inc_var_UB_max_val == 1 and False:
         inc_var_idx = first_red_symb_t.domain.find_variable_index(inc_round_ctx.inc_var)
         final_op_symb_t = first_red_symb_t.symbolic_index(
             first_red_symb_t.domain.basis_expr.replace_idx(inc_var_idx, 0)
@@ -270,11 +222,11 @@ def _finalize_reduce_op(
 def _finalize_matmul_contracting(
     new_dg: PDG,
     op: top.MatMulOp,
-    start_op_depys: Sequence[Tuple[TensorOp, DependencyData, int]],
+    start_op_depys: Sequence[tuple[TensorOp, DependencyData, int]],
     inc_round_ctx: IncRoundCtx,
     inc_var_UB_max_val: int,
     old_op_data: OpData,
-) -> Tuple[SymbolicTensor, SymbolicTensor]:
+) -> tuple[SymbolicTensor, SymbolicTensor]:
     """Handle finalization of matmul operations with
     contracting dimensions during incrementalization."""
     assert len(start_op_depys) == 2, (
@@ -290,7 +242,7 @@ def _finalize_matmul_contracting(
     )
 
     new_dg.insert_op(dataclasses.replace(old_op_data, op=new_initial_matmul_op))
-    first_red_symb_t = _get_symbolic_tensor_for_op_output(new_dg, new_initial_matmul_op, OpOutId(0))
+    first_red_symb_t = get_symbolic_tensor_for_op_output(new_dg, new_initial_matmul_op, OpOutId(0))
     inc_var_idx = first_red_symb_t.domain.find_variable_index(inc_round_ctx.inc_var)
 
     for d, dd, ddim in [
@@ -307,7 +259,7 @@ def _finalize_matmul_contracting(
             ddim,
             None,
         )
-    if inc_var_UB_max_val == 1:
+    if inc_var_UB_max_val == 1 and False:
         final_op_symb_t = first_red_symb_t.symbolic_index(
             first_red_symb_t.domain.basis_expr.replace_idx(inc_var_idx, 0)
         ).ident()
@@ -341,13 +293,13 @@ def _finalize_matmul_contracting(
 def _finalize_matmul_non_contracting(
     new_dg: PDG,
     op: top.MatMulOp,
-    start_op_depys: Sequence[Tuple[TensorOp, DependencyData, int]],
+    start_op_depys: Sequence[tuple[TensorOp, DependencyData, int]],
     inc_round_ctx: IncRoundCtx,
     inc_var_UB_max_val: int,
     inp_inc_dim0: int,
-    inps_inc_dim_and_idx: Sequence[Tuple[OpInId, int]],
+    inps_inc_dim_and_idx: Sequence[tuple[OpInId, int]],
     old_op_data: OpData,
-) -> Tuple[SymbolicTensor, SymbolicTensor]:
+) -> tuple[SymbolicTensor, SymbolicTensor]:
     """Handle finalization of matmul operations with
     non-contracting dimensions during incrementalization."""
     assert len(start_op_depys) == 2, (
@@ -372,7 +324,7 @@ def _finalize_matmul_non_contracting(
         old_op_data, op=new_initial_matmul_op, output_shapes={OpOutId(0): new_shape}
     )
     new_dg.insert_op(new_op_data)
-    first_red_symb_t = _get_symbolic_tensor_for_op_output(new_dg, new_initial_matmul_op, OpOutId(0))
+    first_red_symb_t = get_symbolic_tensor_for_op_output(new_dg, new_initial_matmul_op, OpOutId(0))
     inc_var_idx = first_red_symb_t.domain.find_variable_index(inc_round_ctx.inc_var)
 
     for i, d, dd in [(0, depy_0, depy_data_0), (1, depy_1, depy_data_1)]:
@@ -388,7 +340,7 @@ def _finalize_matmul_non_contracting(
             out_inc_dim,
         )
 
-    if inc_var_UB_max_val == 1:
+    if inc_var_UB_max_val == 1 and False:
         final_op_symb_t = first_red_symb_t.symbolic_index(
             first_red_symb_t.domain.basis_expr.replace_idx(inc_var_idx, 0)
         ).ident()
@@ -409,7 +361,7 @@ def _finalize_matmul_non_contracting(
 def finalize_incrementalization_start_point(
     new_dg: PDG,
     op: IncStartOp,
-    start_op_depys: Sequence[Tuple[TensorOp, DependencyData, int]],
+    start_op_depys: Sequence[tuple[TensorOp, DependencyData, int]],
     inc_round_ctx: IncRoundCtx,
 ) -> None:
     inc_var_UB = inc_round_ctx.inc_var.as_bound()
@@ -424,7 +376,7 @@ def finalize_incrementalization_start_point(
 
     inc_var_UB_max_val = get_int_inc_var_ub(new_dg, inc_var_UB)
 
-    first_red_symb_t: Optional[SymbolicTensor] = None
+    first_red_symb_t: SymbolicTensor | None = None
 
     if isinstance(op, top.ReduceOp):
         first_red_symb_t, final_op_symb_t = _finalize_reduce_op(
@@ -459,352 +411,18 @@ def finalize_incrementalization_start_point(
     new_dg.move_dependents(op, final_op_symb_t.op)
 
 
-def get_int_inc_var_ub(new_dg: PDG, inc_var_UB: ie.Symbol) -> int:
-    if inc_var_UB not in new_dg.dynamic_bounds:
-        inc_var_UB_max_val = new_dg.static_bounds[inc_var_UB]
-    else:
-        real_ub = new_dg.dynamic_bounds[inc_var_UB]
-        inc_var_UB_max_val_ = isl_utils.int_index_val_max(
-            real_ub,
-            # domain=new_dg.universe,
-            known_symbols=new_dg.static_bounds,
-        )
-        assert isinstance(inc_var_UB_max_val_, ie.ConstInt)
-        inc_var_UB_max_val = inc_var_UB_max_val_.const
-    assert inc_var_UB_max_val is not None
-    return inc_var_UB_max_val
-
-
-def cumsum_rewrite(
-    dg: PDG,
-    op: top.TensorOp,
-    out_inc_dim: int,
-    inc_round_ctx: IncRoundCtx,
-) -> OpData:
-    nb = inc_round_ctx.num_blocks.partial_eval(dg.static_bounds)
-    assert isinstance(nb, ie.ConstInt) and nb.const == 1, (
-        "Cumsum rewrite only supported for 1 block. TODO: advanced cumsum requires chaining."
-    )
-
-    # The new operation now has the incrementalizing dimension added to its domain
-    new_op = dataclasses.replace(
-        op,
-        op_id=dg.get_next_op_id(),
-        domain=op.domain.append_dim(inc_round_ctx.inc_var, inc_round_ctx.inc_var.as_bound()),
-    )
-
-    curr_op_data = dg.ops_by_id[op.op_id]
-
-    new_out_shapes = {}
-    for out_id, out_shape in curr_op_data.output_shapes.items():
-        resized = out_shape.resize_dim(out_inc_dim, inc_round_ctx.block_size)
-        new_out_shapes[out_id] = resized
-
-    new_op_data = dataclasses.replace(curr_op_data, op=new_op, output_shapes=new_out_shapes)
-
-    return new_op_data
-
-
-def elementwise_rewrite(
-    dg: PDG,
-    op: top.TensorOp,
-    out_inc_dim: int,
-    inc_round_ctx: IncRoundCtx,
-) -> OpData:
-    # The new operation now has the incrementalizing dimension added to its domain
-    new_op = dataclasses.replace(
-        op,
-        op_id=dg.get_next_op_id(),
-        domain=op.domain.append_dim(inc_round_ctx.inc_var, inc_round_ctx.inc_var.as_bound()),
-    )
-
-    curr_op_data = dg.ops_by_id[op.op_id]
-
-    new_out_shapes = {}
-    for out_id, out_shape in curr_op_data.output_shapes.items():
-        resized = out_shape.resize_dim(out_inc_dim, inc_round_ctx.block_size)
-        new_out_shapes[out_id] = resized
-
-    new_op_data = dataclasses.replace(curr_op_data, op=new_op, output_shapes=new_out_shapes)
-
-    return new_op_data
-
-
-def index_slice_rewrite(
-    dg: PDG,
-    op: top.TensorOp,
-    out_inc_dim: int,
-    inc_round_ctx: IncRoundCtx,
-) -> OpData:
-    assert isinstance(op, top.IndexSliceOp)
-
-    if out_inc_dim != op.dim:
-        return elementwise_rewrite(dg, op, out_inc_dim, inc_round_ctx)
-
-    # NOTE: it is possible we will be incrementalizing on the slicing dim
-    # (e.g. when doing statification)
-    # In this case, we need to replace the length with the static block size.
-    # TODO: However, it is also very important that we replace the start_idx
-    # with a shifted start idx, and that proper masking is in place.
-    # Start idx needs to be shifted by the amount missing from the right to fill the block.
-    # I believe currently, since there is no "pad" op, the need for a mask is not counted.
-
-    raise NotImplementedError(
-        "TODO: implement index slice rewrite by shifting start_idx and adding masks"
-    )
-
-    new_op = dataclasses.replace(
-        op,
-        length=inc_round_ctx.block_size,
-        op_id=dg.get_next_op_id(),
-        domain=op.domain.append_dim(inc_round_ctx.inc_var, inc_round_ctx.inc_var.as_bound()),
-    )
-
-    curr_op_data = dg.ops_by_id[op.op_id]
-
-    new_out_shapes = {}
-    for out_id, out_shape in curr_op_data.output_shapes.items():
-        new_out_shapes[out_id] = out_shape.resize_dim(out_inc_dim, inc_round_ctx.block_size)
-
-    new_op_data = dataclasses.replace(curr_op_data, op=new_op, output_shapes=new_out_shapes)
-
-    return new_op_data
-
-
-# Simply moves a dim from spatial to symbolic.
-def expand_rewrite(
-    dg: PDG,
-    op: top.TensorOp,
-    out_inc_dim: int,
-    inc_round_ctx: IncRoundCtx,
-) -> OpData:
-    assert isinstance(op, top.ExpandOp)
-    # The new operation now has the incrementalizing dimension added to its domain
-    new_op = dataclasses.replace(
-        op,
-        sizes=op.sizes.resize_dim(out_inc_dim, inc_round_ctx.block_size),
-        op_id=dg.get_next_op_id(),
-        domain=op.domain.append_dim(inc_round_ctx.inc_var, inc_round_ctx.inc_var.as_bound()),
-    )
-
-    curr_op_data = dg.ops_by_id[op.op_id]
-
-    new_out_shapes = {}
-    for out_id, out_shape in curr_op_data.output_shapes.items():
-        new_out_shapes[out_id] = out_shape.resize_dim(out_inc_dim, inc_round_ctx.block_size)
-
-    new_op_data = dataclasses.replace(curr_op_data, op=new_op, output_shapes=new_out_shapes)
-
-    return new_op_data
-
-
-def index_select_rewrite(
-    dg: PDG,
-    op: top.TensorOp,
-    out_inc_dim: int,
-    inc_round_ctx: IncRoundCtx,
-) -> OpData:
-    assert isinstance(op, top.IndexSelectOp)
-
-    assert out_inc_dim != op.dim, (
-        f"Cannot incrementalize on the indexing dimension {op.dim} of {op}"
-    )
-
-    new_op = dataclasses.replace(
-        op,
-        op_id=dg.get_next_op_id(),
-        domain=op.domain.append_dim(inc_round_ctx.inc_var, inc_round_ctx.inc_var.as_bound()),
-    )
-
-    curr_op_data = dg.ops_by_id[op.op_id]
-
-    new_out_shapes = {}
-    for out_id, out_shape in curr_op_data.output_shapes.items():
-        new_out_shapes[out_id] = out_shape.resize_dim(out_inc_dim, inc_round_ctx.block_size)
-
-    new_op_data = dataclasses.replace(curr_op_data, op=new_op, output_shapes=new_out_shapes)
-
-    return new_op_data
-
-
-def reshape_rewrite(
-    dg: PDG,
-    op: top.TensorOp,
-    out_inc_dim: int,
-    inc_round_ctx: IncRoundCtx,
-) -> OpData:
-    assert isinstance(op, top.ReshapeOp)
-    # The new operation now has the incrementalizing dimension added to its domain
-    new_op = dataclasses.replace(
-        op,
-        shape=Shape.from_(
-            op.shape._shape[:out_inc_dim]
-            + (inc_round_ctx.block_size,)
-            + op.shape._shape[out_inc_dim + 1 :]
-        ),
-        op_id=dg.get_next_op_id(),
-        domain=op.domain.append_dim(inc_round_ctx.inc_var, inc_round_ctx.inc_var.as_bound()),
-    )
-
-    curr_op_data = dg.ops_by_id[op.op_id]
-
-    new_out_shapes = {}
-    for out_id, out_shape in curr_op_data.output_shapes.items():
-        new_out_shapes[out_id] = out_shape.resize_dim(out_inc_dim, inc_round_ctx.block_size)
-
-    new_op_data = dataclasses.replace(curr_op_data, op=new_op, output_shapes=new_out_shapes)
-
-    return new_op_data
-
-
-def const_rewrite(
-    dg: PDG,
-    op: top.TensorOp,
-    out_inc_dim: int,
-    inc_round_ctx: IncRoundCtx,
-) -> OpData:
-    assert isinstance(op, top.ConstOp)
-
-    # NOTE: can also be uniform across the dimension
-    # assert op.is_uniform, f"Cannot incrementalize non-uniform constant {op}"
-
-    curr_op_data = dg.ops_by_id[op.op_id]
-
-    id_ = dg.get_next_op_id()
-    new_shape = op.shape.resize_dim(out_inc_dim, inc_round_ctx.block_size)
-    new_op = dataclasses.replace(
-        op,
-        op_id=id_,
-        shape=new_shape,
-    )
-
-    new_op_data = dataclasses.replace(
-        curr_op_data,
-        op=new_op,
-        output_shapes={OpOutId(0): new_shape},
-    )
-
-    return new_op_data
-
-
-def rand_rewrite(
-    dg: PDG,
-    op: top.TensorOp,
-    out_inc_dim: int,
-    inc_round_ctx: IncRoundCtx,
-) -> OpData:
-    assert isinstance(op, top.RandOp)
-
-    curr_op_data = dg.ops_by_id[op.op_id]
-
-    id_ = dg.get_next_op_id()
-    new_domain = op.domain.append_dim(inc_round_ctx.inc_var, inc_round_ctx.inc_var.as_bound())
-    new_shape = op.shape.resize_dim(out_inc_dim, inc_round_ctx.block_size)
-    new_op = top.RandOp(
-        op_id=id_,
-        domain=new_domain,
-        tags=op.tags,
-        dtype=op.dtype,
-        shape=new_shape,
-    )
-
-    new_op_data = dataclasses.replace(
-        curr_op_data,
-        op=new_op,
-        output_shapes={OpOutId(0): new_shape},
-    )
-
-    return new_op_data
-
-
-IncRuleFn = Callable[
-    [
-        PDG,
-        top.TensorOp,
-        int,
-        IncRoundCtx,
-    ],
-    OpData,
-]
-
-incrementalization_rules: Dict[
-    Type[top.TensorOp],
-    IncRuleFn,
-] = {
-    top.ConstOp: const_rewrite,
-    top.RandOp: rand_rewrite,
-    # Elementwise
-    ## Unary
-    top.CastOp: elementwise_rewrite,
-    top.SqrtOp: elementwise_rewrite,
-    top.NegOp: elementwise_rewrite,
-    top.NotOp: elementwise_rewrite,
-    top.LnOp: elementwise_rewrite,
-    top.ExpOp: elementwise_rewrite,
-    top.SinOp: elementwise_rewrite,
-    top.IdentOp: elementwise_rewrite,
-    top.ValToValOp: elementwise_rewrite,
-    # Binary
-    top.AddOp: elementwise_rewrite,
-    top.SubOp: elementwise_rewrite,
-    top.MulOp: elementwise_rewrite,
-    top.DivOp: elementwise_rewrite,
-    top.PowOp: elementwise_rewrite,
-    top.OrOp: elementwise_rewrite,
-    top.AndOp: elementwise_rewrite,
-    top.EqualOp: elementwise_rewrite,
-    top.LessThanOp: elementwise_rewrite,
-    # Ternary
-    top.WhereOp: elementwise_rewrite,
-    # Source Ops
-    # top.RandOp: elementwise_rewrite,
-    # top.EvalSymbolOp:  # we ignore EvalSymbolOps
-    top.MergeOp: elementwise_rewrite,
-    # Reductions
-    top.SumOp: elementwise_rewrite,
-    top.MaxOp: elementwise_rewrite,
-    # Movement
-    top.FlipOp: elementwise_rewrite,
-    top.SqueezeOp: elementwise_rewrite,
-    top.UnsqueezeOp: elementwise_rewrite,
-    top.PermuteOp: elementwise_rewrite,
-    top.ExpandOp: expand_rewrite,
-    top.IndexSliceOp: index_slice_rewrite,
-    top.PadOp: elementwise_rewrite,
-    # Scans
-    top.CumSumOp: cumsum_rewrite,
-    # Gather/Scatter
-    top.GatherOp: elementwise_rewrite,
-    # top.ScatterAddOp: scatter_rewrite,
-    # Shaped
-    # NOTE: These can be incrementalized on unnaffected dims using the elementwise rule
-    top.ReshapeOp: reshape_rewrite,
-    top.CatOp: elementwise_rewrite,
-    top.SplitOp: elementwise_rewrite,
-    top.MatMulOp: elementwise_rewrite,
-    # Indexing
-    top.IndexSelectOp: index_select_rewrite,  # should exist?
-    # top.IndexAdd: single_dim_rewrite,  # should exist?
-    # Convolution
-    # top.ConvOp: conv_rewrite,
-    # top.ConvBwdOp: conv_rewrite,  # can this be treated the same as ConvOp?
-    # UDF
-    # top.UDFOp: udf_rewrite,
-}
-
-
 def get_inc_common_should_recurr_and_effect(
     inc_round_ctx: IncRoundCtx,
-) -> Tuple[
-    Callable[[PDG, TensorOp, DependencyData, TensorOp, Optional[int], int, Any], bool],
-    Callable[[PDG, TensorOp, int, Dict[OpInId, int], Any], Tuple[PDG, Any]],
+) -> tuple[
+    Callable[[PDG, TensorOp, DependencyData, TensorOp, int | None, int, Any], bool],
+    Callable[[PDG, TensorOp, int, dict[OpInId, int], Any], tuple[PDG, Any]],
 ]:
     def inc_common_should_recurr(
         dg: PDG,
         snk: TensorOp,
         depy_data: DependencyData,
         src: TensorOp,
-        snk_out_inc_dim: Optional[int],
+        snk_out_inc_dim: int | None,
         src_out_inc_dim: int,
         ctx: Any,
     ) -> bool:
@@ -839,10 +457,10 @@ def get_inc_common_should_recurr_and_effect(
         return can_proceed and needs_inc and can_inc and not_already_inced and not exceeds_max_depth
 
     def inc_common_effect(
-        dg: PDG, op_: TensorOp, out_dim: int, in_dims: Dict[OpInId, int], ctx: Any
-    ) -> Tuple[PDG, Any]:
+        dg: PDG, op_: TensorOp, out_dim: int, in_dims: dict[OpInId, int], ctx: Any
+    ) -> tuple[PDG, Any]:
         inc_round_ctx.dim_position_map[op_] = out_dim
-        new_op_data = incrementalization_rules[op_.__class__](dg, op_, out_dim, inc_round_ctx)
+        new_op_data = INC_RULES[op_.__class__](dg, op_, out_dim, inc_round_ctx)
         dg.insert_op(new_op_data)
         # print(f"Incrementalized {op_} to {new_op_data.op}")
         inc_round_ctx.op_mapping[op_] = new_op_data.op
@@ -857,7 +475,7 @@ def incrementalize_ops_recursively(
     start_inc_out_dim: int,
     start_inc_out_id: OpOutId,
     inc_round_ctx: IncRoundCtx,
-) -> Tuple[PDG, int]:
+) -> tuple[PDG, int]:
     """
     Incrementalizes an operation and recursively processes all its dependencies.
     """
@@ -953,7 +571,7 @@ def get_inced_padding_and_src_access_expr(
     # inc_var_UB = inc_var.as_bound()
     # orig_var_UB = orig_var.as_bound()
 
-    how_to_index_padding: Optional[ie.IndexSequence] = None
+    how_to_index_padding: ie.IndexSequence | None = None
 
     if slice_of_interest.is_constant():
         # TODO: this will evaluate to True, even when T is dynamic. We need to handle this properly
@@ -988,7 +606,7 @@ def get_inced_padding_and_src_access_expr(
             slice_ub - (block_size - padding[1]),
             slice_ub,
         )
-        src_inc_dim_access_expr = isl_utils.simplify_expr(
+        src_inc_dim_access_expr = isl_utils.simplify_expr_atom(
             src_inc_dim_access_expr,
             known_symbols=dg.static_bounds,
         )
@@ -1006,7 +624,7 @@ def get_inced_padding_and_src_access_expr(
             slice_lb + (block_size - padding[0]),
         )
 
-        src_inc_dim_access_expr = isl_utils.simplify_expr(
+        src_inc_dim_access_expr = isl_utils.simplify_expr_atom(
             src_inc_dim_access_expr, known_symbols=dg.static_bounds
         )
 
@@ -1083,7 +701,7 @@ def get_inced_padding_and_src_access_expr(
 
 def _get_pad_value_for_symbolic_tensor(
     symb_t: SymbolicTensor,
-) -> Union[float, int, bool]:
+) -> float | int | bool:
     dtype = symb_t.dtype
     if dtypes.is_integer(dtype):
         return 0
@@ -1102,8 +720,8 @@ def _handle_dependency_edge(  # noqa: C901
     new_snk_op: top.TensorOp,
     old_src_op: top.TensorOp,
     depy_data: DependencyData,
-    inc_dim_in: Optional[int],
-    inc_dim_out: Optional[int],
+    inc_dim_in: int | None,
+    inc_dim_out: int | None,
 ) -> None:
     depy_was_inc = old_src_op in inc_round_ctx.op_mapping
     #    or old_src_op.domain.has_dim(inc_round_ctx.inc_var)
@@ -1115,7 +733,7 @@ def _handle_dependency_edge(  # noqa: C901
     )
     e = depy_data.expr
 
-    depy_sym_t = _get_symbolic_tensor_for_op_output(new_dg, old_src_op, depy_data.src_out_idx)
+    depy_sym_t = get_symbolic_tensor_for_op_output(new_dg, old_src_op, depy_data.src_out_idx)
 
     if isinstance(old_snk_op, top.MatMulOp) and inc_dim_in is None:
         # NOTE: This is the case where the depy is a matmul on non-batch non-contracting dims
@@ -1226,10 +844,7 @@ def _handle_dependency_edge(  # noqa: C901
 
             # NOTE: For torch backend, we may want to use index_select here, though
             # it is less efficient than slicing, to allow for use of torch.compile
-            if (
-                DLBackendName.str_to_enum(inc_round_ctx.comp_ctx.exec_cfg.backend)
-                == DLBackendName.TORCH
-            ):
+            if inc_round_ctx.comp_ctx.exec_cfg.get_canonical_backend_name() == DLBackendName.TORCH:
                 block_idx = inc_round_ctx.block_idx or SymbolicTensor.lift(inc_round_ctx.inc_var)
                 indexed_src = symb_t.index_select(
                     hypothetical_inc_dim_depy, block_idx, keepdim=True
@@ -1301,7 +916,7 @@ def _handle_dependent_edges(
         if dependent in inc_round_ctx.inc_start_ops:
             continue
 
-        symb_t_dep = _get_symbolic_tensor_for_op_output(new_dg, new_op, dep_data.src_out_idx)
+        symb_t_dep = get_symbolic_tensor_for_op_output(new_dg, new_op, dep_data.src_out_idx)
         expected_shape = new_dg.get_input_shape(dependent, dep_data.sink_in_idx)
 
         # Our new dim will always be rightmost, so we can just append the expr
@@ -1374,7 +989,7 @@ def _can_incrementalize_base(
     dg: PDG,
     op: TensorOp,
 ) -> bool:
-    if op.__class__ not in incrementalization_rules:
+    if op.__class__ not in INC_RULES:
         # log.warning("Cannot incrementalize %s due to missing rule", op)
         return False
 
@@ -1427,6 +1042,10 @@ def _can_incrementalize(
     if isinstance(op, top.GatherOp):
         result &= inc_dim != op.dim
 
+    # TODO: Though we could allow a sort of reduction tree, I dont think that is efficient.
+    if isinstance(op, top.SortOp):
+        result &= inc_dim != op.dim
+
     # TODO: add support for cumsum inc when num_blocks is not 1: need to get last result of prev
     # block and add it to the current block, then continue the cumsum
     if isinstance(op, top.CumSumOp):
@@ -1450,7 +1069,7 @@ def perform_incrementalization(
         inc_round_ctx
     )
 
-    start_op_depys_dict: Dict[TensorOp, Sequence[Tuple[TensorOp, DependencyData, int]]] = {}
+    start_op_depys_dict: dict[TensorOp, Sequence[tuple[TensorOp, DependencyData, int]]] = {}
     for start_op in inc_round_ctx.inc_start_ops:
         if start_op in op_mapping:
             continue
@@ -1498,21 +1117,12 @@ def perform_incrementalization(
             inc_round_ctx,
         )
 
-    # TODO perform the masking here.
-
     for op in op_mapping.keys():
         new_dg.remove_op(op)
-
-    # DGRenderer(
-    #    CompilationCtx(
-    #        new_dg, inc_round_ctx.comp_ctx.analysis_ctx, inc_round_ctx.comp_ctx.exec_cfg
-    #    ),
-    #    f"{inc_round_ctx.comp_ctx.exec_cfg.path}/after_incbbbb.dot",
-    # ).render()
 
     new_ctx_, _, _ = DeadCodeElimination(
         CompilationCtx(new_dg, inc_round_ctx.comp_ctx.analysis_ctx, inc_round_ctx.comp_ctx.exec_cfg)
     ).run()
-    new_dg = new_ctx_.dg
+    # new_dg = new_ctx_.dg
 
     return new_dg  # type: ignore

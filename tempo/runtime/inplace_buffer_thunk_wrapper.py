@@ -1,5 +1,5 @@
 import typing
-from typing import Callable, List, Sequence, Tuple, Union
+from collections.abc import Callable, Sequence
 
 from tempo.core import tensor_ops as top
 from tempo.core.analysis_ctx import AnalysisCtx
@@ -8,6 +8,7 @@ from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT, OpOutId, TensorId
 from tempo.core.dependence_graph import PDG
 from tempo.core.device import DeviceGroup
+from tempo.core.dl_backends import DLBackendName
 from tempo.core.dtype import DataType, dtypes
 from tempo.core.shape import Shape
 from tempo.core.storage_methods import PreallocBufferStore
@@ -23,7 +24,7 @@ def has_buffer_stored_outputs(
 
 def find_buffer_stored_output_tensors(
     parent_graph: PDG, graph_op: TensorOp, analysis_ctx: AnalysisCtx
-) -> Tuple[TensorId, ...]:
+) -> tuple[TensorId, ...]:
     # if analysis_ctx._buffer_stored_output_tensor_positions is None:
     #    return ()
 
@@ -40,13 +41,13 @@ def find_buffer_stored_output_tensors(
 
 # finds out the buffer and index shapes, and the output data types for block stored tensors
 def find_buffer_stored_buffer_index_shapes_and_types(
-    tensor_ids: Tuple[TensorId, ...],
+    tensor_ids: tuple[TensorId, ...],
     dataflow_graph: PDG,
     graph_op: TensorOp,
     analysis_ctx: AnalysisCtx,
     output_types: Sequence[DataType],
-) -> Tuple[Tuple[Shape, int, DataType], ...]:
-    buffer_index_shapes_and_data_type: list[Tuple[Shape, int, DataType]] = []
+) -> tuple[tuple[Shape, int, DataType], ...]:
+    buffer_index_shapes_and_data_type: list[tuple[Shape, int, DataType]] = []
 
     all_output_shapes = dataflow_graph.get_output_shapes_list(graph_op)
 
@@ -75,20 +76,20 @@ def make_inplace_write_wrapper(
     parent_graph: PDG,
     self_op: top.TensorOp,
     output_dtypes: Sequence[DataType],
-    interp_exec_func: Callable[[Tuple[BackendTensorT, ...]], Tuple[BackendTensorT, ...]],
-    example_inputs: Tuple[BackendTensorT, ...],
+    interp_exec_func: Callable[[tuple[BackendTensorT, ...]], tuple[BackendTensorT, ...]],
+    example_inputs: tuple[BackendTensorT, ...],
     donatable_args: tuple[int, ...],
-) -> Tuple[
-    Callable[[Tuple[BackendTensorT, ...]], Tuple[BackendTensorT, ...]],
-    Tuple[BackendTensorT, ...],
-    Tuple[int, ...],
+) -> tuple[
+    Callable[[tuple[BackendTensorT, ...]], tuple[BackendTensorT, ...]],
+    tuple[BackendTensorT, ...],
+    tuple[int, ...],
 ]:
     """
     Handles inplace write logic for buffer-stored output tensors.
     """
-    from tempo.runtime.backends.backend import DLBackend
+    from tempo.core.dl_backend import DLBackend
 
-    backend: DLBackend = DLBackend.get_backend(exec_cfg.backend)
+    backend: type[DLBackend] = DLBackend.get_backend(exec_cfg.backend)
 
     buffer_stored_tensor_ids = find_buffer_stored_output_tensors(
         parent_graph=parent_graph, graph_op=self_op, analysis_ctx=analysis_ctx
@@ -107,7 +108,7 @@ def make_inplace_write_wrapper(
     if len(output_devs) != len(buffer_index_shapes_and_data_type):
         raise ValueError("Block stored output devices do not match with the number of buffers")
 
-    dummy_buffers: Tuple[BackendTensorT, ...]
+    dummy_buffers: tuple[BackendTensorT, ...]
     dummy_buffers, dummy_buffer_indices = _build_dummy_inputs(
         exec_cfg, buffer_index_shapes_and_data_type, output_devs
     )
@@ -117,9 +118,9 @@ def make_inplace_write_wrapper(
     buf_args = range(first_buf, first_buf + len(dummy_buffers))
     donatable_args = donatable_args + tuple(buf_args)
     all_output_shapes = parent_graph.get_output_shapes_list(self_op)
-    inplace_set_fns: List[
+    inplace_set_fns: list[
         Callable[
-            [BackendTensorT, Sequence[Union[int, slice]], BackendTensorT],
+            [BackendTensorT, Sequence[int | slice], BackendTensorT],
             BackendTensorT,
         ]
     ] = []
@@ -157,15 +158,15 @@ def make_inplace_write_wrapper(
 
 def _build_dummy_inputs(
     exec_cfg: ExecutionConfig,
-    buffer_index_shapes_and_data_type: Tuple[Tuple[Shape, int, DataType], ...],
-    output_devs: List[DeviceGroup],
-) -> Tuple[Tuple[BackendTensorT, ...], Tuple[Tuple[Tuple[int, ...], ...], ...]]:
-    from tempo.runtime.backends.backend import DLBackend
+    buffer_index_shapes_and_data_type: tuple[tuple[Shape, int, DataType], ...],
+    output_devs: list[DeviceGroup],
+) -> tuple[tuple[BackendTensorT, ...], tuple[tuple[tuple[int, ...], ...], ...]]:
+    from tempo.core.dl_backend import DLBackend
 
-    backend: DLBackend = DLBackend.get_backend(exec_cfg.backend)
+    backend: type[DLBackend] = DLBackend.get_backend(exec_cfg.backend)
 
     dummy_buffers: list[BackendTensorT] = []
-    dummy_buffer_indices: list[Tuple[int, ...]] = []
+    dummy_buffer_indices: list[tuple[int, ...]] = []
     for (buf_shape, num_indexes, data_type), output_dev in zip(
         buffer_index_shapes_and_data_type, output_devs, strict=True
     ):
@@ -176,7 +177,6 @@ def _build_dummy_inputs(
                 dev=backend.to_backend_device_obj(output_dev),
             ),
         )
-        from tempo.runtime.backends.backend import DLBackendName
 
         indexes = []
         for _ in range(num_indexes):
@@ -197,19 +197,19 @@ def _build_dummy_inputs(
 
 
 def _make_inplace_buffer_write_thunk_wrapper(
-    orig_fn: Callable[[Tuple[BackendTensorT, ...]], Tuple[BackendTensorT, ...]],
+    orig_fn: Callable[[tuple[BackendTensorT, ...]], tuple[BackendTensorT, ...]],
     n_input: int,
-    output_positions: Tuple[int, ...],
+    output_positions: tuple[int, ...],
     # get_write_idxs_fn: Tuple[Callable[[BackendTensorT], Tuple[Tuple[int, ...], ...]], ...],
-    inplace_set_fns: Tuple[
-        Callable[[BackendTensorT, Sequence[Union[int, slice]], BackendTensorT], BackendTensorT],
+    inplace_set_fns: tuple[
+        Callable[[BackendTensorT, Sequence[int | slice], BackendTensorT], BackendTensorT],
         ...,
     ],
-    num_idxs: Tuple[int, ...],
-) -> Callable[[Tuple[BackendTensorT, ...]], Tuple[BackendTensorT, ...]]:
+    num_idxs: tuple[int, ...],
+) -> Callable[[tuple[BackendTensorT, ...]], tuple[BackendTensorT, ...]]:
     n_buffers = len(output_positions)
 
-    def _wrapper(example_inputs: Tuple[BackendTensorT, ...]) -> Tuple[BackendTensorT, ...]:
+    def _wrapper(example_inputs: tuple[BackendTensorT, ...]) -> tuple[BackendTensorT, ...]:
         inputs = example_inputs[:n_input]
         buffer_tensors = example_inputs[n_input : n_input + n_buffers]
         buffer_index_tensors = example_inputs[n_input + n_buffers : n_input + n_buffers + n_buffers]

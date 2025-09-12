@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any
+
+import optree
 
 from tempo.core import tensor_ops as top
 from tempo.core.configs import ExecutionConfig
@@ -51,8 +54,6 @@ from tempo.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-UninstantiatedPass = Callable[[CompilationCtx], AbstractCompilationPass]
-PipelineDesc = List[UninstantiatedPass]
 
 # TODO eventually, parallel Scheduling + Thunk emission. Needs to be given a merge function.
 # TODO transformations need to return a ctx, not just a DG, or the DG needs to contain the thunks.
@@ -75,7 +76,7 @@ class DebugStopPipeline(Transformation):
     def __init__(self, ctx: CompilationCtx) -> None:
         super().__init__(ctx)
 
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         raise ValueError("StopPipeline")
 
     def name(self) -> str:
@@ -100,7 +101,7 @@ class Iterate(CompilationPass):
         self.max_iter = max_iter
         self.quiet = quiet
         # Profile stores runtime in a nested structure
-        self.elapsed_ms_profile: Dict[str, Union[float, Dict[str, Any]]] = {"total": 0}
+        self.elapsed_ms_profile: dict[str, float | dict[str, Any]] = {"Total": 0}
         self.semantic_name = semantic_name
 
         self.visualize = visualize
@@ -117,18 +118,21 @@ class Iterate(CompilationPass):
             ValidatePDG(ctx).run()
         return ctx
 
+    def is_pipeline(self) -> bool:
+        return False
+
     def _update_elapsed(
-        self, profile: Dict[str, Any], inst: AbstractCompilationPass, elapsed: float
+        self, profile: dict[str, Any], inst: AbstractCompilationPass, elapsed_ms: float
     ) -> None:
         """Update the elapsed time profile."""
         if isinstance(inst, Iterate):
             # If the pass is an Iterate, create a nested profile if not already present
-            nested_profile = profile.setdefault(inst.name(), {"total": 0})
-            nested_profile["total"] += elapsed
+            nested_profile = profile.setdefault(inst.name(), {"Total": 0})
+            nested_profile["Total"] += elapsed_ms
 
             # Merge the nested profile from the pass
             for key, value in inst.per_pass_runtime_profile().items():
-                if key == "total":
+                if key == "Total":
                     continue
                 nested_profile[key] = nested_profile.get(key, {})
                 if isinstance(value, dict):
@@ -138,12 +142,12 @@ class Iterate(CompilationPass):
 
         else:
             # For non-iterates, track time flatly
-            profile[inst.name()] = profile.get(inst.name(), 0) + elapsed
+            profile[inst.name()] = profile.get(inst.name(), 0) + elapsed_ms
 
         # Update the total time for the top-level profile
-        profile["total"] += elapsed
+        profile["Total"] += elapsed_ms
 
-    def _run(self) -> Tuple[CompilationCtx, bool]:
+    def _run(self) -> tuple[CompilationCtx, bool]:
         ctx = self.ctx
         path = str(Path(ctx.exec_cfg.path))
 
@@ -163,14 +167,12 @@ class Iterate(CompilationPass):
                         )
 
                     log.info("=== Running %s ===", pass_.name())
-                ctx, modified, elapsed = pass_.run()
+                ctx, modified, elapsed_ms = pass_.run()
                 if not self.quiet:
-                    log.info(
-                        "=== Finished %s. %ss elapsed ===", pass_.name(), round(elapsed / 1000, 2)
-                    )
+                    log.info("=== Finished %s. %sms elapsed ===", pass_.name(), elapsed_ms)
 
                 # Update the elapsed time profile
-                self._update_elapsed(self.elapsed_ms_profile, pass_, elapsed)
+                self._update_elapsed(self.elapsed_ms_profile, pass_, elapsed_ms)
 
                 any_modified |= modified
                 if not self.quiet:
@@ -186,9 +188,9 @@ class Iterate(CompilationPass):
         self._try_visualize(ctx, f"{path}/{self.name()}_end", is_debug_stage=True)
         return ctx, any_modified
 
-    def per_pass_runtime_profile(self) -> Dict[str, Union[float, Dict[str, Any]]]:
+    def per_pass_runtime_profile(self) -> dict[str, float | dict[str, Any]]:
         """Returns the runtime profile as a nested dictionary."""
-        return self.elapsed_ms_profile
+        return optree.tree_map(lambda x: round(x, 2), self.elapsed_ms_profile)  # type: ignore
 
     def name(self) -> str:
         return self.semantic_name
@@ -208,17 +210,20 @@ class Pipeline(Iterate):
             ctx, passes, max_iter=1, semantic_name=semantic_name, quiet=quiet, visualize=True
         )
 
+    def is_pipeline(self) -> bool:
+        return True
+
     @staticmethod
     def get_default_pipeline(
         cfg: ExecutionConfig,
-    ) -> UninstantiatedPass:
+    ) -> UninstantiatedPipeline:
         optimizer = partial(
             Iterate,
             passes=[
+                *([DomainReduction] if cfg.enable_domain_reduction else []),
                 *([DeadCodeElimination] if cfg.enable_dead_code_elim else []),
                 *([DuplicateCodeElimination] if cfg.enable_duplicate_code_elim else []),
                 *([AlgebraicOptimizer] if cfg.enable_algebraic_optimizer else []),
-                *([DomainReduction] if cfg.enable_domain_reduction else []),
                 Statify,
             ],
             max_iter=10,
@@ -227,6 +232,7 @@ class Pipeline(Iterate):
         optimizer_with_const_fold = partial(
             Iterate,
             passes=[
+                *([DomainReduction] if cfg.enable_domain_reduction else []),
                 *([CleanUpBroadcastingOps] if cfg.enable_broadcast_elim else []),
                 *([DeadCodeElimination] if cfg.enable_dead_code_elim else []),
                 *([ConstantFolding] if cfg.enable_constant_folding else []),
@@ -236,7 +242,6 @@ class Pipeline(Iterate):
                     if cfg.enable_algebraic_optimizer
                     else []
                 ),
-                *([DomainReduction] if cfg.enable_domain_reduction else []),
                 Statify,
             ],
             max_iter=10,
@@ -258,7 +263,7 @@ class Pipeline(Iterate):
             semantic_name="FinalOptim",
         )
 
-        pipeline: UninstantiatedPass = partial(
+        pipeline: UninstantiatedPipeline = partial(
             Pipeline,
             passes=[
                 # NOTE: first so that the data dependencies are inserted before the other passes
@@ -308,3 +313,8 @@ class Pipeline(Iterate):
             semantic_name="MainPipeline",
         )
         return pipeline
+
+
+UninstantiatedPass = Callable[[CompilationCtx], AbstractCompilationPass]
+UninstantiatedPipeline = Callable[[CompilationCtx], Pipeline]
+PipelineDesc = list[UninstantiatedPass]

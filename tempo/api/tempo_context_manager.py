@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import functools
 import threading
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import TracebackType
-from typing import Any, List, Mapping, Optional, Sequence, Tuple, Type, Union
+from typing import Any
+
+import islpy as isl
 
 from tempo.api.compiler import Compiler
 from tempo.api.recurrent_tensor import RecurrentTensor
 from tempo.core import index_expr as ie
-from tempo.core import isl_types as islt
 from tempo.core.configs import ExecutionConfig
 from tempo.core.dependence_graph import PDG
 from tempo.core.dg_renderer import raise_error_with_pdg_render
@@ -31,7 +33,7 @@ log = logger.get_logger(__name__)
 Initializer = RecurrentTensor
 
 
-class CtxManagerJoiner(object):
+class CtxManagerJoiner:
     def __init__(self, *managers: Any) -> None:
         self.managers = managers
 
@@ -44,7 +46,7 @@ class CtxManagerJoiner(object):
             manager.__exit__(exc_type, exc_value, traceback)
 
 
-class ConditionCtxManager(object):
+class ConditionCtxManager:
     def __init__(self, condition: ie.BooleanIndexValue) -> None:
         self.condition = condition
 
@@ -58,19 +60,19 @@ class ConditionCtxManager(object):
 class ThreadLocalManagerStack(threading.local):
     def __init__(self) -> None:
         super().__init__()
-        self.manager_stack: List[TempoContext] = []
+        self.manager_stack: list[TempoContext] = []
 
 
 DEFAULT_EXEC_CFG = ExecutionConfig.default()
 
 
-class TempoContext(object):
+class TempoContext:
     _active = ThreadLocalManagerStack()
 
     def __init__(
         self,
         execution_config: ExecutionConfig = DEFAULT_EXEC_CFG,
-        num_dims: Optional[int] = None,
+        num_dims: int | None = None,
     ) -> None:
         """Creates a new Tempo context under which your algorithm is recorded.
         Any operations performed on RecurrentTensors under this context are recorded in a dependence
@@ -84,7 +86,7 @@ class TempoContext(object):
         """
         if num_dims is not None and num_dims > 0:
             dimensions = " ".join([f"d{i}" for i in range(num_dims)])
-            symbols: List[Tuple[ie.Symbol, ie.Symbol]] = make_symbols(
+            symbols: list[tuple[ie.Symbol, ie.Symbol]] = make_symbols(
                 dimensions.strip().split(" "), 0
             )
             universe = Domain.from_vars_and_bounds(
@@ -101,7 +103,7 @@ class TempoContext(object):
         global_objects.set_active_dg(self.dg)
         global_objects.set_active_config(execution_config)
         self.execution_config = execution_config
-        self.active_conditions: List[ie.BooleanIndexValue] = []
+        self.active_conditions: list[ie.BooleanIndexValue] = []
 
         # NOTE: other variables may be created after, but should not be visible
         # to ctx
@@ -127,7 +129,7 @@ class TempoContext(object):
     def domain_ctx(self, domain: DomainLike) -> DomainCtxManager:
         return DomainCtxManager(domain)
 
-    def new_perm_var(self, bound: ie.IntIndexValueLike) -> Tuple[ie.Symbol, ie.Symbol]:
+    def new_perm_var(self, bound: ie.IntIndexValueLike) -> tuple[ie.Symbol, ie.Symbol]:
         return self.dg.new_perm_var(bound)
 
     # def new_temp_var(
@@ -158,10 +160,10 @@ class TempoContext(object):
         return tuple(self.visible_bounds)
 
     @property
-    def variables_and_bounds(self) -> Sequence[Tuple[ie.Symbol, ie.Symbol]]:
+    def variables_and_bounds(self) -> Sequence[tuple[ie.Symbol, ie.Symbol]]:
         return tuple(zip(self.visible_variables, self.visible_bounds, strict=True))  # type: ignore
 
-    def get_isl_ctx(self) -> islt.Context:
+    def get_isl_ctx(self) -> isl.Context:
         return get_isl_context(self.execution_config)
 
     def __enter__(self) -> TempoContext:
@@ -171,10 +173,10 @@ class TempoContext(object):
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> Optional[bool]:
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
         # If there was an error, we will render the error graph
         if exc_type is not None:
             raise_error_with_pdg_render(
@@ -199,7 +201,7 @@ class TempoContext(object):
 
     def compile(  # noqa: A001, A003
         self,
-        bounds: Optional[Mapping[ie.Symbol, Union[int, RecurrentTensor]]] = None,
+        bounds: Mapping[ie.Symbol, int | RecurrentTensor] | None = None,
         use_active_config: bool = False,
     ) -> Executor:
         """Compiles the computation into an executor

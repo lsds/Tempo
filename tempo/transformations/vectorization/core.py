@@ -1,5 +1,4 @@
 import dataclasses
-from typing import Dict, List, Set, Tuple
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
@@ -23,10 +22,10 @@ class OpVecCtx:
     op: top.TensorOp
     vec_dim_symbol: ie.Symbol
     dim_size: ie.IntIndexValueLike
-    op_mapping: Dict[TensorOp, TensorOp]
-    op_vectorizations: Dict[TensorOp, Tuple[List[ie.Symbol], List[ie.IntIndexValueLike]]]
-    ops_to_vectorize: Set[TensorOp]
+    op_mapping: dict[TensorOp, TensorOp]
+    op_vectorizations: dict[TensorOp, tuple[list[ie.Symbol], list[ie.IntIndexValueLike]]]
+    ops_to_vectorize: set[TensorOp]
 
     @property
-    def past_vectorizations(self) -> Tuple[ie.IntIndexValueLike, ...]:
+    def past_vectorizations(self) -> tuple[ie.IntIndexValueLike, ...]:
         return tuple(self.op_vectorizations[self.op][1])

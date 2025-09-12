@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Sequence, Tuple
+from collections.abc import Sequence
 
 import torch
 
@@ -11,13 +11,12 @@ from tempo.api.rl.env.env_desc import EnvDesc
 # Define new types based on RecurrentTensor
 from tempo.core import tensor_op as top
 from tempo.core.shape import Shape
-from tempo.core.tensor_ops import UserDefinedThunkDesc
 from tempo.core.thunk import (
     Thunk,
-    ThunkEmissionCtx,
     ThunkExecutionCtx,
-    UDFVectorizationCtx,
 )
+from tempo.core.thunk_emitter import ThunkEmissionCtx
+from tempo.core.thunk_udf import UDFVectorizationCtx, UserDefinedThunkDesc
 
 
 def vectorize_reset(
@@ -52,8 +51,8 @@ def vectorize_reset(
         env = ctx.external_state_store[env_desc.state_id]
 
         def seeded_reset(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             # TODO
             # seed_ = inputs[0]
             ## Reshape seed to have a single batch dimension
@@ -66,8 +65,8 @@ def vectorize_reset(
             return (obs,)
 
         def reset(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             obs, _ = env.reset()
             # Reshape outputs to restore all batch dimensions
             # obs = obs.reshape(obs_shape)
@@ -92,8 +91,8 @@ def get_reset_udf_desc(env_desc: EnvDesc, seeded: bool) -> UserDefinedThunkDesc:
         env = ctx.external_state_store[env_desc.state_id]
 
         def reset(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             obs, _ = env.reset(
                 # seed=int(inputs[0].reshape[-1][0].item()) if seeded else None
             )
@@ -163,8 +162,8 @@ def vectorize_step(env_desc: EnvDesc, vec_ctx: UDFVectorizationCtx) -> UserDefin
         if len(vec_ctx.prior_vectorizations) == 0:
 
             def step(
-                inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-            ) -> Tuple[torch.Tensor, ...]:
+                inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+            ) -> tuple[torch.Tensor, ...]:
                 action = inputs[0]
                 obs, rew, term, trunc, _ = env.step(action)
                 return (obs, rew, term, trunc)  # type: ignore
@@ -173,8 +172,8 @@ def vectorize_step(env_desc: EnvDesc, vec_ctx: UDFVectorizationCtx) -> UserDefin
             raise NotImplementedError("TODO: replace below with backend reshape")
 
             def step(
-                inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-            ) -> Tuple[torch.Tensor, ...]:
+                inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+            ) -> tuple[torch.Tensor, ...]:
                 action = inputs[0]
                 action.reshape(act_shape)
                 obs, rew, term, trunc, _ = env.step(action)
@@ -204,8 +203,8 @@ def get_step_udf_desc(env_desc: EnvDesc) -> UserDefinedThunkDesc:
         env = ctx.external_state_store[env_desc.state_id]
 
         def step(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             action = inputs[0]
             obs, rew, term, trunc, _ = env.step(action)
             return (obs, rew, term, trunc)  # type: ignore

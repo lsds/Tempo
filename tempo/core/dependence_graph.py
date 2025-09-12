@@ -1,26 +1,22 @@
 from __future__ import annotations
 
 import dataclasses
-import traceback
+import functools
 import typing
 import uuid
-from collections.abc import MutableMapping
-from dataclasses import dataclass, field
-from typing import (
-    Any,
+from collections.abc import (
     Collection,
-    ContextManager,
-    Dict,
     Generator,
     Iterable,
     Iterator,
-    List,
     Mapping,
-    Optional,
+    MutableMapping,
     Sequence,
-    Set,
-    Tuple,
-    Union,
+)
+from dataclasses import dataclass, field
+from typing import (
+    Any,
+    ContextManager,
     cast,
 )
 
@@ -28,6 +24,7 @@ import networkx as nx
 
 from tempo.core import index_expr as ie
 from tempo.core.datatypes import OpId, OpInId, OpOutId, PDGId, TensorId
+from tempo.core.debug_utils import get_creation_traceback
 from tempo.core.domain import Domain, DomainLike
 from tempo.core.dtype import DataType
 from tempo.core.shape import Shape
@@ -38,19 +35,20 @@ from tempo.utils.logger import get_logger
 log = get_logger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DependencyData:
     expr: ie.IndexSequence
     src_out_idx: OpOutId
     sink_in_idx: OpInId
-    cond: Optional[ie.BooleanIndexValue] = None
-    _isl_expr: Optional[ie.IndexSequence] = None
+    cond: ie.BooleanIndexValue | None = None
+    _isl_expr: ie.IndexSequence | None = None
     is_control_edge: bool = False
-    _creation_traceback: List[str] = field(
+    _creation_traceback: list[str] = field(
         init=False,
-        default_factory=lambda: traceback.format_stack()[:-1],
+        default_factory=lambda: get_creation_traceback(),
         repr=False,
         hash=False,
+        compare=False,
     )
 
     def __post_init__(self) -> None:
@@ -132,15 +130,15 @@ class DependencyData:
         )
 
 
-BranchCond = Tuple[ie.BooleanIndexValue, TensorId, ie.IndexSequence]
+BranchCond = tuple[ie.BooleanIndexValue, TensorId, ie.IndexSequence]
 
 
 @dataclass(frozen=True)
 class OpData:
     op: TensorOp
-    output_shapes: Dict[OpOutId, Shape]
-    output_dtypes: Dict[OpOutId, DataType]
-    uncommitted_branch_conds: List[BranchCond] = field(default_factory=list)
+    output_shapes: dict[OpOutId, Shape]
+    output_dtypes: dict[OpOutId, DataType]
+    uncommitted_branch_conds: list[BranchCond] = field(default_factory=list)
 
     @property
     def num_outputs(self) -> int:
@@ -157,8 +155,8 @@ class ConditionalDefinition:
 @dataclass(frozen=True)
 class OpWithIO:
     op: TensorOp
-    inputs: Sequence[Tuple[TensorOp, DependencyData]]
-    outputs: Sequence[Tuple[TensorOp, DependencyData]]
+    inputs: Sequence[tuple[TensorOp, DependencyData]]
+    outputs: Sequence[tuple[TensorOp, DependencyData]]
 
 
 class PDG:
@@ -179,27 +177,81 @@ class PDG:
         self.universe = Domain.from_(universe)
 
         # NOTE the compiler externally modifies this field right before compilation
-        self.bound_defs: MutableMapping[ie.Symbol, Union[int, ie.IntIndexValue, Any]] = {}
+        self.bound_defs: MutableMapping[ie.Symbol, int | ie.IntIndexValue | Any] = {}
 
         self.next_op_id = 0
-        self.ops_by_id: Dict[OpId, OpData] = {}
+        self.ops_by_id: dict[OpId, OpData] = {}
 
-        self.parent_graph: Optional[PDG] = None
-        self.dataflow_id: Optional[OpId] = None
+        self.parent_graph: PDG | None = None
+        self.dataflow_id: OpId | None = None
 
         # Generate a random id
         self.pdg_id: PDGId = PDGId(int(uuid.uuid4()))
 
+        # Mutation counter to track graph modifications
+        self._mutation_counter: int = 0
+
+    def __hash__(self) -> int:
+        return (
+            hash((self.pdg_id, self._mutation_counter))
+            if (self.dataflow_id is None or self.parent_graph is None)
+            else hash(
+                (self.parent_graph.pdg_id, self.pdg_id, self.dataflow_id, self._mutation_counter)
+            )
+        )
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, PDG):
+            return False
+
+        return (
+            self.pdg_id == other.pdg_id
+            and self.dataflow_id == other.dataflow_id
+            and self.parent_graph == other.parent_graph
+            and self._mutation_counter == other._mutation_counter
+        )
+
+    def copy(self) -> PDG:
+        new_dg = PDG(self.universe)
+        new_dg._G = self._G.copy()
+        new_dg.ops_by_id = {op.op_id: self.ops_by_id[op.op_id] for op in new_dg._G.nodes}
+        new_dg.bound_defs = {**self.bound_defs}
+        new_dg.next_op_id = self.next_op_id
+        new_dg.parent_graph = self.parent_graph
+        new_dg.dataflow_id = self.dataflow_id
+
+        new_dg.pdg_id = PDGId(int(uuid.uuid4()))
+        new_dg._mutation_counter = self._mutation_counter
+        return new_dg
+
     def get_networkx_graph(self) -> nx.MultiDiGraph:
         return self._G
 
-    def get_paths_between(
-        self, snk: TensorOp, src: TensorOp
-    ) -> Generator[List[TensorOp], None, None]:
+    def get_paths_between(self, snk: TensorOp, src: TensorOp) -> Generator[list[TensorOp]]:
         return nx.all_simple_paths(self._G, source=snk, target=src)  # type: ignore
 
+    def get_ops_between(
+        self, snk: TensorOp, src: TensorOp, include_endpoints: bool = False
+    ) -> set[TensorOp]:
+        # Nodes reachable from snk
+        fwd: set[TensorOp] = set(self.recursive_dependency_nodes(snk))
+        # Nodes that can reach src
+        back: set[TensorOp] = set(self.recursive_dependent_nodes(src))
+
+        nodes: set[TensorOp] = fwd & back
+        if include_endpoints:
+            nodes.update({snk, src})
+
+        return nodes
+
+    def recursive_dependency_nodes(self, node: TensorOp) -> Iterable[TensorOp]:
+        return nx.descendants(self._G, node)  # type: ignore
+
+    def recursive_dependent_nodes(self, node: TensorOp) -> Iterable[TensorOp]:
+        return nx.ancestors(self._G, node)  # type: ignore
+
     @property
-    def simple_cycles(self) -> Iterable[List[TensorOp]]:
+    def simple_cycles(self) -> Iterable[list[TensorOp]]:
         return nx.simple_cycles(self._G)  # type: ignore
 
     def is_dag(self) -> bool:
@@ -229,8 +281,8 @@ class PDG:
         )
 
     def extend_universe(
-        self, new_var_name: str, ub: Optional[ie.IntIndexValueLike] = None
-    ) -> Tuple[ie.Symbol, ie.Symbol]:
+        self, new_var_name: str, ub: ie.IntIndexValueLike | None = None
+    ) -> tuple[ie.Symbol, ie.Symbol]:
         ((new_var, new_UB),) = make_symbols((new_var_name,), start_idx=len(self.universe.variables))
 
         self.universe = self.universe.append_dim(new_var, new_UB)
@@ -244,12 +296,12 @@ class PDG:
 
     # Context manager for creating a temp var with a given bound.
     def _new_var_ctx_man(
-        self, bound: Optional[ie.IntIndexValueLike] = None, tmp: bool = False
-    ) -> ContextManager[Tuple[ie.Symbol, ie.Symbol]]:
+        self, bound: ie.IntIndexValueLike | None = None, tmp: bool = False
+    ) -> ContextManager[tuple[ie.Symbol, ie.Symbol]]:
         dg = self
 
-        class TempVarCtxManager(object):
-            def __enter__(self) -> Tuple[ie.Symbol, ie.Symbol]:
+        class TempVarCtxManager:
+            def __enter__(self) -> tuple[ie.Symbol, ie.Symbol]:
                 new_var, new_UB = dg.extend_universe(f"d{len(dg.universe.variables)}", bound)
                 self.new_var = new_var
                 self.new_UB = new_UB
@@ -262,11 +314,11 @@ class PDG:
         return TempVarCtxManager()
 
     def new_temp_var(
-        self, bound: Optional[ie.IntIndexValueLike] = None
-    ) -> ContextManager[Tuple[ie.Symbol, ie.Symbol]]:
+        self, bound: ie.IntIndexValueLike | None = None
+    ) -> ContextManager[tuple[ie.Symbol, ie.Symbol]]:
         return self._new_var_ctx_man(bound, tmp=True)
 
-    def new_perm_var(self, bound: ie.IntIndexValueLike) -> Tuple[ie.Symbol, ie.Symbol]:
+    def new_perm_var(self, bound: ie.IntIndexValueLike) -> tuple[ie.Symbol, ie.Symbol]:
         return self.extend_universe(f"d{len(self.universe.variables)}", bound)
 
     __repr__ = __str__
@@ -283,7 +335,7 @@ class PDG:
 
     def get_all_tensor_descriptions(
         self,
-    ) -> List[Tuple[TensorId, Shape, DataType, Domain]]:
+    ) -> list[tuple[TensorId, Shape, DataType, Domain]]:
         # Filter all deps to keep the unique source_op ids and src_out_idx pairs
         descs = []
         op_datas = self.ops_by_id.values()
@@ -310,6 +362,7 @@ class PDG:
         # )
         dg.parent_graph = self
         dg.dataflow_id = id_
+        dg._mutation_counter = self._mutation_counter
         return dg
 
     def induced_subgraph(self, id_: OpId, ops: Iterable[TensorOp]) -> PDG:
@@ -333,12 +386,12 @@ class PDG:
         return list(self._G.nodes)  # type: ignore
 
     @property
-    def sccs(self) -> Iterable[Set[TensorOp]]:
-        return cast(Iterable[Set[TensorOp]], nx.strongly_connected_components(self._G))
+    def sccs(self) -> Iterable[set[TensorOp]]:
+        return cast(Iterable[set[TensorOp]], nx.strongly_connected_components(self._G))
 
     @property
-    def weakly_connected_components(self) -> Iterable[Set[TensorOp]]:
-        return cast(Iterable[Set[TensorOp]], nx.weakly_connected_components(self._G))
+    def weakly_connected_components(self) -> Iterable[set[TensorOp]]:
+        return cast(Iterable[set[TensorOp]], nx.weakly_connected_components(self._G))
 
     @property
     def nodes_with_no_dependents(self) -> Iterable[TensorOp]:
@@ -366,7 +419,7 @@ class PDG:
 
     @property
     def nodes_with_io(self) -> Iterable[OpWithIO]:
-        ops_with_io_: List[OpWithIO] = []
+        ops_with_io_: list[OpWithIO] = []
         nodes = self._G.nodes
         for node in nodes:
             dependents = self.get_flat_direct_dependents(node, include_control=False)
@@ -399,6 +452,7 @@ class PDG:
             log.warning("node %s already exists in graph.", op_data.op)
         else:
             self._G.add_node(op_data.op)
+            self._mutation_counter += 1
         self.ops_by_id[op_data.op.op_id] = op_data
 
     def replace_op(self, old_op: TensorOp, new_op: TensorOp) -> None:
@@ -416,6 +470,7 @@ class PDG:
         else:
             log.debug("Removing node %s from graph.", op)
             self._G.remove_node(op)
+            self._mutation_counter += 1
             del self.ops_by_id[op.op_id]
 
     def move_dependencies(self, from_: TensorOp, to: TensorOp) -> None:
@@ -537,15 +592,17 @@ class PDG:
             src,
             dependency_data=dependency_data,
         )
+        self._mutation_counter += 1
 
     def remove_edge(self, sink: TensorOp, src: TensorOp, dependency_data: DependencyData) -> None:
         log.debug("Removing edge %s -> %s with data %s", sink, src, dependency_data)
         key = self.find_edge_key(sink, src, dependency_data)
         self._G.remove_edge(sink, src, key)
+        self._mutation_counter += 1
 
     def get_direct_dependencies(
         self, op: TensorOp, include_control: bool = False
-    ) -> Sequence[Tuple[TensorOp, Tuple[DependencyData, ...]]]:
+    ) -> Sequence[tuple[TensorOp, tuple[DependencyData, ...]]]:
         """Returns the dependencies of a given op, meaning the nodes that it depends on in order to
         be computed.
 
@@ -572,11 +629,11 @@ class PDG:
         return list(dependencies)  # type: ignore
 
     def get_flat_recursive_dependencies(
-        self, op: TensorOp, start_from_input: Optional[OpInId] = None, include_control: bool = False
-    ) -> Sequence[Tuple[TensorOp, DependencyData]]:
-        visited: Set[TensorOp] = set()
-        stack: List[TensorOp] = []
-        flat_dependencies: List[Tuple[TensorOp, DependencyData]] = []
+        self, op: TensorOp, start_from_input: OpInId | None = None, include_control: bool = False
+    ) -> Sequence[tuple[TensorOp, DependencyData]]:
+        visited: set[TensorOp] = set()
+        stack: list[TensorOp] = []
+        flat_dependencies: list[tuple[TensorOp, DependencyData]] = []
         if start_from_input is not None:
             depy, depy_data = self.get_flat_direct_dependencies(op, include_control)[
                 start_from_input
@@ -598,7 +655,7 @@ class PDG:
 
     def get_flat_direct_dependencies(
         self, op: TensorOp, include_control: bool = False
-    ) -> Sequence[Tuple[TensorOp, DependencyData]]:
+    ) -> Sequence[tuple[TensorOp, DependencyData]]:
         dependencies = self.get_direct_dependencies(op, include_control)
         flat_data_dependencies = []
         flat_control_dependencies = []
@@ -614,7 +671,7 @@ class PDG:
 
     def get_direct_dependents(
         self, op: TensorOp, include_control: bool = False
-    ) -> Sequence[Tuple[TensorOp, Tuple[DependencyData]]]:
+    ) -> Sequence[tuple[TensorOp, tuple[DependencyData]]]:
         """Returns the dependents of a given op, meaning the nodes that depend on it in order to be
         computed.
 
@@ -642,7 +699,7 @@ class PDG:
 
     def get_flat_direct_dependents(
         self, op: TensorOp, include_control: bool = False
-    ) -> Sequence[Tuple[TensorOp, DependencyData]]:
+    ) -> Sequence[tuple[TensorOp, DependencyData]]:
         dependents = self.get_direct_dependents(op, include_control)
         flat_data_dependents = []
         flat_control_dependents = []
@@ -662,7 +719,7 @@ class PDG:
 
     def get_tensor_flat_direct_dependents(
         self, tensor_id: TensorId
-    ) -> Sequence[Tuple[TensorOp, DependencyData]]:
+    ) -> Sequence[tuple[TensorOp, DependencyData]]:
         all_dependents = self.get_flat_direct_dependents(
             self.ops_by_id[tensor_id.op_id].op, include_control=False
         )
@@ -688,14 +745,14 @@ class PDG:
 
     def get_all_edges(
         self, include_control: bool = False
-    ) -> List[Tuple[TensorOp, TensorOp, DependencyData]]:
+    ) -> list[tuple[TensorOp, TensorOp, DependencyData]]:
         """Returns all edges (sink, src, dependency_data) in the graph.
 
         Returns:
             List[Tuple[TensorOp, TensorOp, DependencyData]]: (sink, src, dependency_data)
 
         """
-        edges: List[Tuple[TensorOp, TensorOp, DependencyData]] = []
+        edges: list[tuple[TensorOp, TensorOp, DependencyData]] = []
         for snk, src, _, data_dict in self._G.edges(data=True, keys=True):
             d: DependencyData = typing.cast(DependencyData, data_dict["dependency_data"])
             if not include_control and d.is_control_edge:
@@ -703,14 +760,15 @@ class PDG:
             edges.append((snk, src, d))
         return edges
 
-    def get_input_shape(self, op: TensorOp, input_idx: OpInId) -> Shape:  # noqa: C901
+    @functools.lru_cache(maxsize=-1)
+    def get_input_shape(self, op: TensorOp, input_idx: OpInId, simplify: bool = True) -> Shape:  # noqa: C901
         # NOTE: first, try to find the input shape in this graph
         for src_op, dep in self.get_flat_direct_dependencies(op, include_control=False):
             if dep.sink_in_idx == input_idx:
                 indexing_shape = dep.expr.evaluate_shape(self.static_bounds)
                 raw_shape = self.ops_by_id[src_op.op_id].output_shapes[dep.src_out_idx]
 
-                res_shape = Shape.from_((*indexing_shape, *raw_shape._shape))
+                res_shape = Shape.from_((*indexing_shape, *raw_shape._shape), simplify=simplify)
                 return res_shape
 
         # NOTE: if not found, we must be in a dataflow graph, so we need to look in the parent graph
@@ -718,6 +776,11 @@ class PDG:
             raise ValueError(f"Input {input_idx} not found for op {op}")
 
         from tempo.core.dataflow_graph import DataflowGraphI
+
+        # NOTE: During const folding with grouping, we create induced subgraphs with id -1
+        # In this case, we need to look in the parent graph for the input shape.
+        if self.dataflow_id not in self.parent_graph.ops_by_id:
+            return self.parent_graph.get_input_shape(op, input_idx)
 
         dataflow_op = self.parent_graph.ops_by_id[self.dataflow_id].op
         dataflow: DataflowGraphI = dataflow_op.dataflow  # type: ignore
@@ -734,18 +797,18 @@ class PDG:
         # return the input shape from the parent graph dataflow_op
         return self.parent_graph.get_input_shape(dataflow_op, OpInId(new_input_idx))
 
-    def get_input_shapes_list(self, op: TensorOp) -> List[Shape]:
+    def get_input_shapes_list(self, op: TensorOp) -> list[Shape]:
         shapes_dict = self.get_input_shapes(op)
         input_shapes = []
         for i in range(len(shapes_dict)):
             input_shapes.append(shapes_dict[OpInId(i)])
         return input_shapes
 
-    def get_input_shapes(self, op: TensorOp) -> Dict[OpInId, Shape]:
+    def get_input_shapes(self, op: TensorOp, simplify: bool = True) -> dict[OpInId, Shape]:
         num_inputs = op.num_inputs
-        input_shapes: Dict[OpInId, Shape] = {}
+        input_shapes: dict[OpInId, Shape] = {}
         for i in range(num_inputs):
-            input_shapes[OpInId(i)] = self.get_input_shape(op, OpInId(i))
+            input_shapes[OpInId(i)] = self.get_input_shape(op, OpInId(i), simplify=simplify)
         return input_shapes
 
     def get_input_dtype(self, op: TensorOp, input_idx: OpInId) -> DataType:
@@ -759,6 +822,11 @@ class PDG:
             raise ValueError(f"Input {input_idx} not found for op {op}")
 
         from tempo.core.dataflow_graph import DataflowGraphI
+
+        # NOTE: During const folding with grouping, we create induced subgraphs with id -1
+        # In this case, we need to look in the parent graph for the input dtype.
+        if self.dataflow_id not in self.parent_graph.ops_by_id:
+            return self.parent_graph.get_input_dtype(op, input_idx)
 
         dataflow_op = self.parent_graph.ops_by_id[self.dataflow_id].op
         dataflow: DataflowGraphI = dataflow_op.dataflow  # type: ignore
@@ -775,60 +843,55 @@ class PDG:
         # Return the input dtype from the parent graph dataflow_op
         return self.parent_graph.get_input_dtype(dataflow_op, OpInId(new_input_idx))
 
-    def get_input_dtypes_list(self, op: TensorOp) -> List[DataType]:
+    def get_input_dtypes_list(self, op: TensorOp) -> list[DataType]:
         dtypes_dict = self.get_input_dtypes(op)
         input_dtypes = []
         for i in range(len(dtypes_dict)):
             input_dtypes.append(dtypes_dict[OpInId(i)])
         return input_dtypes
 
-    def get_input_dtypes(self, op: TensorOp) -> Dict[OpInId, DataType]:
-        sources = self.get_flat_direct_dependencies(op, include_control=False)
-        input_dtypes: Dict[OpInId, DataType] = {}
-        for src_op, dep in sources:
-            if isinstance(dep, DependencyData):
-                input_dtypes[dep.sink_in_idx] = self.ops_by_id[src_op.op_id].output_dtypes[
-                    dep.src_out_idx
-                ]
+    def get_input_dtypes(self, op: TensorOp) -> dict[OpInId, DataType]:
+        num_inputs = op.num_inputs
+        input_dtypes: dict[OpInId, DataType] = {}
+        for i in range(num_inputs):
+            input_dtypes[OpInId(i)] = self.get_input_dtype(op, OpInId(i))
         return input_dtypes
 
-    def get_output_shapes(self, op: TensorOp) -> Dict[OpOutId, Shape]:
+    def get_output_shapes(self, op: TensorOp) -> dict[OpOutId, Shape]:
         return self.ops_by_id[op.op_id].output_shapes
 
     def get_output_shape(self, op: TensorOp, out_idx: OpOutId) -> Shape:
         return self.ops_by_id[op.op_id].output_shapes[out_idx]
 
-    def get_output_shapes_list(self, op: TensorOp) -> List[Shape]:
+    def get_output_shapes_list(self, op: TensorOp) -> list[Shape]:
         shapes_dict = self.get_output_shapes(op)
         output_shapes = []
         for i in range(len(shapes_dict)):
             output_shapes.append(shapes_dict[OpOutId(i)])
         return output_shapes
 
-    def get_output_dtypes(self, op: TensorOp) -> Dict[OpOutId, DataType]:
+    def get_output_dtypes(self, op: TensorOp) -> dict[OpOutId, DataType]:
         return self.ops_by_id[op.op_id].output_dtypes
 
-    def isolated_nodes(self) -> List[TensorOp]:
+    def isolated_nodes(self) -> list[TensorOp]:
         return list(nx.isolates(self._G))
 
-    def reachable_ops(self, op: TensorOp) -> Set[TensorOp]:
+    def reachable_ops(self, op: TensorOp) -> set[TensorOp]:
         return set(nx.descendants(self._G, op))
 
-    def op_cycles(self, op: TensorOp) -> Iterator[List[TensorOp]]:
+    def op_cycles(self, op: TensorOp) -> Iterator[list[TensorOp]]:
         dep_ops = {d[0] for d in self.get_flat_direct_dependents(op)}
         for dep_op in dep_ops:
-            for cycle in self.edge_cycles(dep_op, op):
-                yield cycle
+            yield from self.edge_cycles(dep_op, op)
 
         depy_ops = {d[0] for d in self.get_flat_direct_dependencies(op)}
         for depy_op in depy_ops:
-            for cycle in self.edge_cycles(depy_op, op):
-                yield cycle
+            yield from self.edge_cycles(depy_op, op)
 
-    def edge_cycles(self, snk: TensorOp, src: TensorOp) -> Iterator[List[TensorOp]]:
-        current_cycle: List[TensorOp] = []
-        stack: List[Tuple[TensorOp, TensorOp]] = [(snk, src)]
-        visited: Set[TensorOp] = set()
+    def edge_cycles(self, snk: TensorOp, src: TensorOp) -> Iterator[list[TensorOp]]:
+        current_cycle: list[TensorOp] = []
+        stack: list[tuple[TensorOp, TensorOp]] = [(snk, src)]
+        visited: set[TensorOp] = set()
 
         while stack:
             parent, v = stack.pop()
@@ -846,8 +909,8 @@ class PDG:
                 current_cycle = self._backtrack_current_cycle(current_cycle, stack)
 
     def _backtrack_current_cycle(
-        self, current_cycle: List[TensorOp], stack: List[Tuple[TensorOp, TensorOp]]
-    ) -> List[TensorOp]:
+        self, current_cycle: list[TensorOp], stack: list[tuple[TensorOp, TensorOp]]
+    ) -> list[TensorOp]:
         if stack:
             next_parent, _ = stack[-1]
             assert next_parent in current_cycle
@@ -855,32 +918,12 @@ class PDG:
             return current_cycle[: parent_index + 1]
         return current_cycle
 
-    # TODO: Move all below to their respective transformations
-
-    # TODO we need a method to estimate peak memory usage of a tid during runtime.
-    # Because, for example, iteration dims exist.
-    # def estimate_full_tid_size_bytes(self, tid: TensorId) -> int:
-    #    op_data = self.ops_by_id[tid.op_id]
-
-    #    shape = op_data.output_shapes[tid.output_id]
-    #    dtype = op_data.output_dtypes[tid.output_id]
-
-    #    point_size = shape.try_resolve(self.static_bounds).as_static().prod() * dtype.repr_bytes
-
-    #    full_size = point_size
-
-    #    # TODO should be ubounds
-    #    for param in op_data.op.domain.parameters:
-    #        if isinstance(param, ie.Symbol):
-    #            full_size *= self.static_bounds[param]
-
-    #    return full_size
-
+    # TODO: remove
     def estimate_tensor_size_bytes(  # noqa: C901
         self,
         op_id: OpId,
-        out_idx: Optional[OpOutId] = None,
-        in_idx: Optional[OpInId] = None,
+        out_idx: OpOutId | None = None,
+        in_idx: OpInId | None = None,
         bound_size_estimate: int = 200,
     ) -> int:
         op_data = self.ops_by_id[op_id]
@@ -937,29 +980,3 @@ class PDG:
 
             size = statically_known_portion * dynamic_portion_eval
             return size
-
-    def approximate_feedback_arc_set(self) -> Set[Tuple[TensorOp, TensorOp, DependencyData]]:
-        """
-        Approximate a minimum feedback arc set (MFAS) by using a greedy heuristic.
-        Returns edges that form cycles in the graph.
-        """
-        # Step 1: Score nodes by out-degree - in-degree
-        scores = {
-            node: self._G.out_degree(node) - self._G.in_degree(node) for node in self._G.nodes
-        }
-
-        # Step 2: Sort nodes by score descending
-        sorted_nodes = sorted(scores, key=lambda n: scores[n], reverse=True)
-
-        # Step 3: Build a linear order and find back edges
-        node_position = {node: i for i, node in enumerate(sorted_nodes)}
-        feedback_edges = set()
-
-        # Get all edges with their dependency data
-        all_edges = self.get_all_edges(include_control=False)
-
-        for sink, src, dep_data in all_edges:
-            if node_position[sink] > node_position[src]:
-                feedback_edges.add((sink, src, dep_data))
-
-        return feedback_edges

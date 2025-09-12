@@ -1,20 +1,23 @@
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import numpy as np
 import torch
 
+from tempo.core import dtype
 from tempo.core.analysis_ctx import AnalysisCtx
 from tempo.core.configs import ExecutionConfig
-from tempo.core.datatypes import OpId, PDGId
+from tempo.core.datatypes import OpId
 from tempo.core.dependence_graph import PDG
 from tempo.core.device import DeviceGroup, DeviceLike, device
+from tempo.core.dl_backend import DLBackend
+from tempo.core.dl_backends import DLBackendName
 from tempo.core.dtype import INVERSE_JAX_TO_TEMPO_DTYPES_DICT, JAX_TO_TEMPO_DTYPES_DICT, DataType
-from tempo.core.shape import StaticShape
+from tempo.core.shape import StaticShape, StaticShapeLike
 from tempo.core.thunk import Thunk
-from tempo.runtime.backends.backend import DLBackend, DLBackendName
-from tempo.runtime.thunk_emitter import ThunkEmitter
+from tempo.core.thunk_emitter import ThunkEmitter
 from tempo.utils import logger
 
 
@@ -91,15 +94,15 @@ try:
     from jax._src.dlpack import from_dlpack as jax_from_dlpack
     from jax.dtypes import canonicalize_dtype
 
-    stack_cache: Dict[
-        Tuple[Any, Tuple[int, ...], int], Callable[[List[jnp.ndarray]], jnp.ndarray]
+    stack_cache: dict[
+        tuple[Any, tuple[int, ...], int], Callable[[list[jnp.ndarray]], jnp.ndarray]
     ] = {}
     if jax.__version__ < "0.4.18":
         from jax.lib import xla_bridge, xla_client
 
         def create_stack_computation(
             dtype: jnp.dtype, shape: tuple[int, ...], num_tensors: int, backend: str
-        ) -> Callable[[List[jnp.ndarray]], jnp.ndarray]:
+        ) -> Callable[[list[jnp.ndarray]], jnp.ndarray]:
             """Build the XLA computation for stacking tensors."""
             # Get the XLA builder
             builder = xla_client.XlaBuilder("stack_tensors")
@@ -138,13 +141,13 @@ try:
         from jax._src.lib import xla_client
         from jax.lib import xla_bridge  # , xla_client
 
-        def stack_fn(args: List[jnp.ndarray]) -> jnp.ndarray:
+        def stack_fn(args: list[jnp.ndarray]) -> jnp.ndarray:
             unsqueezed = [jnp.expand_dims(x, axis=0) for x in args]
             return jnp.concatenate(unsqueezed, axis=0)
 
         def create_stack_computation(
             dtype: jnp.dtype, shape: tuple[int, ...], num_tensors: int, backend: str
-        ) -> Callable[[List[jnp.ndarray]], jnp.ndarray]:
+        ) -> Callable[[list[jnp.ndarray]], jnp.ndarray]:
             # example_inputs = [jnp.zeros(shape, dtype) for _ in range(num_tensors)]
             jitted = jax.jit(stack_fn, backend=backend)
 
@@ -161,8 +164,8 @@ try:
             # return fn
 
     def get_or_create_compiled_stack(
-        tensors: List[jnp.ndarray],
-    ) -> Callable[[List[jnp.ndarray]], jnp.ndarray]:
+        tensors: list[jnp.ndarray],
+    ) -> Callable[[list[jnp.ndarray]], jnp.ndarray]:
         t = tensors[0]
         shape = t.shape
         dtype = t.dtype
@@ -189,14 +192,13 @@ try:
         donate_argnums=(0,),
         inline=True,
     )
-    jit_kernel_cache: Dict[Tuple[PDGId, OpId], Thunk[jnp.ndarray]] = {}
 
     reshape_impl = jax.jit(jnp.reshape, static_argnums=(1,), inline=True)
 
     def update_in_place_int(
         x: jnp.ndarray,
-        idx: Union[int, slice, Sequence[Union[int, slice]]],
-        value: Union[float, jnp.ndarray],
+        idx: int | slice | Sequence[int | slice],
+        value: float | jnp.ndarray,
     ) -> jnp.ndarray:
         """Updates the tensor `x` at index `idx` with the new `value` in a JAX-compatible way.
 
@@ -215,8 +217,8 @@ try:
 
     def update_in_place_slice(
         x: jnp.ndarray,
-        idx: Union[int, slice, Sequence[Union[int, slice]]],
-        value: Union[float, jnp.ndarray],
+        idx: int | slice | Sequence[int | slice],
+        value: float | jnp.ndarray,
     ) -> jnp.ndarray:
         return x.at[idx[0] : idx[1]].set(  # type: ignore
             value, indices_are_sorted=True, unique_indices=True
@@ -231,17 +233,16 @@ try:
         TORCH_TO_JAX_DEVICE_DICT[torch.device("cuda:0")] = jax.devices("gpu")[0]
         TORCH_TO_JAX_DEVICE_DICT[torch.device("cuda")] = jax.devices("gpu")[0]
     except Exception:
-        pass
+        ...
     JAX_TO_TORCH_DEVICE_DICT = {v: k for k, v in TORCH_TO_JAX_DEVICE_DICT.items()}
     torch_cpu = torch.device("cpu")
 
     from tempo.runtime.backends.pytorch.pytorch_backend import PyTorchBackend
 
-    pinned_memory_enabled = False
-
     class JaxBackend(DLBackend[jnp.ndarray]):
         backend_cpu = jax.devices("cpu")[0]  # Set the class-level CPU device
 
+        pinned_memory_enabled = False
         # Use the imported dtype dicts
         JAX_TO_TEMPO_DTYPES_DICT = JAX_TO_TEMPO_DTYPES_DICT
         INVERSE_JAX_TO_TEMPO_DTYPES_DICT = INVERSE_JAX_TO_TEMPO_DTYPES_DICT
@@ -255,11 +256,11 @@ try:
             try:
                 jax.config.update("jax_compiler_enable_remat_pass", False)
             except Exception:
-                pass
+                ...
             try:
                 jax.config.update("enable_remat_opt_pass", False)
             except Exception:
-                pass
+                ...
             if exec_cfg.enable_x64:
                 jax.config.update("jax_enable_x64", True)
             # The following flag removes extra copies introduced by DUS (dynamic update slice) when
@@ -326,7 +327,7 @@ try:
             # return stack_impl  # type: ignore
 
         @staticmethod
-        def reshape(tensor: jnp.ndarray, shape: Tuple[int, ...]) -> jnp.ndarray:
+        def reshape(tensor: jnp.ndarray, shape: StaticShapeLike) -> jnp.ndarray:
             return reshape_impl(tensor, shape)
 
         # @staticmethod
@@ -342,10 +343,10 @@ try:
         @staticmethod
         def get_inplace_set_fn(
             tensor: jnp.ndarray,
-            item: Sequence[Union[int, slice]],
+            item: Sequence[int | slice],
             value: jnp.ndarray,
             traceable: bool = False,
-        ) -> Callable[[jnp.ndarray, Sequence[Union[int, slice]], jnp.ndarray], jnp.ndarray]:
+        ) -> Callable[[jnp.ndarray, Sequence[int | slice], jnp.ndarray], jnp.ndarray]:
             for dev in tensor.devices():
                 backend = dev.platform
                 break  # type: ignore
@@ -365,11 +366,16 @@ try:
             return inplace_set_impl  # type: ignore
 
         @staticmethod
-        def permute(tensor: jnp.ndarray, axes: Tuple[int, ...]) -> jnp.ndarray:
+        def permute(tensor: jnp.ndarray, axes: Sequence[int]) -> jnp.ndarray:
             return permute_impl(tensor, axes)  # type:ignore
 
         @staticmethod
-        def get_thunk_emitter_cls() -> Type[ThunkEmitter]:
+        def to_numpy(tensor: jnp.ndarray) -> np.ndarray:
+            # TODO: can we be sure this is a jnp.ndarray and not a torch tensor?
+            return np.asarray(tensor)
+
+        @staticmethod
+        def get_thunk_emitter_cls() -> type[ThunkEmitter]:
             from tempo.runtime.backends.jax.jax_thunk_emitter import JaxThunkEmitter
 
             return JaxThunkEmitter  # type: ignore
@@ -381,7 +387,9 @@ try:
             return t_dev
 
         @staticmethod
-        def to_device(tensor: jnp.ndarray, dev: Any, compiling: bool = False) -> jnp.ndarray:
+        def to_device(
+            tensor: jnp.ndarray, dev: Any, compiling: bool = False, **kwargs: Any
+        ) -> jnp.ndarray:
             if JaxBackend.pinned_memory_enabled and not compiling:
                 if dev == JaxBackend.backend_cpu:
                     for t_dev in tensor.devices():  # noqa: B007
@@ -434,7 +442,20 @@ try:
         @staticmethod
         def to_tpo_dtype(backend_dtype: Any) -> DataType:
             """Convert a JAX dtype to a Tempo dtype."""
-            return JaxBackend.JAX_TO_TEMPO_DTYPES_DICT[backend_dtype]
+            # First try the JAX dictionary
+            if backend_dtype in JaxBackend.JAX_TO_TEMPO_DTYPES_DICT:
+                return JaxBackend.JAX_TO_TEMPO_DTYPES_DICT[backend_dtype]
+
+            # Then try the numpy dictionary (for cases where JAX uses numpy dtypes)
+            if backend_dtype in dtype.NUMPY_TO_TEMPO_DTYPES_DICT:
+                return dtype.NUMPY_TO_TEMPO_DTYPES_DICT[backend_dtype]
+
+            # If it's a numpy dtype object, try to get the canonical dtype
+            if hasattr(backend_dtype, "type"):
+                canonical_dtype = backend_dtype.type
+                return JaxBackend.to_tpo_dtype(canonical_dtype)
+
+            raise ValueError(f"Unknown JAX dtype: {backend_dtype}, type: {type(backend_dtype)}")
 
         @staticmethod
         def cast_backend_dtype(tensor: jnp.ndarray, dtype: Any) -> jnp.ndarray:
@@ -453,7 +474,7 @@ try:
             return jax.devices(jax_dev_str)[0]
 
         @staticmethod
-        def to_backend_shape(shape: int | Tuple[int] | StaticShape) -> Any:
+        def to_backend_shape(shape: StaticShapeLike) -> Any:
             shape = StaticShape.from_(shape)
             return shape._shape
 
@@ -462,18 +483,18 @@ try:
             return jax_from_dlpack(ext_tensor, copy=False)
 
         @staticmethod
-        def zeros_tensor(shape: Tuple[int, ...], dtype: Any, dev: Any) -> jnp.ndarray:
+        def zeros_tensor(shape: StaticShapeLike, dtype: Any, dev: Any) -> jnp.ndarray:
             return jnp.zeros(shape=shape, dtype=dtype, device=dev)
 
         @staticmethod
-        def ones_tensor(shape: Tuple[int, ...], dtype: Any, dev: Any) -> jnp.ndarray:
+        def ones_tensor(shape: StaticShapeLike, dtype: Any, dev: Any) -> jnp.ndarray:
             return jnp.ones(shape=shape, dtype=dtype, device=dev)
 
         @staticmethod
         def fast_int_lift(
             fill_value: int,
-            dtype: Optional[Any] = None,
-            device: Optional[Any] = None,
+            dtype: Any | None = None,
+            device: Any | None = None,
         ) -> jnp.ndarray:
             # TODO: what if we just returned an actual int?
             # mainly, we just want to avoid waiting for the tensor to be created,
@@ -483,18 +504,18 @@ try:
         @staticmethod
         def full_tensor(
             fill_value: Any,
-            shape: Tuple[int, ...] = SCALAR_SHAPE,
-            dtype: Optional[Any] = None,
-            device: Optional[Any] = None,
+            shape: StaticShapeLike = None,
+            dtype: Any | None = None,
+            device: Any | None = None,
         ) -> jnp.ndarray:
             return jnp.full(shape=shape, fill_value=fill_value, dtype=dtype, device=device)
 
         @staticmethod
         def lift_tensor(
             data: Any,
-            shape: Optional[Tuple[int, ...]] = None,
-            dtype: Optional[Any] = None,
-            device: Optional[Any] = None,
+            shape: StaticShapeLike = None,
+            dtype: Any | None = None,
+            device: Any | None = None,
         ) -> jnp.ndarray:
             x = jnp.asarray(data, dtype=dtype, device=device)
             if shape is not None:
@@ -506,38 +527,20 @@ try:
             return tensor.copy()
 
         @staticmethod
-        def clear_jit_cache() -> None:
-            """Clear the jit cache."""
-            jit_kernel_cache.clear()
-
-        @staticmethod
         def trace_codegen_thunk(
-            execution_func: Callable[[Tuple[jnp.ndarray, ...]], Tuple[jnp.ndarray, ...]],
+            execution_func: Callable[[tuple[jnp.ndarray, ...]], tuple[jnp.ndarray, ...]],
             op_id: OpId,
             dev: DeviceGroup,
             exec_cfg: ExecutionConfig,
-            example_inputs: Tuple[jnp.ndarray, ...],
+            example_inputs: Sequence[jnp.ndarray],
             donatable_args: Sequence[int],
             analysis_ctx: AnalysisCtx,
             parent_graph: PDG,
         ) -> Thunk[jnp.ndarray]:  # type: ignore
-            if (parent_graph.pdg_id, op_id) in jit_kernel_cache:
-                log.info("Using cached JIT kernel for %s", op_id)
-                return jit_kernel_cache[(parent_graph.pdg_id, op_id)]
-
-            assert isinstance(example_inputs, tuple)
-            # if len(example_inputs) > 0:
-            #    assert isinstance(example_inputs[0], jnp.ndarray)
-
-            clone_ins = lambda ins: tuple(
-                jnp.array(x) if isinstance(x, jnp.ndarray) else x for x in ins
-            )
             with jax.disable_jit(disable=False):
-                log.info("Jitting %s with %s donations", op_id, donatable_args)
-
                 if donatable_args:
 
-                    def wrapped_fun(*args: jnp.ndarray) -> Tuple[jnp.ndarray, ...]:
+                    def wrapped_fun(*args: jnp.ndarray) -> tuple[jnp.ndarray, ...]:
                         return execution_func(args)
 
                     thunk_ = jax.jit(
@@ -546,45 +549,13 @@ try:
                         donate_argnums=tuple(donatable_args),
                     )
 
-                    ### thunk_lower = thunk_.lower(*clone_ins(example_inputs))  # type: ignore
-                    ### # OLD ===
-                    ### thunk_ = thunk_lower.compile()  # type: ignore
-                    ### # print_jax_compiled(op_id, thunk_)
-                    ### # Argument unpacker
                     thunk = lambda ins, ctx: thunk_(*ins)
-                    # NEW ===
-                    # thunk_ = thunk_lower.compile()._executable.call  # type: ignore
-                    # thunk = lambda ins, ctx: thunk_(*ins)
 
                 else:
                     thunk_ = jax.jit(execution_func, device=JaxBackend.to_backend_device_obj(dev))
-                    ### thunk_lower = thunk_.lower(clone_ins(example_inputs))  # type: ignore
-
-                    ### # OLD ==
-                    ### thunk_ = thunk_lower.compile()  # type: ignore
                     thunk = lambda ins, ctx: thunk_(ins)
-                    ## print_jax_compiled(op_id, thunk_)
 
-                    # NEW ===
-                    # thunk_ = thunk_lower.compile()._executable.call  # type: ignore
-                    # thunk = lambda ins, ctx: thunk_(*ins)
-
-                # TODO: cloning affects outputs here.
-                if exec_cfg.profile_codegen_kernels:
-                    import time
-
-                    start_time = time.perf_counter_ns()
-                    for _ in range(100):
-                        thunk(clone_ins(example_inputs), None)  # type: ignore
-                    JaxBackend.sync()
-                    end_time = time.perf_counter_ns()
-                    elapsed_sec = (end_time - start_time) / 1e9 / 100
-                    print(f"Time taken - op_id: {op_id} - {elapsed_sec} seconds")
-                # warmup
-                thunk(clone_ins(example_inputs), None)  # type: ignore
-
-            jit_kernel_cache[(parent_graph.pdg_id, op_id)] = thunk
-            return thunk
+                return thunk
 
     DLBackend.register_backend(DLBackendName.JAX, JaxBackend)
 

@@ -1,5 +1,6 @@
 import math
-from typing import Any, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any
 
 from tempo.api.recurrent_tensor import AutodiffFn
 from tempo.core import index_expr as ie
@@ -12,6 +13,7 @@ from tempo.utils.common import argsort
 from tempo.utils.dg_utils import get_padding_for_slice
 
 # NOTE: Many derivatives here are taken from pytorch's derivatives.yaml file
+# https://github.com/pytorch/pytorch/blob/main/tools/autograd/derivatives.yaml
 # NOTE: Others are sourced from tinygrad mlops
 
 
@@ -22,7 +24,7 @@ class TemporalIndex(AutodiffFn):
         self.y = self.x.temporal_index(self.e)
         return (self.y,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         snk_dom = self.y.domain
         src_dom = self.x.domain
         e = self.e
@@ -42,7 +44,7 @@ class TemporalIndex(AutodiffFn):
         # NOTE: applying e to src can remove dims from domain, resulting in snk_dom with fewer dims.
         # This can mean that rev_e has fewer members than e.
         # We need to align the two by filling in Nans.
-        none_padded_rev_e_members: List[Optional[ie.IndexAtom]] = []
+        none_padded_rev_e_members: list[ie.IndexAtom | None] = []
         rev_e_idx = 0
         for v in src_dom.variables:
             if v in snk_dom:
@@ -128,14 +130,13 @@ class TemporalIndex(AutodiffFn):
                     #    ie.ConstInt(0), max_vals[i]
                     # )
                     # print(f"i_positions: {i_positions}")
-                    i_positions = isl_utils.simplify_expr(i_positions)
+                    i_positions = isl_utils.simplify_expr_atom(i_positions)
                     # print(f"i_positions post-simplify: {i_positions}")
                     # print(f"m_rev: {m_rev}")
                     pad_offset = ie.lift_to_int_ie(pads[i][0])
                     # print(f"pad_offset: {pad_offset}")
-                    simplified_pad_offset = isl_utils.simplify_expr(pad_offset)
+                    simplified_pad_offset = isl_utils.simplify_expr_atom(pad_offset)
 
-                    tau = ie.Symbol("tau")
                     from tempo.core import global_objects as glob
 
                     dg = glob.get_active_dg()
@@ -229,7 +230,7 @@ class Zero(AutodiffFn):
         x = args[0]
         return (x.full_like_self(0.0),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (grad_output.full_like_self(0.0) if self.needs_input_grad[0] else None,)
 
 
@@ -239,7 +240,7 @@ class MatMul(AutodiffFn):
         self.x, self.y = x, y
         return (x.matmul(y),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             (grad_output.matmul(self.y.transpose(-2, -1)) if self.needs_input_grad[0] else None),
             (self.x.transpose(-2, -1).matmul(grad_output) if self.needs_input_grad[1] else None),
@@ -251,7 +252,7 @@ class Add(AutodiffFn):
         x, y = args
         return (x.add(y),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             grad_output if self.needs_input_grad[0] else None,
             grad_output if self.needs_input_grad[1] else None,
@@ -263,7 +264,7 @@ class Sub(AutodiffFn):
         x, y = args
         return (x.sub(y),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         # NOTE the negate below is meant to be a graph op
         return (
             grad_output if self.needs_input_grad[0] else None,
@@ -277,7 +278,7 @@ class Mul(AutodiffFn):
         self.x, self.y = x, y
         return (x * y,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             self.y * grad_output if self.needs_input_grad[0] else None,
             self.x * grad_output if self.needs_input_grad[1] else None,
@@ -290,7 +291,7 @@ class Div(AutodiffFn):
         self.x, self.y = x, y
         return (x.divide(y),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             grad_output / self.y if self.needs_input_grad[0] else None,
             (-self.x * grad_output / (self.y * self.y) if self.needs_input_grad[1] else None),
@@ -302,7 +303,7 @@ class Negate(AutodiffFn):
         x = args[0]
         return (-x,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (-grad_output if self.needs_input_grad[0] else None,)
 
 
@@ -312,7 +313,7 @@ class Sin(AutodiffFn):
         self.x = x
         return (x.sin(),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             (
                 (self.x.full_like_self(math.pi / 2) - self.x).sin() * grad_output
@@ -419,7 +420,7 @@ class Conv(AutodiffFn):
         self.weight = weight
 
         # --- retrieve convolution parameters
-        self.stride: Tuple[int, ...] = kwargs.get("stride", ())
+        self.stride: tuple[int, ...] = kwargs.get("stride", ())
         self.transposed: bool = kwargs.get("transposed", False)
         # self.groups: int = kwargs.get("groups", 1)
         self.n_dims: int = kwargs.get("n_dims", 2)  # e.g. 2D, 3D, etc.
@@ -437,7 +438,7 @@ class Conv(AutodiffFn):
         )
         return (self.output,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         # ---- 1) grad w.r.t. input
 
         # dilated_grad_output = grad_output.dilate((s - 1 for s in self.stride))
@@ -504,7 +505,7 @@ class Relu(AutodiffFn):
         self.ret, _ = x.max(dim=0, keepdim=False)
         return (self.ret,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             (
                 (self.ret.full_like_self(0.0) < self.ret).to_dtype(grad_output.dtype) * grad_output
@@ -522,7 +523,7 @@ class Sigmoid(AutodiffFn):
 
         return (self.ret,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             (
                 self.ret * (self.ret.full_like_self(1) - self.ret) * grad_output
@@ -538,7 +539,7 @@ class Ln(AutodiffFn):
         ret = SymbolicTensor.ln(self.antilogarithm)
         return (ret,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (grad_output / self.antilogarithm if self.needs_input_grad[0] else None,)
 
 
@@ -548,7 +549,7 @@ class Exp(AutodiffFn):
         self.ret = self.exponent.exp()
         return (self.ret,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (grad_output * self.ret if self.needs_input_grad[0] else None,)
 
 
@@ -560,7 +561,7 @@ class Pow(AutodiffFn):
         self.ret = base.pow_(exponent)
         return (self.ret,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         base = self.base
         # base = self.base + self.base.full_like_self(1.0e-8)
 
@@ -581,7 +582,7 @@ class Sqrt(AutodiffFn):
         # assert False
         return (self.ret,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         # TODO do we need the EPSILON here?
         return (
             (
@@ -601,11 +602,11 @@ class Sum(AutodiffFn):
         x = args[0]
         self.input_shape = x.shape
         self.keepdim: bool = kwargs.get("keepdim", False)
-        self.reduce_dims: Tuple[int, ...] = kwargs.get("reduce_dims", tuple(range(len(x.shape))))
+        self.reduce_dims: tuple[int, ...] = kwargs.get("reduce_dims", tuple(range(len(x.shape))))
         res = x.sum(dims=self.reduce_dims, keepdim=self.keepdim)
         return (res,)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         if not self.keepdim:
             for dim in sorted(self.reduce_dims, reverse=False):
                 grad_output = grad_output.unsqueeze(dim=dim)
@@ -618,7 +619,7 @@ class CumSum(AutodiffFn):
         self.dim = kwargs.get("dim", -1)
         return (x.cumsum(dim=self.dim),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         # https://github.com/pytorch/pytorch/blob/aeb5fd52c74b1c673e8565b9593cbdd5ed6f04f2/
         # torch/csrc/autograd/FunctionsManual.cpp#L883C13-L883C13
         return (
@@ -636,7 +637,7 @@ class Where(AutodiffFn):
         self.condition = condition
         return (condition.where(x, y),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             None,
             (
@@ -659,7 +660,7 @@ class IndexSelect(AutodiffFn):
         self.dim: int = kwargs.get("dim", 0)
         return (self.tensor.index_select(self.dim, self.index),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             (
                 self.tensor.full_like_self(0.0).index_add(self.dim, grad_output, self.index)
@@ -683,7 +684,7 @@ class IndexAdd(AutodiffFn):
 
         return (sink.index_add(self.dim, src, self.index, self.alpha),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             (grad_output if self.needs_input_grad[0] else None),
             (grad_output.index_select(self.dim, self.index) if self.needs_input_grad[1] else None),
@@ -700,7 +701,7 @@ class Gather(AutodiffFn):
         self.src = src
         return (src.gather(dim, index),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             (
                 self.src.full_like_self(0.0).scatter_add(self.dim, self.index, grad_output)
@@ -719,7 +720,7 @@ class ScatterAdd(AutodiffFn):
         self.index = index
         return (sink.scatter_add(dim, index, src),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             grad_output if self.needs_input_grad[0] else None,
             None,
@@ -750,7 +751,7 @@ class Expand(AutodiffFn):
         )
         return (x.expand(shape),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         if self.needs_input_grad[0]:
             grad_output = grad_output.sum(dims=self.dims_expanded, keepdim=True)
             return (grad_output,)
@@ -765,7 +766,7 @@ class Cast(AutodiffFn):
         self.input_dtype = x.dtype
         return (x.to_dtype(dtype),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return ((grad_output.to_dtype(self.input_dtype) if self.needs_input_grad[0] else None),)
 
 
@@ -777,7 +778,7 @@ class Flip(AutodiffFn):
         self.dim = dim
         return (x.flip(dim),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (grad_output.flip(dim=self.dim) if self.needs_input_grad[0] else None,)
 
 
@@ -788,18 +789,18 @@ class Reshape(AutodiffFn):
         self.input_shape = x.shape
         return (x.reshape(shape),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (grad_output.reshape(self.input_shape) if self.needs_input_grad[0] else None,)
 
 
 class Permute(AutodiffFn):
     def forward(self, *args: SymbolicTensor, **kwargs: Any) -> Sequence[SymbolicTensor]:
         x = args[0]
-        dims: Tuple[int, ...] = kwargs.get("dims", ())
+        dims: tuple[int, ...] = kwargs.get("dims", ())
         self.dims = dims
         return (x.permute(dims),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         return (
             (
                 grad_output.permute(argsort(self.dims))  # type: ignore
@@ -814,7 +815,7 @@ class Ident(AutodiffFn):
         x = args[0]
         return (x.ident(),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         if not self.needs_input_grad[0]:
             return (None,)
 
@@ -828,7 +829,7 @@ class Squeeze(AutodiffFn):
         self.dim = dim
         return (x.squeeze(dim),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         if not self.needs_input_grad[0]:
             return (None,)
 
@@ -843,7 +844,7 @@ class Unsqueeze(AutodiffFn):
         self.dim = dim
         return (x.unsqueeze(dim),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         if not self.needs_input_grad[0]:
             return (None,)
 
@@ -866,11 +867,12 @@ class Max(AutodiffFn):
         return vals, idxs
 
     # TODO does this not need multiple grad inputs?
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         if not self.keepdim:
             grad_output = grad_output.unsqueeze(dim=self.dim)
         return (
             (
+                # TODO: why not gather? Because we need to sum multiple gradients?
                 self.x.full_like_self(0.0).scatter_add(self.dim, self.idxs, grad_output)
                 if self.needs_input_grad[0]
                 else None
@@ -887,9 +889,9 @@ class Cat(AutodiffFn):
         self.saved_tensors = args
         return (SymbolicTensor.cat(*args, dim=dim),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         # Calculate gradients for each input tensor
-        grad_inputs: List[Optional[SymbolicTensor]] = []
+        grad_inputs: list[SymbolicTensor | None] = []
 
         # Keep track of the current index in the grad_output tensor
         grad_index: int = 0
@@ -933,7 +935,7 @@ class Pad(AutodiffFn):
         # TODO does this work for every mode? Supposedly yes...
         return (x.pad_dim(padding=padding, dim=dim, value=value, mode=mode),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         if not self.needs_input_grad[0]:
             return (None,)
 
@@ -955,7 +957,7 @@ class Slice(AutodiffFn):
         self.input_shape = x.shape
         return (x.index_slice(dim=self.dim, start=self.start, length=self.length),)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         if not self.needs_input_grad[0]:
             return (None,)
 
@@ -970,13 +972,33 @@ class Split(AutodiffFn):
         self.dim = kwargs["dim"]
         self.num_splits = kwargs["num_splits"]
 
-        self.grads_collected: List[SymbolicTensor] = []
+        self.grads_collected: list[SymbolicTensor] = []
 
         return x.split(self.dim, self.num_splits)
 
-    def backward(self, grad_output: SymbolicTensor) -> Sequence[Optional[SymbolicTensor]]:
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
         self.grads_collected.append(grad_output)
         if len(self.grads_collected) == self.num_splits:
             return (SymbolicTensor.cat(*self.grads_collected, dim=self.dim),)
         else:
             return (None,)
+
+
+class Sort(AutodiffFn):
+    def forward(self, *args: SymbolicTensor, **kwargs: Any) -> Sequence[SymbolicTensor]:
+        x = args[0]
+        dim = kwargs["dim"]
+        stable = kwargs.get("stable", False)
+        descending = kwargs.get("descending", False)
+        self.dim = dim
+        self.stable = stable
+        self.descending = descending
+
+        sorted_vals, indices = x.sort(dim, stable, descending)
+        self.indices = indices
+        return (sorted_vals, indices)
+
+    def backward(self, grad_output: SymbolicTensor) -> Sequence[SymbolicTensor | None]:
+        # Use gather to place gradients back at their original positions
+        # The indices tell us where each element in the sorted output came from
+        return (grad_output.gather(self.dim, self.indices) if self.needs_input_grad[0] else None,)

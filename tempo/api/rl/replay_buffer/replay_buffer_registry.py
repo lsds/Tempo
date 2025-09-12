@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar
 
 from tempo.api.rl.replay_buffer.replay_buffer_desc import (
     ReplayBufferCtx,
@@ -24,7 +24,7 @@ class ReplayBufferRegistry:
     """
 
     registry: ClassVar[
-        Dict[
+        dict[
             str,
             RuntimeReplayBufferBuilder,
         ]
@@ -43,8 +43,8 @@ class ReplayBufferRegistry:
     def get_replay_buffer_description(
         storage_type: str,
         max_size: int,
-        item_shapes: List[Shape],
-        item_dtypes: List[DataType],
+        item_shapes: list[Shape],
+        item_dtypes: list[DataType],
         exec_cfg: ExecutionConfig,
         **kwargs: Any,
     ) -> ReplayBufferDesc:

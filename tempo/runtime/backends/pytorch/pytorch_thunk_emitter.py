@@ -1,5 +1,5 @@
+from collections.abc import Callable
 from functools import partial
-from typing import Callable, Dict, Tuple, Type, Union
 
 import torch
 import torch.fx
@@ -8,12 +8,11 @@ import tempo.core.tensor_ops as top
 from tempo.core import index_expr as ie
 from tempo.core.datatypes import OpInId, OpOutId
 from tempo.core.thunk import (
-    OpToThunkTranslationFn,
     Thunk,
-    ThunkEmissionCtx,
     ThunkExecutionCtx,
 )
-from tempo.runtime.thunk_emitter import ThunkEmitter
+from tempo.core.thunk_emitter import OpToThunkTranslationFn, ThunkEmissionCtx
+from tempo.runtime.thunk_emitter_base import ThunkEmitterBase
 from tempo.utils import logger
 
 log = logger.get_logger(__name__)
@@ -32,25 +31,25 @@ def rand_op_translation(
     dev = emit_ctx.dev
     assert isinstance(op, top.RandOp)
 
-    from tempo.runtime.backends.pytorch.pytorch_backend import PyTorchBackend
+    backend = emit_ctx.backend
 
-    dev = PyTorchBackend.to_backend_device_obj(emit_ctx.dev)
-    dtype = PyTorchBackend.to_backend_datatype(op.dtype)
+    dev = backend.to_backend_device_obj(emit_ctx.dev)
+    dtype = backend.to_backend_datatype(op.dtype)
     shape = op.shape
 
     if shape.is_dynamic():
 
         def rand_op_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             shape_ = shape.evaluate(exec_ctx.symbol_values)
             return (torch.rand(size=shape_, dtype=dtype, device=dev),)
     else:
         shape_ = shape.evaluate(emit_ctx.compile_time_known_symbol_values)
 
         def rand_op_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (torch.rand(size=shape_, dtype=dtype, device=dev),)
 
     return rand_op_thunk
@@ -61,29 +60,30 @@ def const_op_translation(
     emit_ctx: ThunkEmissionCtx[torch.Tensor],
 ) -> Thunk[torch.Tensor]:
     assert isinstance(op, top.ConstOp)
-    from tempo.runtime.backends.pytorch.pytorch_backend import PyTorchBackend
+    backend = emit_ctx.backend
 
-    dtype = PyTorchBackend.to_backend_datatype(op.dtype)
-    dev = PyTorchBackend.to_backend_device_obj(emit_ctx.dev)
+    dtype = backend.to_backend_datatype(op.dtype)
+    dev = backend.to_backend_device_obj(emit_ctx.dev)
     shape = op.shape
-    t = torch.tensor(data=op.value, dtype=dtype, device=dev)
+    with emit_ctx.analysis_ctx.load_timer:
+        t = torch.tensor(data=op.value, dtype=dtype, device=dev)
 
     if shape.is_dynamic():
 
         def const_op_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             shape_ = shape.evaluate(exec_ctx.symbol_values)
             t1 = t.expand(shape_)
             return (t1,)
     else:
         static_shape = shape.as_static()._shape
-        t = PyTorchBackend.to_device(t, dev)
-        t = t.expand(static_shape).clone().contiguous()
+        t = backend.to_device(t, dev)
+        t = t.expand(static_shape)  # .clone().contiguous()
 
         def const_op_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (t,)
 
     return const_op_thunk
@@ -93,20 +93,20 @@ def eval_symbol_op_translation(
     op: top.TensorOp,
     emit_ctx: ThunkEmissionCtx[torch.Tensor],
 ) -> Thunk[torch.Tensor]:
-    from tempo.runtime.backends.pytorch.pytorch_backend import PyTorchBackend
+    backend = emit_ctx.backend
 
     dev = emit_ctx.dev
-    dev_torch = PyTorchBackend.to_backend_device_obj(dev)
+    dev_torch = backend.to_backend_device_obj(dev)
     assert isinstance(op, top.EvalSymbolOp)
 
     symbol_dtype = op.dtype
-    dtype = PyTorchBackend.to_backend_datatype(symbol_dtype)
+    dtype = backend.to_backend_datatype(symbol_dtype)
 
     symbol = op.symbol
 
     def eval_symbol_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         # return (
         #    torch.tensor(
         #        exec_ctx.symbol_values[op.symbol],
@@ -131,8 +131,8 @@ def flip_op_translation(
     assert isinstance(dim, int)
 
     def flip_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         return (op_src.flip(inputs[0], (dim,)),)
 
     return flip_op_torch_thunk
@@ -150,16 +150,16 @@ def expand_op_translation(
     if sizes.is_dynamic():
 
         def expand_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             sizes_ = sizes.evaluate(exec_ctx.symbol_values)
             return (inputs[0].expand(sizes_),)
     else:
         sizes_ = sizes.evaluate(emit_ctx.compile_time_known_symbol_values)
 
         def expand_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (inputs[0].expand(sizes_),)
 
     return expand_op_torch_thunk
@@ -175,15 +175,15 @@ def reshape_op_translation(
     if shape.is_dynamic():
 
         def reshape_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (op_src.reshape(inputs[0], shape.evaluate(exec_ctx.symbol_values)),)
     else:
         shape_ = shape.evaluate(emit_ctx.compile_time_known_symbol_values)
 
         def reshape_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (op_src.reshape(inputs[0], shape_),)
 
     return reshape_op_torch_thunk
@@ -197,8 +197,8 @@ def permute_op_translation(
     dims = op.dims
 
     def permute_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         inp = inputs[0]
         return (op_src.permute(inp, dims),)
 
@@ -210,13 +210,13 @@ def cast_op_translation(
     emit_ctx: ThunkEmissionCtx[torch.Tensor],
 ) -> Thunk[torch.Tensor]:
     assert isinstance(op, top.CastOp)
-    from tempo.runtime.backends.pytorch.pytorch_backend import PyTorchBackend
+    backend = emit_ctx.backend
 
-    dtype = PyTorchBackend.to_backend_datatype(op.output_dtype)
+    dtype = backend.to_backend_datatype(op.output_dtype)
 
     def cast_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         return (inputs[0].to(dtype),)
 
     return cast_op_torch_thunk
@@ -232,14 +232,14 @@ def _elementwise_unary_op_translation(
     if output_is_dynamic:
 
         def elementwise_unary_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (torch_op(inputs[0]),)
     else:
 
         def elementwise_unary_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (torch_op(inputs[0]),)
 
     return elementwise_unary_op_torch_thunk
@@ -255,14 +255,14 @@ def _elementwise_binary_op_translation(
     if output_is_dynamic:
 
         def elementwise_binary_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (torch_op(inputs[0], inputs[1]),)
     else:
 
         def elementwise_binary_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (torch_op(inputs[0], inputs[1]),)
 
     return elementwise_binary_op_torch_thunk
@@ -275,8 +275,8 @@ def where_op_translation(
     assert isinstance(op, top.WhereOp)
 
     def where_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         return (op_src.where(inputs[0], inputs[1], inputs[2]),)
 
     return where_op_torch_thunk
@@ -291,8 +291,8 @@ def sum_op_translation(
     keepdim = op.keepdim
 
     def sum_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         return (op_src.sum(inputs[0], dim=dims, keepdim=keepdim),)
 
     return sum_op_torch_thunk
@@ -307,8 +307,8 @@ def cumsum_op_translation(
     assert isinstance(dim, int)
 
     def cumsum_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         return (op_src.cumsum(inputs[0], dim=dim),)
 
     return cumsum_op_torch_thunk
@@ -321,8 +321,8 @@ def matmul_op_translation(
     assert isinstance(op, top.MatMulOp)
 
     def matmul_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         return (op_src.matmul(inputs[0], inputs[1]),)
 
     return matmul_torch_thunk
@@ -361,8 +361,8 @@ def conv_op_translation(
         if new_in_shape.is_dynamic():
 
             def conv_op_torch_thunk(
-                inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-            ) -> Tuple[torch.Tensor, ...]:
+                inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+            ) -> tuple[torch.Tensor, ...]:
                 input_ = inputs[0]
                 input_ = input_.reshape(new_in_shape.evaluate(exec_ctx.symbol_values))
                 weight = inputs[1]
@@ -374,8 +374,8 @@ def conv_op_translation(
             out_shape_ = out_shape.evaluate(emit_ctx.compile_time_known_symbol_values)
 
             def conv_op_torch_thunk(
-                inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-            ) -> Tuple[torch.Tensor, ...]:
+                inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+            ) -> tuple[torch.Tensor, ...]:
                 input_ = inputs[0]
                 input_ = input_.reshape(new_in_shape_)
                 weight = inputs[1]
@@ -384,8 +384,8 @@ def conv_op_translation(
     else:
 
         def conv_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return fn(*inputs)  # type: ignore
 
     return conv_op_torch_thunk
@@ -401,10 +401,10 @@ def max_op_translation(
     keepdim = op.keepdim
 
     def max_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         res = op_src.max(inputs[0], dim=dims, keepdim=keepdim)
-        return (res[0], res[1].to(torch.int32))
+        return (res[0], res[1])
 
     return max_op_torch_thunk
 
@@ -417,8 +417,8 @@ def squeeze_op_translation(
     dim = op.dim
 
     def squeeze_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         res = op_src.squeeze(inputs[0], dim=dim)
         return (res,)
 
@@ -433,8 +433,8 @@ def unsqueeze_op_translation(
     dim = op.dim
 
     def unsqueeze_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         res = op_src.unsqueeze(inputs[0], dim=dim)
         return (res,)
 
@@ -449,8 +449,8 @@ def cat_op_translation(
     dim = op.dim
 
     def cat_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         res = op_src.cat(inputs, dim=dim)
         return (res,)
 
@@ -465,8 +465,8 @@ def gather_op_translation(
     dim = op.dim
 
     def gather_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         # print(f"Invoked {op}")
         ##print(inputs[0])
         # print(inputs[1])
@@ -484,8 +484,8 @@ def scatter_add_op_translation(
     dim = op.dim
 
     def scatter_add_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         res = op_src.scatter_add(inputs[0], dim=dim, index=inputs[1].to(torch.int64), src=inputs[2])
         return (res,)
 
@@ -508,8 +508,8 @@ def split_op_translation(
     assert isinstance(split_size, int)
 
     def split_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         return torch.split(inputs[0], split_size, dim=dim)  # type: ignore
 
     return split_op_torch_thunk
@@ -531,27 +531,30 @@ def index_slice_op_translation(
     )
 
     if op.is_static():
-        assert isinstance(length, int)
+        assert isinstance(length, (int, ie.ConstInt)), (
+            f"length={length} must be an int, is {type(length)}"
+        )
+        length = int(length)
 
         if can_optimize_narrow:
             assert isinstance(start_op, top.ConstOp)
             value = start_op.uniform_value
 
             def index_slice_op_torch_thunk(
-                inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-            ) -> Tuple[torch.Tensor, ...]:
+                inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+            ) -> tuple[torch.Tensor, ...]:
                 res = inputs[0].narrow(dim, value, length)
                 return (res,)
         else:
 
             def index_slice_op_torch_thunk(
-                inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-            ) -> Tuple[torch.Tensor, ...]:
-                res = inputs[0].narrow(dim, inputs[1], length)
+                inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+            ) -> tuple[torch.Tensor, ...]:
+                res = inputs[0].narrow(dim, inputs[1].to(torch.int64), length)
                 return (res,)
     else:
 
-        def get_fast_eval(x: Union[int, ie.IntIndexValue]) -> Callable[[], int]:
+        def get_fast_eval(x: int | ie.IntIndexValue) -> Callable[[], int]:
             if isinstance(x, ie.IntIndexValue):
                 remapped = x.remap(emit_ctx.domain_map)
                 remapped.cache_codegenerated_eval(emit_ctx.loop_counters)
@@ -561,8 +564,8 @@ def index_slice_op_translation(
         len_eval = get_fast_eval(length)
 
         def index_slice_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             x = inputs[0]
             start = int(inputs[1])
             return (x.narrow(dim, start, len_eval()),)
@@ -581,8 +584,8 @@ def index_select_op_translation(
     sq = (lambda x: x.squeeze(dim)) if index_is_scalar else (lambda x: x)
 
     def index_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         # index_max = inputs[1].max()
         # index_min = inputs[1].min()
         # print(f"index_max={index_max}, index_min={index_min}", flush=True)
@@ -604,8 +607,8 @@ def index_add_op_translation(
     assert isinstance(op, top.IndexAddOp)
 
     def index_add_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         res = op_src.index_add(
             inputs[0], op.dim, inputs[1].to(torch.int64), inputs[2], alpha=op.alpha
         )
@@ -621,8 +624,8 @@ def merge_op_translation(
     assert isinstance(op, top.MergeOp)
 
     def merge_op_torch_thunk(
-        inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-    ) -> Tuple[torch.Tensor, ...]:
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
         return (inputs[0],)
 
     return merge_op_torch_thunk
@@ -643,17 +646,38 @@ def val_to_val_op_translation(
     if torch.isnan(in_val_tensor):
 
         def val_to_val_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (torch.where(torch.isnan(inputs[0]), out_val_tensor, inputs[0]),)
     else:
 
         def val_to_val_op_torch_thunk(
-            inputs: Tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[torch.Tensor, ...]:
+            inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[torch.Tensor, ...]:
             return (torch.where(inputs[0] == in_val_tensor, out_val_tensor, inputs[0]),)
 
     return val_to_val_op_torch_thunk
+
+
+def sort_op_translation(
+    op: top.TensorOp,
+    emit_ctx: ThunkEmissionCtx[torch.Tensor],
+) -> Thunk[torch.Tensor]:
+    assert isinstance(op, top.SortOp)
+
+    dim = op.dim
+    stable = op.stable
+    descending = op.descending
+
+    def sort_op_torch_thunk(
+        inputs: tuple[torch.Tensor, ...], exec_ctx: ThunkExecutionCtx
+    ) -> tuple[torch.Tensor, ...]:
+        sorted_vals, sorted_idxs = op_src.sort(
+            inputs[0], dim=dim, stable=stable, descending=descending
+        )
+        return (sorted_vals, sorted_idxs)
+
+    return sort_op_torch_thunk
 
 
 def pad_op_translation(
@@ -662,8 +686,8 @@ def pad_op_translation(
 ) -> Thunk[torch.Tensor]:
     assert isinstance(op, top.PadOp)
 
-    pad0 = op.padding[0]
-    pad1 = op.padding[1]
+    pad0 = ie.lift_to_int_ie(op.padding[0])
+    pad1 = ie.lift_to_int_ie(op.padding[1])
 
     value = op.value if hasattr(op, "value") else 0.0
     len_in_shape = len(emit_ctx.dg.get_input_shape(op, OpInId(0)))
@@ -678,22 +702,17 @@ def pad_op_translation(
     mode = mode_table[mode_enum]
 
     if op.is_static():
-        if not isinstance(pad0, int):
-            pad0 = pad0.try_eval({})  # type: ignore
-        if not isinstance(pad1, int):
-            pad1 = pad1.try_eval({})  # type: ignore
-
         padding_ = [
             0,
         ] * (len_in_shape * 2)
-        padding_[len_in_shape * 2 - op.dim * 2 - 2] = pad0  # type: ignore
-        padding_[len_in_shape * 2 - op.dim * 2 - 1] = pad1  # type: ignore
+        padding_[len_in_shape * 2 - op.dim * 2 - 2] = int(pad0)  # type: ignore
+        padding_[len_in_shape * 2 - op.dim * 2 - 1] = int(pad1)  # type: ignore
         padding_ = tuple(padding_)
 
         def pad_op_thunk(
-            inputs: Tuple[torch.Tensor, ...],
+            inputs: tuple[torch.Tensor, ...],
             exec_ctx: ThunkExecutionCtx,
-        ) -> Tuple[torch.Tensor, ...]:
+        ) -> tuple[torch.Tensor, ...]:
             return (
                 op_src_pad(
                     inputs[0],
@@ -706,44 +725,21 @@ def pad_op_translation(
         padding_loc = [
             0,
         ] * (len_in_shape * 2)
-
-        def get_fast_eval(
-            pad0_: Union[int, ie.IntIndexValue], pad1_: Union[int, ie.IntIndexValue]
-        ) -> Callable[[], Tuple[int, ...]]:
-            if isinstance(pad0_, int):
-                pad0_eval = lambda: pad0_
-            elif isinstance(pad0_, ie.IntIndexValue):
-                pad0__ = pad0_.remap(emit_ctx.domain_map)
-                pad0__.cache_codegenerated_eval(emit_ctx.loop_counters)
-                pad0_eval = pad0__.eval_fast
-            if isinstance(pad1_, int):
-                pad1_eval = lambda: pad1_
-            elif isinstance(pad1_, ie.IntIndexValue):
-                pad1__ = pad1_.remap(emit_ctx.domain_map)
-                pad1__.cache_codegenerated_eval(emit_ctx.loop_counters)
-                pad1_eval = pad1__.eval_fast
-
-            idx0 = len_in_shape * 2 - op.dim * 2 - 2
-            idx1 = len_in_shape * 2 - op.dim * 2 - 1
-
-            def eval_fast() -> Tuple[int, ...]:
-                padding_loc[idx0] = pad0_eval()  # type: ignore
-                padding_loc[idx1] = pad1_eval()  # type: ignore
-                return tuple(padding_loc)
-
-            return eval_fast
-
-        padding_eval = get_fast_eval(pad0, pad1)
+        idx0 = len_in_shape * 2 - op.dim * 2 - 2
+        idx1 = len_in_shape * 2 - op.dim * 2 - 1
 
         def pad_op_thunk(
-            inputs: Tuple[torch.Tensor, ...],
+            inputs: tuple[torch.Tensor, ...],
             exec_ctx: ThunkExecutionCtx,
-        ) -> Tuple[torch.Tensor, ...]:
-            pad_evaled = padding_eval()
+        ) -> tuple[torch.Tensor, ...]:
+            # pad_evaled = padding_eval()
+            padding_loc[idx0] = pad0.evaluate(exec_ctx.symbol_values)
+            padding_loc[idx1] = pad1.evaluate(exec_ctx.symbol_values)
+            padding = tuple(padding_loc)
             return (
                 op_src_pad(
                     inputs[0],
-                    pad=pad_evaled,
+                    pad=padding,
                     mode=mode,
                     value=value,
                 ),
@@ -752,7 +748,7 @@ def pad_op_translation(
     return pad_op_thunk
 
 
-TEMPO_TO_PYTORCH: Dict[Type[top.TensorOp], OpToThunkTranslationFn[torch.Tensor]] = {
+TEMPO_TO_PYTORCH: dict[type[top.TensorOp], OpToThunkTranslationFn[torch.Tensor]] = {
     # Source
     top.RandOp: rand_op_translation,
     top.ConstOp: const_op_translation,
@@ -806,9 +802,14 @@ TEMPO_TO_PYTORCH: Dict[Type[top.TensorOp], OpToThunkTranslationFn[torch.Tensor]]
     # Special
     top.PadOp: pad_op_translation,
     top.ValToValOp: val_to_val_op_translation,
+    top.SortOp: sort_op_translation,
 }
 
 
-class PytorchThunkEmitter(ThunkEmitter[torch.Tensor]):
-    def _emit_thunk_for_op(self, op: top.TensorOp, ctx: ThunkEmissionCtx) -> Thunk[torch.Tensor]:
-        return TEMPO_TO_PYTORCH[type(op)](op, ctx)
+class PytorchThunkEmitter(ThunkEmitterBase[torch.Tensor]):
+    def _emit_thunk_for_op(
+        self,
+        op: top.TensorOp,
+        ctx: ThunkEmissionCtx[torch.Tensor],
+    ) -> Thunk[torch.Tensor]:
+        return TEMPO_TO_PYTORCH[type(op)](op, ctx)  # type: ignore

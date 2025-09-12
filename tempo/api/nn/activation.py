@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC
-from typing import Any, Type, Union
+from typing import Any, Union
 
 from tempo.api.nn.module import Module
 from tempo.api.recurrent_tensor import RecurrentTensor
@@ -20,10 +20,10 @@ class ActivationFunction(Module, ABC):
         return get_act_fun_class(act)()
 
 
-ActivationFunctionLike = Union[ActivationFunction, Type[ActivationFunction], str]
+ActivationFunctionLike = Union[ActivationFunction, type[ActivationFunction], str]
 
 
-def get_act_fun_class(activation: ActivationFunctionLike) -> Type[ActivationFunction]:
+def get_act_fun_class(activation: ActivationFunctionLike) -> type[ActivationFunction]:
     mapping = {
         "relu": Relu,
         "sigmoid": Sigmoid,

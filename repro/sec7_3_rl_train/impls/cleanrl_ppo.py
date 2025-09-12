@@ -1,6 +1,7 @@
 import random
 from functools import partial
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Dict, Tuple
+from collections.abc import Callable
 
 import gymnasium as gym
 import numpy as np
@@ -42,7 +43,7 @@ class ToTorchWrapper(gym.Wrapper):
     ) -> None:
         super().__init__(env)
 
-    def reset(self, **kwargs: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def reset(self, **kwargs: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
         o, info = self.env.reset(**kwargs)
         o = jax_to_torch(o)
         # info = optree.tree_map(self.to_backend_tensor, info)  # type: ignore
@@ -51,12 +52,12 @@ class ToTorchWrapper(gym.Wrapper):
 
     def step(
         self, action: Any
-    ) -> Tuple[
+    ) -> tuple[
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
-        Dict,
+        dict,
     ]:
         action = torch_to_jax(action)
         o, r, term, trunc, info = self.env.step(action)
@@ -73,7 +74,7 @@ def make_env(
     env_name: str,
     num_envs: int,
     ep_len: int,
-    obs_shape: Tuple[int, ...],
+    obs_shape: tuple[int, ...],
     dev: str,
     seed: int = 0,
 ) -> gym.vector.SyncVectorEnv:

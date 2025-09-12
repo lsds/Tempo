@@ -1,5 +1,3 @@
-from typing import Optional, Union
-
 from tempo.api import min  # noqa: A004
 from tempo.api.recurrent_tensor import MaybeRecurrentTensor, RecurrentTensor
 from tempo.api.rl.datatypes import RewardsRecurrentTensor, ValueRecurrentTensor
@@ -7,9 +5,9 @@ from tempo.core import index_expr as ie
 
 
 def n_step_returns(
-    r: Union[RecurrentTensor, RewardsRecurrentTensor],
+    r: RecurrentTensor | RewardsRecurrentTensor,
     t: ie.Symbol,
-    T: Optional[ie.IntIndexValue] = None,
+    T: ie.IntIndexValue | None = None,
     n: int = 5,
     gamma: MaybeRecurrentTensor = 0.98,
 ) -> RecurrentTensor:
@@ -29,10 +27,10 @@ def n_step_returns(
 
 
 def bootstrapped_n_step_returns(
-    r: Union[RecurrentTensor, RewardsRecurrentTensor],
+    r: RecurrentTensor | RewardsRecurrentTensor,
     v: RecurrentTensor,
     t: ie.Symbol,
-    T: Optional[ie.IntIndexValue] = None,
+    T: ie.IntIndexValue | None = None,
     n: int = 5,
     gamma: MaybeRecurrentTensor = 0.98,
 ) -> RecurrentTensor:
@@ -63,10 +61,10 @@ def bootstrapped_n_step_returns(
 
 
 def n_step_td_residual(
-    r: Union[RecurrentTensor, RewardsRecurrentTensor],
+    r: RecurrentTensor | RewardsRecurrentTensor,
     v: RecurrentTensor,
     t: ie.Symbol,
-    T: Optional[ie.IntIndexValue] = None,
+    T: ie.IntIndexValue | None = None,
     n: int = 5,
     gamma: MaybeRecurrentTensor = 0.98,
 ) -> RecurrentTensor:
@@ -78,10 +76,10 @@ def n_step_td_residual(
 
 
 def gae(
-    r: Union[RewardsRecurrentTensor, RecurrentTensor],
-    v: Union[ValueRecurrentTensor, RecurrentTensor],
+    r: RewardsRecurrentTensor | RecurrentTensor,
+    v: ValueRecurrentTensor | RecurrentTensor,
     t: ie.Symbol,
-    T: Optional[ie.IntIndexValue] = None,
+    T: ie.IntIndexValue | None = None,
     gamma: MaybeRecurrentTensor = 0.98,
     lambda_: MaybeRecurrentTensor = 0.95,
 ) -> RecurrentTensor:

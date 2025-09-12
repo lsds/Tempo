@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Optional
+from typing import Any
 
-from tempo.core import index_expr as ie
+from tempo.core.dl_backends import DLBackendName
+from tempo.core.dtype import set_default_int_dtype_for_backend
 
 
 def get_default_path() -> str:
@@ -47,6 +49,7 @@ class ExecutionConfig:
         enable_group_fusions: Try fusing dataflow groups into larger groups.
         enable_group_fissions: Allow splitting large dataflow groups (to lower kernel mem. use).
         enable_codegen_dataflows: Enable code generation for dataflows.
+        enable_codegen_dynamic_dataflows: Enable code generation for dataflows with dynamic shapes.
         enable_device_assignment: Enable device assignment analysis.
         enable_donation_analysis: Enable JAX-like buffer donation logic.
         enable_ast_promo: Promote some schedule instructions into batch instructions. E.g.:
@@ -78,7 +81,6 @@ class ExecutionConfig:
         enable_matmul_ops: Enable optimized matmul operations: MatMulOp.
         default_dim_upper_bound_size: When we need a dimension size, but don't have one,
             use this size.
-        bound_size_estimates: Similar to above, but can be provided per-symbol.
         enable_x64: Enable 64-bit floats and ints (slower but more accurate).
         num_executor_pool_workers: Number of parallel executors (None = auto).
         enable_parallel_block_detection: Enable schedule parallelism analysis.
@@ -88,8 +90,8 @@ class ExecutionConfig:
 
     # GENERAL SYSTEM =================================================
     path: str = get_default_path()
-    dev: str = "cpu"
-    backend: str = "torch"
+    dev: str = "gpu"
+    backend: str = "jax"
     torch_compilation_backend: str = "compile"  # Can also try "jit"
     # COMPILER TRANSFORMS & Analysis ============================================
     # OPTIMIZER ----------------------------------------------------
@@ -102,11 +104,13 @@ class ExecutionConfig:
     enable_domain_reduction: bool = True
     enable_inplace_write: bool = True
     enable_lazy_slice: bool = True
+    individualize_consts_smaller_than_x_bytes: int = 250 * (2**20)  # 250MB
     # VECTORIZATION ----------------------------------------------
     enable_vectorization: bool = True
-    reject_vec_groups_smaller_than: int = 5
+    enable_non_trivial_vectorization: bool = True
+    reject_vec_groups_smaller_than: int = 3
     # If group has X nodes, and X*ratio external dependents, reject.
-    reject_vec_groups_with_external_deps_ratio_greater_than: float = 0.2
+    reject_vec_groups_with_external_deps_ratio_greater_than: float = 0.5
     # INCREMENTALIZATION ---------------------------------
     enable_incrementalization: bool = True
     incrementalization_percentile: int = 20
@@ -126,6 +130,8 @@ class ExecutionConfig:
     enable_group_fissions: bool = False
     # DATAFLOW CODEGEN --------------------------------------------
     enable_codegen_dataflows: bool = True
+    enable_codegen_dynamic_dataflows: bool = False
+    enable_codegen_thunk_warmup: bool = True
     # ANALYSIS ----------------------------------------------------
     enable_device_assignment: bool = True
     enable_donation_analysis: bool = True
@@ -134,15 +140,18 @@ class ExecutionConfig:
     enable_isolate_loop_conditions: bool = True
     runtime_tensor_prefetch_amount_point: int = 10
     runtime_tensor_prefetch_amount_block: int = 5
+    # EXECUTOR =======================================================
+    enable_custom_thunk_launchers: bool = True
+    enable_eval_symbol_launcher: bool = True
     # RUNTIME MEMORY MANAGEMENT ======================================
     enable_hybrid_tensorstore: bool = True
     enable_gc: bool = True
     gc_bytes_min: int = 0
     enable_swap: bool = False
     swap_bytes_min: int = 32 * (2**20)  # 32MB #NOTE: We don't want to swap much.
-    enable_symbol_prealloc_store: bool = True
+    enable_symbol_prealloc_store: bool = True  # TODO: Test whether this is actually useful.
     enable_point_store_fallback: bool = True
-    min_block_store_tensor_point_size: int = int(0.8 * (2**20))  # 0.8MB
+    min_block_store_tensor_point_size: int = int(0.8 * (2**20))  # 0.5MB
     # DEBUG =========================================================
     deterministic: bool = False
     seed: int = 0
@@ -159,11 +168,10 @@ class ExecutionConfig:
     enable_index_ops: bool = True
     enable_matmul_ops: bool = True
     # DIM ESTIMATES =================================================
-    bound_size_estimates: Mapping[ie.Symbol, int] = field(default_factory=dict)
     default_dim_upper_bound_size: int = 500
     # DEPRECATED ====================================================
     enable_x64: bool = True
-    num_executor_pool_workers: Optional[int] = None
+    num_executor_pool_workers: int | None = None
     enable_parallel_block_detection: bool = False
     # NOTE: Not currently in use
     torch_pinned_prealloc_size_bytes: int = 0  # 0 means disabled
@@ -176,6 +184,30 @@ class ExecutionConfig:
             self.enable_statifying_incrementalization and self.enable_fold_pads_into_storage
         ) and not self.enable_hybrid_tensorstore:
             raise ValueError("StatifyInc with pad/mask folding requires hybrid tensorstore.")
+
+        set_default_int_dtype_for_backend(self.get_canonical_backend_name())
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        super().__setattr__(name, value)
+        set_default_int_dtype_for_backend(self.get_canonical_backend_name())
+
+    def get_canonical_backend_name(self) -> DLBackendName:
+        return DLBackendName.str_to_enum(self.backend)
+
+    def can_lazy_slice(self) -> bool:
+        return (
+            self.enable_lazy_slice
+            and self.enable_hybrid_tensorstore
+            and self.enable_codegen_dataflows
+            and self.get_canonical_backend_name() == DLBackendName.JAX
+        )
+
+    def can_inplace_write(self) -> bool:
+        return (
+            self.enable_inplace_write
+            and self.enable_hybrid_tensorstore
+            and self.enable_codegen_dataflows
+        )
 
     @staticmethod
     def default() -> ExecutionConfig:
@@ -229,7 +261,7 @@ class ExecutionConfig:
             exec_op_profiling_sync_after_each=False,
             enable_symbol_prealloc_store=False,
             torch_pinned_prealloc_size_bytes=0,
-            torch_compilation_backend="jit",
+            torch_compilation_backend="compile",
             algebraic_optims_to_disable=(),
             reject_vec_groups_smaller_than=5,
             reject_vec_groups_with_external_deps_ratio_greater_than=0.2,
@@ -243,7 +275,6 @@ class ExecutionConfig:
             swap_bytes_min=32 * (2**20),
             enable_point_store_fallback=False,
             min_block_store_tensor_point_size=int(0.8 * (2**20)),
-            bound_size_estimates={},
             default_dim_upper_bound_size=500,
             num_executor_pool_workers=None,
             torch_pinned_memory_enabled=False,

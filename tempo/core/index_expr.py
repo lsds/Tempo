@@ -4,26 +4,20 @@ import builtins
 import functools
 import itertools
 import math
-import traceback
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import (
     Any,
-    Callable,
-    List,
-    Optional,
-    Sequence,
-    Set,
     SupportsIndex,
-    Tuple,
     Union,
     overload,
 )
 
 import sympy
 
+from tempo.core.debug_utils import get_creation_traceback
 from tempo.utils import logger
 
 log = logger.get_logger(__name__)
@@ -83,11 +77,11 @@ log = logger.get_logger(__name__)
 """
 
 
-def symbols(names: str) -> Tuple[Symbol, ...]:
+def symbols(names: str) -> tuple[Symbol, ...]:
     return tuple(Symbol(name) for name in names.split(" "))
 
 
-def bound_symbols(names: str) -> Tuple[Symbol, ...]:
+def bound_symbols(names: str) -> tuple[Symbol, ...]:
     return tuple(Symbol(name, is_bound=True) for name in names.split(" "))
 
 
@@ -107,7 +101,7 @@ class StructEqCheckCtxManager:
         IntIndexValue.__ne__ = self.original_ne  # type: ignore
 
 
-def to_sympy_expr(ie: IndexExpr) -> Union[sympy.Expr, Tuple[sympy.Expr, ...]]:  # noqa: C901
+def to_sympy_expr(ie: IndexExpr) -> sympy.Expr | tuple[sympy.Expr, ...]:  # noqa: C901
     if isinstance(ie, IndexSequence):
         return tuple(_to_sympy_expr(member) for member in ie.members)
     else:
@@ -370,14 +364,18 @@ def logical_eq(*ies: Any) -> bool:
 
 @dataclass(frozen=True, eq=False, slots=True)
 class IndexExpr(SupportsIndex, ABC):
-    children: List[IndexAtom] = field(
+    children: list[IndexAtom] = field(
         default_factory=list, repr=False, compare=False, init=False, hash=False
     )
     eval_fast: Callable[[], Any] = field(default_factory=lambda: (lambda: 0), init=False)
-    _creation_traceback: List[str] = field(
-        init=False, default_factory=lambda: traceback.format_stack()[:-1]
+    _creation_traceback: list[str] = field(
+        init=False,
+        repr=False,
+        hash=False,
+        compare=False,
+        default_factory=lambda: get_creation_traceback(),
     )
-    _cached_sympy_expr: Optional[sympy.Expr] = field(default=None, init=False)
+    _cached_sympy_expr: sympy.Expr | None = field(default=None, init=False)
 
     @property
     def creation_traceback(self) -> str:
@@ -393,6 +391,9 @@ class IndexExpr(SupportsIndex, ABC):
 
     def __hash__(self) -> int:
         return hash((self.__class__.__name__, tuple(self.children)))
+
+    def any_child(self, fn: Callable[[IndexAtom], bool]) -> bool:
+        return fn(self) or any(child.any_child(fn) for child in self.children)  # type: ignore
 
     # def _cache_sympy_expr(self) -> None:
     #    #assert not hasattr(self, "_cached_sympy_expr")
@@ -469,9 +470,7 @@ class IndexExpr(SupportsIndex, ABC):
         return any(x.accesses_bound() for x in self.children)
 
     # TODO remove
-    def evaluate_shape(
-        self, index_values: Mapping[Symbol, int]
-    ) -> Tuple[Union[int, IntIndexValue], ...]:
+    def evaluate_shape(self, index_values: Mapping[Symbol, int]) -> tuple[int | IntIndexValue, ...]:
         """Evaluates an index expr to compute the effect it has on the shape of a tensor."""
         raise NotImplementedError()
 
@@ -509,13 +508,13 @@ class IndexExpr(SupportsIndex, ABC):
 
     def enumerate_all_cond_branches(
         self,
-    ) -> Sequence[Tuple[Optional[BooleanIndexValue], IndexExpr]]:
+    ) -> Sequence[tuple[BooleanIndexValue | None, IndexExpr]]:
         children_enumerations = [child.enumerate_all_cond_branches() for child in self.children]
 
-        res: List[Tuple[Optional[BooleanIndexValue], IndexExpr]] = []
+        res: list[tuple[BooleanIndexValue | None, IndexExpr]] = []
         for prod in itertools.product(*children_enumerations):
             branches = tuple([p[1] for p in prod])
-            branches = typing.cast(Tuple[IndexAtom, ...], branches)
+            branches = typing.cast(tuple[IndexAtom, ...], branches)
             conds = [p[0] for p in prod]
             conds = [c for c in conds if c is not None]
             if len(conds) == 0:
@@ -561,7 +560,7 @@ class IndexExpr(SupportsIndex, ABC):
                 bounds.update(child.bound_symbols_used())
         return list(bounds)
 
-    def vars_used(self) -> Set[Symbol]:
+    def vars_used(self) -> set[Symbol]:
         variables = set()
         for child in self.children:
             if isinstance(child, Symbol) and not child.is_bound:
@@ -653,6 +652,9 @@ def lift_to_ie(x: Any) -> IndexExpr:
     if type(x) is builtins.slice:
         assert x.start is not None, "Slice start cannot be None for now"
         assert x.stop is not None, "Slice stop cannot be None for now"
+        assert x.step is None or (isinstance(x.step, int) and x.step == 1), (
+            "Slice step must be 1 for now"
+        )
         return slice_(
             lift_to_int_ie(x.start),
             lift_to_int_ie(x.stop),
@@ -673,7 +675,7 @@ def lift_to_ie(x: Any) -> IndexExpr:
 
 def min(  # noqa: A001, A002, A003
     arg1: Any,
-    arg2: Optional[Any] = None,
+    arg2: Any | None = None,
     *args: Any,
 ) -> IntIndexValue:
     # TODO need to redefine the version which takes a iterable
@@ -686,7 +688,7 @@ def min(  # noqa: A001, A002, A003
 
 def max(  # noqa: A001, A002, A003
     arg1: Any,
-    arg2: Optional[Any] = None,
+    arg2: Any | None = None,
     *args: Any,
 ) -> IntIndexValue:
     if arg2 is None:
@@ -706,9 +708,7 @@ class IndexAtom(IndexExpr, ABC):
 
     """
 
-    def evaluate_shape(
-        self, index_values: Mapping[Symbol, int]
-    ) -> Tuple[Union[int, IntIndexValue], ...]:
+    def evaluate_shape(self, index_values: Mapping[Symbol, int]) -> tuple[int | IntIndexValue, ...]:
         raise NotImplementedError()
 
     def remap(self, domain_map: Mapping[Symbol, IntIndexValue]) -> IndexAtom:
@@ -738,14 +738,12 @@ class IndexSequence(IndexExpr):
         return iter(self.members)
 
     @overload
-    def __getitem__(self, key: int) -> IndexAtom:
-        pass
+    def __getitem__(self, key: int) -> IndexAtom: ...
 
     @overload
-    def __getitem__(self, key: builtins.slice) -> IndexSequence:
-        pass
+    def __getitem__(self, key: builtins.slice) -> IndexSequence: ...
 
-    def __getitem__(self, key: Union[int, builtins.slice]) -> Union[IndexAtom, IndexSequence]:
+    def __getitem__(self, key: int | builtins.slice) -> IndexAtom | IndexSequence:
         if isinstance(key, int):
             return self.members[key]
         return IndexSequence(self.members[key])
@@ -796,16 +794,14 @@ class IndexSequence(IndexExpr):
             str_ += ")"
         return str_
 
-    def evaluate(self, index_values: Mapping[Symbol, int]) -> Tuple[Union[int, slice], ...]:
+    def evaluate(self, index_values: Mapping[Symbol, int]) -> tuple[int | slice, ...]:
         return tuple(x.evaluate(index_values) for x in self.members)  # type: ignore
 
     def partial_eval(self, domain_map: Mapping[Symbol, builtins.int]) -> IndexSequence:
         inner = tuple(x.partial_eval(domain_map) for x in self.members)  # type: ignore
         return IndexSequence(inner)  # type: ignore
 
-    def evaluate_shape(
-        self, index_values: Mapping[Symbol, int]
-    ) -> Tuple[Union[int, IntIndexValue], ...]:
+    def evaluate_shape(self, index_values: Mapping[Symbol, int]) -> tuple[int | IntIndexValue, ...]:
         member_shapes = tuple(x.evaluate_shape(index_values) for x in self.members)
         flat = tuple(x for shape in member_shapes for x in shape)
         return flat
@@ -828,7 +824,7 @@ class IndexSequence(IndexExpr):
 
     def get_block_access_block_sizes(
         self,
-    ) -> Tuple[Union[int, None], ...]:
+    ) -> tuple[int | None, ...]:
         res = []
         for member in self.members:
             if member.is_block_access():
@@ -842,13 +838,13 @@ class IndexSequence(IndexExpr):
 
     def enumerate_all_cond_branches(
         self,
-    ) -> Sequence[Tuple[Optional[BooleanIndexValue], IndexExpr]]:
+    ) -> Sequence[tuple[BooleanIndexValue | None, IndexExpr]]:
         children_enumerations = [child.enumerate_all_cond_branches() for child in self.children]
 
-        res: List[Tuple[Optional[BooleanIndexValue], IndexExpr]] = []
+        res: list[tuple[BooleanIndexValue | None, IndexExpr]] = []
         for prod in itertools.product(*children_enumerations):
             branches = tuple([p[1] for p in prod])
-            branches = typing.cast(Tuple[IndexAtom, ...], branches)
+            branches = typing.cast(tuple[IndexAtom, ...], branches)
             conds = [p[0] for p in prod]
             conds = [c for c in conds if c is not None]
             if len(conds) == 0:
@@ -930,15 +926,13 @@ class IndexValue(IndexAtom, ABC):
 
     """
 
-    def evaluate(self, index_values: Mapping[Symbol, int]) -> Union[int, bool]:
+    def evaluate(self, index_values: Mapping[Symbol, int]) -> int | bool:
         raise NotImplementedError()
 
     def is_point(self) -> bool:
         return True
 
-    def evaluate_shape(
-        self, index_values: Mapping[Symbol, int]
-    ) -> Tuple[Union[int, IntIndexValue], ...]:
+    def evaluate_shape(self, index_values: Mapping[Symbol, int]) -> tuple[int | IntIndexValue, ...]:
         # The shape of index values is a scalar, so they have shape ()
         return ()  # type: ignore
 
@@ -1088,7 +1082,7 @@ class IntIndexValue(IndexValue, ABC):
         raise NotImplementedError()
 
     # TODO this should return self if fails
-    def try_eval(self, index_values: Mapping[Symbol, int]) -> Optional[int]:
+    def try_eval(self, index_values: Mapping[Symbol, int]) -> int | None:
         try:
             return self.evaluate(index_values)
         except Exception:
@@ -1356,7 +1350,7 @@ class IntIndexValue(IndexValue, ABC):
 class IntLeafExpr(IntIndexValue, ABC):
     def enumerate_all_cond_branches(
         self,
-    ) -> Sequence[Tuple[Optional[BooleanIndexValue], IndexExpr]]:
+    ) -> Sequence[tuple[BooleanIndexValue | None, IndexExpr]]:
         return [(None, self)]
 
     def as_upper_bound_access(self) -> IndexExpr:
@@ -1383,7 +1377,7 @@ class ConstInt(IntLeafExpr):
         return hash((self.__class__.__name__, self.const))
 
     def __post_init__(self) -> None:
-        assert isinstance(self.const, int), "ConstInt must be an integer, got %s: %s" % (
+        assert isinstance(self.const, int), "ConstInt must be an integer, got {}: {}".format(
             type(self.const),
             self.const,
         )
@@ -1437,7 +1431,7 @@ class ConstBool(BooleanIndexValue):
 
     def enumerate_all_cond_branches(
         self,
-    ) -> Sequence[Tuple[Optional[BooleanIndexValue], IndexExpr]]:
+    ) -> Sequence[tuple[BooleanIndexValue | None, IndexExpr]]:
         return [(None, self)]
 
     def eliminate_symbol(self, symbol: Symbol) -> BooleanIndexValue:
@@ -1489,6 +1483,10 @@ class Symbol(IntLeafExpr):
     is_bound: bool = False
     idx: int = -1
 
+    def __post_init__(self) -> None:
+        if self.idx == -1:
+            raise ValueError(f"Symbol {self} has index -1")
+
     def __hash__(self) -> int:
         # TODO return self.idx?
         return hash(self.name)
@@ -1537,7 +1535,7 @@ class Symbol(IntLeafExpr):
             idx=(self.idx if self.is_bound else self.idx + 1),
         )
 
-    def vars_used(self) -> Set[Symbol]:
+    def vars_used(self) -> set[Symbol]:
         return {self} if not self.is_bound else set()
 
     def struct_eq(self, other: Any) -> bool:
@@ -1691,8 +1689,8 @@ class Slice(IndexAtom):
         return slice_(new_start, new_stop)  # type: ignore
 
     def evaluate_shape(
-        self, index_values: Optional[Mapping[Symbol, int]] = None
-    ) -> Tuple[Union[int, IntIndexValue], ...]:
+        self, index_values: Mapping[Symbol, int] | None = None
+    ) -> tuple[int | IntIndexValue, ...]:
         if index_values is None:
             index_values = {}
 
@@ -1700,7 +1698,7 @@ class Slice(IndexAtom):
         try:
             start_eval = self.start.evaluate(index_values)
             assert isinstance(start_eval, int), "Start must be an integer in shape eval"
-            start: Union[int, IntIndexValue] = start_eval
+            start: int | IntIndexValue = start_eval
         except KeyError:
             # Could not evaluate start, so we return the symbolic index
             start = self.start
@@ -1708,7 +1706,7 @@ class Slice(IndexAtom):
         try:
             stop_eval = self.stop.evaluate(index_values)
             assert isinstance(stop_eval, int), "Stop must be an integer in shape eval"
-            stop: Union[int, IntIndexValue] = stop_eval
+            stop: int | IntIndexValue = stop_eval
         except KeyError:
             # Could not evaluate start, so we return the symbolic index
             stop = self.stop
@@ -1736,7 +1734,7 @@ class Slice(IndexAtom):
 
 @dataclass(frozen=True, eq=False, slots=True)
 class NAryExpr(IntIndexValue, ABC):
-    operands: Tuple[IntIndexValue, ...] = field(default_factory=tuple)
+    operands: tuple[IntIndexValue, ...] = field(default_factory=tuple)
 
     def __hash__(self) -> int:
         return hash((self.__class__.__name__, self.operands))
@@ -1748,10 +1746,10 @@ class NAryExpr(IntIndexValue, ABC):
     # TODO: What is  going on here? This needs docs.
     def enumerate_all_cond_branches(
         self,
-    ) -> Sequence[Tuple[Optional[BooleanIndexValue], IndexExpr]]:
+    ) -> Sequence[tuple[BooleanIndexValue | None, IndexExpr]]:
         children_enumerations = [child.enumerate_all_cond_branches() for child in self.children]
 
-        res: List[Tuple[Optional[BooleanIndexValue], IndexExpr]] = []
+        res: list[tuple[BooleanIndexValue | None, IndexExpr]] = []
         for prod in itertools.product(*children_enumerations):
             branches = [p[1] for p in prod]
             conds = [p[0] for p in prod]
@@ -1923,7 +1921,7 @@ class Max(NAryExpr):
 
 
 def piecewise(
-    conds_and_branches: Sequence[Tuple[BooleanIndexValue, IntIndexValue]],
+    conds_and_branches: Sequence[tuple[BooleanIndexValue, IntIndexValue]],
 ) -> IntIndexValue:
     # TODO catch and simplify patterns:
     # piecewise([(d1 >= 256 and ds0 == 0, 256), (not (d1 >= 256 and ds0 == 0), d1 + 1)]) - 1
@@ -1937,7 +1935,7 @@ def piecewise(
 
 @dataclass(repr=False, frozen=True, eq=False, slots=True)
 class Piecewise(IntIndexValue):
-    conds_and_branches: Sequence[Tuple[BooleanIndexValue, IntIndexValue]]
+    conds_and_branches: Sequence[tuple[BooleanIndexValue, IntIndexValue]]
 
     def __post_init__(self) -> None:
         self.children.extend([x for objs in self.conds_and_branches for x in objs])
@@ -1997,8 +1995,8 @@ class Piecewise(IntIndexValue):
 
     def enumerate_all_cond_branches(  # noqa: C901
         self,
-    ) -> Sequence[Tuple[Optional[BooleanIndexValue], IndexExpr]]:
-        children_enums: List[Tuple[Optional[BooleanIndexValue], IndexExpr]] = []
+    ) -> Sequence[tuple[BooleanIndexValue | None, IndexExpr]]:
+        children_enums: list[tuple[BooleanIndexValue | None, IndexExpr]] = []
         for cond, branch in self.conds_and_branches:
             cond_enums = cond.enumerate_all_cond_branches()
             branch_enums = branch.enumerate_all_cond_branches()

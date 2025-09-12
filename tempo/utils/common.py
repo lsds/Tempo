@@ -1,20 +1,13 @@
 import os
 import time
 from collections import defaultdict
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Sequence,
-    Tuple,
-    Type,
     TypeVar,
-    Union,
 )
 
 T = TypeVar("T")
@@ -33,7 +26,7 @@ def nanos_to_ms(x: int) -> int:
     return int(x / 1e6)
 
 
-def get_all_subclasses(cls: Type[Any]) -> List[Type[Any]]:
+def get_all_subclasses(cls: type[Any]) -> list[type[Any]]:
     all_subclasses = [cls]
 
     for subclass in cls.__subclasses__():
@@ -43,15 +36,15 @@ def get_all_subclasses(cls: Type[Any]) -> List[Type[Any]]:
     return all_subclasses
 
 
-def partition(seq: Sequence[T], key: Callable[[T], K]) -> Dict[K, List[T]]:
+def partition(seq: Sequence[T], key: Callable[[T], K]) -> dict[K, list[T]]:
     # https://stackoverflow.com/questions/12720151/simple-way-to-group-items-into-buckets
-    d: Dict[K, List[T]] = defaultdict(list)
+    d: dict[K, list[T]] = defaultdict(list)
     for x in seq:
         d[key(x)].append(x)
     return d
 
 
-def argsort(x: Tuple[T]) -> Tuple[T]:
+def argsort(x: tuple[T]) -> tuple[T]:
     return tuple(sorted(range(len(x)), key=x.__getitem__))  # type: ignore
 
 
@@ -72,7 +65,7 @@ def get_log_path() -> Path:
     return Path(get_dir_path()) / get_date_str()
 
 
-def as_seq(x: Optional[Union[T, Sequence[T]]]) -> Sequence[T]:
+def as_seq(x: T | Sequence[T] | None) -> Sequence[T]:
     if x is None:
         return ()
     if not isinstance(x, Sequence):
@@ -85,18 +78,18 @@ class Timer:
     """Context manager for timing code execution."""
 
     start_ns: int = 0
-    end_ns: int = 0
+    total_elapsed_ns: int = -1
 
     def __enter__(self) -> "Timer":
         self.start_ns = time.perf_counter_ns()
         return self
 
     def __exit__(self, *args: Any) -> None:
-        self.end_ns = time.perf_counter_ns()
+        self.total_elapsed_ns += time.perf_counter_ns() - self.start_ns
 
     @property
     def elapsed_ns(self) -> int:
-        return self.end_ns - self.start_ns
+        return self.total_elapsed_ns + 1  # NOTE: To offset the initial -1 value
 
     @property
     def elapsed_ms(self) -> float:

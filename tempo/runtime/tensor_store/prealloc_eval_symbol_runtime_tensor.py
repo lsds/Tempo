@@ -1,13 +1,11 @@
-from typing import Dict, Tuple, Union
-
 from tempo.core import index_expr as ie
 from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT, TensorId
 from tempo.core.device import DeviceGroup
+from tempo.core.dl_backend import DLBackend
 from tempo.core.domain import Domain
 from tempo.core.dtype import DataType
 from tempo.core.shape import Shape
-from tempo.runtime.backends.backend import DLBackend
 from tempo.runtime.tensor_store.tensor_store import RuntimeTensor
 from tempo.utils import isl as isl_utils
 
@@ -22,7 +20,7 @@ class EvalSymbolRuntimeTensor(RuntimeTensor[BackendTensorT]):  # [BackendTensorT
         dev: DeviceGroup,
         domain: Domain,
         symbol: ie.Symbol,
-        bound_defs: Dict[ie.Symbol, ie.IntIndexValueLike],
+        bound_defs: dict[ie.Symbol, ie.IntIndexValueLike],
     ) -> None:
         super().__init__(tensor_id)
         self.exec_cfg = exec_cfg
@@ -58,14 +56,14 @@ class EvalSymbolRuntimeTensor(RuntimeTensor[BackendTensorT]):  # [BackendTensorT
         #        symbol_val, device=self.dev, dtype=bend_dtype
         #    )
 
-    def all_int_fast_path(self, item: Tuple[int | slice]) -> BackendTensorT:
+    def all_int_fast_path(self, item: tuple[int | slice]) -> BackendTensorT:
         return self._data_list[item[self.symbol_idx]]  # type: ignore
 
-    def __getitem__(self, item: Tuple[int | slice]) -> BackendTensorT:
+    def __getitem__(self, item: tuple[int | slice]) -> BackendTensorT:
         return self._data_list[item[self.symbol_idx]]  # type: ignore
 
     def _get_max_val(
-        self, dim: ie.Symbol, bound_defs: Dict[ie.Symbol, ie.IntIndexValueLike]
+        self, dim: ie.Symbol, bound_defs: dict[ie.Symbol, ie.IntIndexValueLike]
     ) -> int:
         static_bound_defs = {k: v for k, v in bound_defs.items() if isinstance(v, int)}
         b = dim.as_bound()
@@ -85,33 +83,24 @@ class EvalSymbolRuntimeTensor(RuntimeTensor[BackendTensorT]):  # [BackendTensorT
         else:
             return 1
 
-    def all_int_fast_path_set(self, item: Tuple[int, ...], value: BackendTensorT) -> None:
-        pass
+    def all_int_fast_path_set(self, item: tuple[int, ...], value: BackendTensorT) -> None: ...
 
-    def __setitem__(self, item: Tuple[Union[int, slice], ...], value: BackendTensorT) -> None:
-        pass
+    def __setitem__(self, item: tuple[int | slice, ...], value: BackendTensorT) -> None: ...
 
     def mem_usage_bytes(self) -> int:
         return self.symbol_max_val * self.dtype.repr_bytes
 
     # Do not throw away values
-    def flush(self) -> None:
-        pass
+    def flush(self) -> None: ...
 
-    def deallocate_point(self, item: Tuple[Union[int, slice], ...]) -> None:
-        pass
+    def deallocate_point(self, item: tuple[int | slice, ...]) -> None: ...
 
-    def offload_point(self, item: Tuple[Union[int, slice], ...]) -> None:
-        pass
+    def offload_point(self, item: tuple[int | slice, ...]) -> None: ...
 
-    def fetch_point(self, item: Tuple[Union[int, slice], ...]) -> None:
-        pass
+    def fetch_point(self, item: tuple[int | slice, ...]) -> None: ...
 
-    def deallocate_block(self, block: Tuple[Union[int, slice], ...]) -> None:
-        pass
+    def deallocate_block(self, block: tuple[int | slice, ...]) -> None: ...
 
-    def offload_block(self, block: Tuple[Union[int, slice], ...]) -> None:
-        pass
+    def offload_block(self, block: tuple[int | slice, ...]) -> None: ...
 
-    def fetch_block(self, block: Tuple[Union[int, slice], ...]) -> None:
-        pass
+    def fetch_block(self, block: tuple[int | slice, ...]) -> None: ...

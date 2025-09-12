@@ -1,5 +1,3 @@
-from typing import List, Tuple
-
 from tempo.api.nn.activation import ActivationFunctionLike, get_act_fun_class
 from tempo.api.nn.linear import Linear
 from tempo.api.nn.module import Module, Sequential
@@ -12,7 +10,7 @@ class FullyConnected(Module):
     def __init__(
         self,
         input_shape: StaticShapeLike,
-        hidden_sizes: Tuple[int, ...],
+        hidden_sizes: tuple[int, ...],
         output_shape: StaticShapeLike,
         act_fun: ActivationFunctionLike = "leakyrelu",
         domain: DomainLike = None,
@@ -24,7 +22,7 @@ class FullyConnected(Module):
         self.input_shape = StaticShape.from_(input_shape)
         self.output_shape = StaticShape.from_(output_shape)
 
-        self.layers: List[Module] = []
+        self.layers: list[Module] = []
         if len(hidden_sizes) == 0:
             self.layers.append(
                 Linear(
@@ -80,7 +78,7 @@ class FullyConnectedActorCritic(Module):
     def __init__(
         self,
         input_shape: StaticShapeLike,
-        hidden_sizes: Tuple[int, ...],
+        hidden_sizes: tuple[int, ...],
         output_shape: StaticShapeLike,
         act_fun: ActivationFunctionLike = "leakyrelu",
         domain: DomainLike = None,
@@ -92,7 +90,7 @@ class FullyConnectedActorCritic(Module):
         self.input_shape = StaticShape.from_(input_shape)
         self.output_shape = StaticShape.from_(output_shape)
 
-        self.layers: List[Module] = []
+        self.layers: list[Module] = []
         self.layers.append(
             Linear(
                 self.input_shape.prod(),
@@ -126,12 +124,12 @@ class FullyConnectedActorCritic(Module):
             independent_domain=independent_domain,
         )
 
-    def forward(self, x: RecurrentTensor) -> Tuple[RecurrentTensor, RecurrentTensor]:
+    def forward(self, x: RecurrentTensor) -> tuple[RecurrentTensor, RecurrentTensor]:
         x = x.reshape(self.input_shape.flatten())
         latent: RecurrentTensor = self.shared_backbone.forward(x)  # type: ignore
         return self.act_head(latent).reshape(self.output_shape), self.critic_head(latent).reshape(
             (1,)
         )
 
-    def __call__(self, x: RecurrentTensor) -> Tuple[RecurrentTensor, RecurrentTensor]:
+    def __call__(self, x: RecurrentTensor) -> tuple[RecurrentTensor, RecurrentTensor]:
         return self.forward(x)

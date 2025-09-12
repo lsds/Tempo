@@ -22,7 +22,7 @@ from repro.sec7_3_rl_train.shared import (
 
 
 def print_framework_speedup(
-    dfs: List[pd.DataFrame], frameworks_ordered: List[str], base_framework: str
+    dfs: list[pd.DataFrame], frameworks_ordered: list[str], base_framework: str
 ):
     """
     Calculate and print the average speedup of a base framework compared to other systems.

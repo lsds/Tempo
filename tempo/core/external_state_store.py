@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, Sequence, Tuple
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 
 StateStoreKey = str
 
 
 class ExternalStateStore:
     def __init__(
-        self, clean_up_dict: Dict[StateStoreKey, Callable[[ExternalStateStore], None]]
+        self, clean_up_dict: dict[StateStoreKey, Callable[[ExternalStateStore], None]]
     ) -> None:
-        self._store: Dict[StateStoreKey, Any] = {}
+        self._store: dict[StateStoreKey, Any] = {}
         self._clean_up_dict = clean_up_dict
 
     def __getitem__(self, key: StateStoreKey) -> Any:
@@ -37,7 +38,7 @@ class ExternalStateStore:
     def values(self) -> Sequence[Any]:
         return list(self._store.values())
 
-    def items(self) -> Sequence[Tuple[StateStoreKey, Any]]:
+    def items(self) -> Sequence[tuple[StateStoreKey, Any]]:
         return list(self._store.items())
 
     def __iter__(self) -> Iterable[StateStoreKey]:

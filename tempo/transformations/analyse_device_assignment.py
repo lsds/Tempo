@@ -1,10 +1,8 @@
-from typing import Dict, Tuple
-
 from tempo.core import tensor_ops as top
 from tempo.core.datatypes import OpId
 from tempo.core.dependence_graph import PDG
 from tempo.core.device import DeviceGroup, device
-from tempo.runtime.backends.backend import DLBackendName
+from tempo.core.dl_backends import DLBackendName
 from tempo.transformations.compilation_pass import Transformation
 from tempo.utils import logger
 
@@ -137,13 +135,13 @@ log = logger.get_logger(__name__)
 
 
 class AnalyseDeviceAssignment(Transformation):
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         dg = self.ctx.dg
         analysis_ctx = self.ctx.analysis_ctx
-        device_assignment: Dict[OpId, DeviceGroup] = {}
+        device_assignment: dict[OpId, DeviceGroup] = {}
 
         default_dev = device.from_(self.ctx.exec_cfg.dev)
-        bend = DLBackendName.str_to_enum(self.ctx.exec_cfg.backend)
+        bend = self.ctx.exec_cfg.get_canonical_backend_name()
 
         place_indexes_on_cpu = bend == DLBackendName.JAX
 
@@ -167,11 +165,11 @@ class AnalyseDeviceAssignment(Transformation):
                 if op.op_id not in device_assignment:
                     device_assignment[op.op_id] = default_dev
 
-        inverse_assignment: Dict[DeviceGroup, int] = {}
+        inverse_assignment: dict[DeviceGroup, int] = {}
         for _, dev in device_assignment.items():
             inverse_assignment[dev] = inverse_assignment.get(dev, 0) + 1
 
-        percentage_map: Dict[DeviceGroup, float] = {
+        percentage_map: dict[DeviceGroup, float] = {
             dev: (count / len(device_assignment)) * 100 for dev, count in inverse_assignment.items()
         }
 

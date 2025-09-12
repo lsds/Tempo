@@ -1,7 +1,6 @@
 from collections import defaultdict
 from collections.abc import Mapping
 from itertools import product
-from typing import Optional, Tuple
 
 from tempo.core import index_expr as ie
 from tempo.core.compilation_ctx import CompilationCtx
@@ -27,7 +26,6 @@ class MemoryEstimator:
         self.bound_size_estimates: Mapping[ie.Symbol, int] = defaultdict(
             lambda: ctx.exec_cfg.default_dim_upper_bound_size
         )
-        self.bound_size_estimates.update(ctx.exec_cfg.bound_size_estimates)
         for bound, bound_def in ctx.dg.bound_defs.items():
             if isinstance(bound_def, int):
                 self.bound_size_estimates[bound] = bound_def
@@ -43,9 +41,9 @@ class MemoryEstimator:
         self,
         expr: ie.IndexExpr,
         op_id: OpId,
-        out_idx: Optional[OpOutId] = None,
-        in_idx: Optional[OpInId] = None,
-    ) -> Tuple[int, bool]:
+        out_idx: OpOutId | None = None,
+        in_idx: OpInId | None = None,
+    ) -> tuple[int, bool]:
         point_size = self.estimate_tensor_point_size_bytes(op_id, out_idx, in_idx)
         approx = False
         if expr.is_point():
@@ -56,7 +54,7 @@ class MemoryEstimator:
                 self.dg.static_bounds,
             ).prod()
             if isinstance(num_, int):
-                pass
+                ...
             else:
                 if isinstance(num_, ie.ConstInt):
                     num = num_.const
@@ -67,11 +65,22 @@ class MemoryEstimator:
 
         return point_size * num, approx
 
+    def try_estimate_tensor_point_size_bytes(  # noqa: C901
+        self,
+        op_id: OpId,
+        out_idx: OpOutId | None = None,
+        in_idx: OpInId | None = None,
+    ) -> int:
+        try:
+            return self.estimate_tensor_point_size_bytes(op_id, out_idx, in_idx)
+        except Exception:
+            return 0
+
     def estimate_tensor_point_size_bytes(  # noqa: C901
         self,
         op_id: OpId,
-        out_idx: Optional[OpOutId] = None,
-        in_idx: Optional[OpInId] = None,
+        out_idx: OpOutId | None = None,
+        in_idx: OpInId | None = None,
     ) -> int:
         op_data = self.dg.ops_by_id[op_id]
 
@@ -169,3 +178,13 @@ class MemoryEstimator:
                 )
 
         return input_sizes
+
+    def get_max_tensor_out_bytes(self) -> int:
+        max_bytes = 0
+
+        for n in self.dg.nodes:
+            for out_idx in range(n.num_outputs):
+                max_bytes = max(
+                    max_bytes, self.estimate_tensor_point_size_bytes(n.op_id, OpOutId(out_idx))
+                )
+        return max_bytes

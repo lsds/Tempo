@@ -49,10 +49,10 @@ def dedup_dicts(dicts: list[dict]) -> list[dict]:
 # NOTE Section 7.3: Fig 13
 def build_small_to_med_scale_configs(
     results_path: str = DEFAULT_RESULTS_PATH,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     base_path = str(Path(results_path) / RL_TRAIN_DIR / SMALL_TO_MED_EXPERIMENT_BASE_NAME)
 
-    params_base: Dict[str, Any] = {
+    params_base: dict[str, Any] = {
         "runner": run_experiment,
         **SHARED_PPO_HYPERPARAMS,
     }

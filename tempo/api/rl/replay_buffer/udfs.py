@@ -1,6 +1,6 @@
 import dataclasses
 import math
-from typing import Sequence, Tuple
+from collections.abc import Sequence
 
 from tempo.api.rl.replay_buffer.replay_buffer_desc import ReplayBufferDesc
 from tempo.api.rl.replay_buffer.runtime_replay_buffer_interface import (
@@ -8,16 +8,15 @@ from tempo.api.rl.replay_buffer.runtime_replay_buffer_interface import (
 )
 from tempo.core import tensor_op as top
 from tempo.core.datatypes import BackendTensorT
+from tempo.core.dl_backend import DLBackend
 from tempo.core.dtype import dtypes
 from tempo.core.shape import Shape
-from tempo.core.tensor_ops import UserDefinedThunkDesc
 from tempo.core.thunk import (
     Thunk,
-    ThunkEmissionCtx,
     ThunkExecutionCtx,
-    UDFVectorizationCtx,
 )
-from tempo.runtime.backends.backend import DLBackend
+from tempo.core.thunk_emitter import ThunkEmissionCtx
+from tempo.core.thunk_udf import UDFVectorizationCtx, UserDefinedThunkDesc
 
 
 def _build_and_or_get_replay_memory(
@@ -56,8 +55,8 @@ def vectorize_insert(
         bend_bool = backend.to_backend_datatype(dtypes.bool_)
 
         def insert(
-            inputs: Tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[BackendTensorT, ...]:
+            inputs: tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[BackendTensorT, ...]:
             # TODO avoid using reshape here.
             # JAX does not support reshape without reallocation.
             # https://github.com/jax-ml/jax/issues/11036
@@ -97,8 +96,8 @@ def get_insert_udf_desc(replay_memory_desc: ReplayBufferDesc) -> UserDefinedThun
         # on_dev_true = backend.tensor(True, device=dev)
 
         def insert(
-            inputs: Tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[BackendTensorT, ...]:
+            inputs: tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[BackendTensorT, ...]:
             data = [backend.to_cpu(i) for i in inputs]
             replay_memory.insert(data)
             return (backend.ones_tensor((), dtype=bend_bool, dev=dev),)
@@ -155,8 +154,8 @@ def vectorize_sample(
         device = backend.to_backend_device_obj(ctx.exec_cfg.dev)
 
         def sample(
-            inputs: Tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[BackendTensorT, ...]:
+            inputs: tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[BackendTensorT, ...]:
             items = replay_memory.sample_batched(b_size)
             on_dev_items = [
                 backend.to_device(backend.from_dlpack(item), dev=device) for item in items
@@ -194,8 +193,8 @@ def get_sample_udf_desc(replay_memory_desc: ReplayBufferDesc) -> UserDefinedThun
         device = backend.to_backend_device_obj(ctx.exec_cfg.dev)
 
         def sample(
-            inputs: Tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[BackendTensorT, ...]:
+            inputs: tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[BackendTensorT, ...]:
             items = replay_memory.sample()
             return tuple(backend.lift_tensor(item, device=device) for item in items)
 

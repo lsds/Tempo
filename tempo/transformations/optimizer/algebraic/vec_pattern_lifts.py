@@ -1,11 +1,11 @@
 import dataclasses
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
 from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.dependence_graph import DependencyData
-from tempo.core.symbolic_tensor import SymbolicTensor, _get_symbolic_tensor_for_op_output
+from tempo.core.symbolic_tensor import SymbolicTensor, get_symbolic_tensor_for_op_output
 from tempo.transformations.optimizer.algebraic.match_replacer import MatchReplacer
 from tempo.utils.logger import get_logger
 
@@ -64,7 +64,7 @@ class MergeAddPatternInfo:
 
 def _match_recurrent_sum_base(
     ctx: CompilationCtx, merge_op: top.TensorOp
-) -> Optional[MergeAddPatternInfo]:
+) -> MergeAddPatternInfo | None:
     """
     Shared utility: Checks for the basic merge/add recurrence structure and returns
     MergeAddPatternInfo if it's a candidate, None otherwise.
@@ -186,7 +186,7 @@ class RecurrentSumLift(MatchReplacer):
         src_idx: int
         carry_depy_op: top.TensorOp
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         info = _match_recurrent_sum_base(ctx, op)
         if info is None:
             return None
@@ -195,7 +195,7 @@ class RecurrentSumLift(MatchReplacer):
         cons_e = dependent_exprs[0][idx]
         # Only match sum pattern: y = f(sum_x[..., C, ...]) where C is a constant point
         if cons_e.is_constant() and cons_e.is_point():
-            src_symb_t = _get_symbolic_tensor_for_op_output(
+            src_symb_t = get_symbolic_tensor_for_op_output(
                 ctx.dg, info.src_depy_op, info.src_depy_data.src_out_idx
             )
             expr_list = list(info.src_depy_op.domain.basis_expr)
@@ -255,7 +255,7 @@ class RecurrentCumSumLift(MatchReplacer):
         src_idx: int
         carry_depy_op: top.TensorOp
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         info = _match_recurrent_sum_base(ctx, op)
         if info is None:
             return None
@@ -265,7 +265,7 @@ class RecurrentCumSumLift(MatchReplacer):
         # Only match cumsum pattern: y = f(pref_sum_x[..., t, ...])
         # where t is a variable (not constant)
         if cons_e.is_point() and not cons_e.is_constant():
-            src_symb_t = _get_symbolic_tensor_for_op_output(
+            src_symb_t = get_symbolic_tensor_for_op_output(
                 ctx.dg, info.src_depy_op, info.src_depy_data.src_out_idx
             )
             expr_list = list(info.src_depy_op.domain.basis_expr)
@@ -319,7 +319,7 @@ class SlidingSumLift(MatchReplacer):
         src_data: DependencyData
         num_slices_so_far: int
 
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Result]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Result | None:
         dg = ctx.dg
 
         if not isinstance(op, top.SumOp):
@@ -361,7 +361,7 @@ class SlidingSumLift(MatchReplacer):
         dg = ctx.dg
         a, b = mr.e.start, mr.e.stop
 
-        src_symb_t = _get_symbolic_tensor_for_op_output(
+        src_symb_t = get_symbolic_tensor_for_op_output(
             ctx.dg, mr.src_op, mr.src_data.src_out_idx
         ).symbolic_index(mr.src_data.expr.replace_idx(mr.idx, ie.slice_(0, mr.v.as_bound())))
 

@@ -40,10 +40,8 @@ def test_rope_torchtune(exec_cfg: ExecutionConfig, backend: str) -> None:
 
         rope_tpo = RotaryPositionalEmbeddings(
             dim=dim_per_head,
-            n_heads=num_heads,
             t=s,
             base=base,
-            dtype=dtype.dtypes.float32
         )
         rope_tpo.fixed()
 

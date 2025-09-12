@@ -39,9 +39,9 @@ OBS_SHAPE_SWEEPS = {
 
 # NOTE: Section 7.3: Fig 14
 def build_large_obs_configs(
-    skip_sys: Tuple[str, ...] = (),
+    skip_sys: tuple[str, ...] = (),
     results_path: str = DEFAULT_RESULTS_PATH,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     base_path = str(Path(results_path) / RL_TRAIN_DIR / LARGE_OBS_EXPERIMENT_BASE_NAME)
 
     params_base = {
@@ -73,7 +73,7 @@ def build_large_obs_configs(
     return seq, par
 
 
-def _iterations_from_params(params: Dict[str, Any]) -> int:
+def _iterations_from_params(params: dict[str, Any]) -> int:
     use_caching_allocators = params["use_caching_allocators"]
     is_large_obs_ = is_large_obs(params["obs_shape"])
 

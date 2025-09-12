@@ -214,8 +214,7 @@ class TorchBenchRunnerNaive(BenchRunner):
         self.batch_size = batch_size
         self.device = device
 
-    def compile(self):
-        pass
+    def compile(self): ...
 
     def warmup(self):
         self.run()

@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from typing import Dict, Set, Tuple
 
 import networkx as nx
 import numpy as np
@@ -9,23 +8,28 @@ from tempo.core.datatypes import OpId, OpInId, OpOutId
 from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.core.tensor_ops import TensorOp
 from tempo.utils import logger
+from tempo.utils.memory_estimator import MemoryEstimator
 
 log = logger.get_logger(__name__)
 
 
 def ilp_based_cut(
     dg: PDG,
-    node_group: Set[TensorOp],
-    router_info: Tuple[
-        Tuple[Tuple[Tuple[OpId, OpInId], ...], ...],
-        Tuple[Tuple[OpId, OpOutId], ...],
-        Dict[Tuple[OpId, OpOutId, ie.IndexSequence], int],
+    node_group: set[TensorOp],
+    router_info: tuple[
+        tuple[tuple[tuple[OpId, OpInId], ...], ...],
+        tuple[tuple[OpId, OpOutId], ...],
+        dict[tuple[OpId, OpOutId, ie.IndexSequence], int],
     ],
     bytes_importance: float = 0.75,
     max_allowed_imbalance_percent: float = 0.75,
     lambda_balance: float = 100,
-    required_cut_edges: Sequence[Tuple[TensorOp, TensorOp, DependencyData]] = (),  # NEW
-) -> Tuple[Set[TensorOp], Set[TensorOp], int]:
+    required_cut_edges: Sequence[tuple[TensorOp, TensorOp, DependencyData]] = (),  # NEW
+    mem_est: MemoryEstimator | None = None,
+) -> tuple[set[TensorOp], set[TensorOp], int]:
+    if bytes_importance > 0:
+        assert mem_est is not None, "Memory estimator is required when bytes_importance > 0"
+
     # First, insert fake ops for the irouter
     _, _, inp_index_tracker = router_info
     fake_ops = {dg.get_op_by_id(op_id) for op_id, _, _ in inp_index_tracker.keys()}
@@ -34,21 +38,23 @@ def ilp_based_cut(
 
     import pulp
 
-    G = group_dg.get_networkx_graph()
-    max_bytes = 0
-    for edge in G.edges:
-        data = G.edges[edge]["dependency_data"]
-        bytes_num = dg.estimate_tensor_size_bytes(edge[1].op_id, data.src_out_idx)
-        if bytes_num > max_bytes:
-            max_bytes = bytes_num
+    G = group_dg.get_networkx_graph().copy()
+    max_bytes = mem_est.get_max_tensor_out_bytes() if mem_est is not None else 0
 
     for edge in G.edges:
-        data = G.edges[edge]["dependency_data"]
-        bytes_num = dg.estimate_tensor_size_bytes(edge[1].op_id, data.src_out_idx)
-        bytes_normalized = bytes_num / max_bytes
+        data: DependencyData = G.edges[edge]["dependency_data"]
 
-        combined = bytes_importance * bytes_normalized + (1 - bytes_importance) * 1
-        G.edges[edge]["capacity"] = combined
+        if data.is_control_edge:
+            raise ValueError("Control edges should not be present in the group")
+
+        capacity = (1 - bytes_importance) * 1
+
+        if mem_est is not None:
+            bytes_num = mem_est.estimate_tensor_point_size_bytes(edge[1].op_id, data.src_out_idx)
+            bytes_normalized = bytes_num / max_bytes
+            capacity += bytes_importance * bytes_normalized
+
+        G.edges[edge]["capacity"] = capacity
 
     # assert nx.is_directed_acyclic_graph(G), "The graph must be acyclic."
 
@@ -128,7 +134,7 @@ def ilp_based_cut(
 
 def spectral_min_cut_weighted(
     g: PDG, alpha: float = 0.5
-) -> Tuple[Set[TensorOp], Set[TensorOp], int]:
+) -> tuple[set[TensorOp], set[TensorOp], int]:
     """Perform spectral clustering on a MultiDiGraph with weighted edges.
 
     Parameters
@@ -195,8 +201,8 @@ def spectral_min_cut_weighted(
 
     # Step 11: Recover set1 and set2 as sets of ops
     order = list(G_bytes.nodes)
-    set1: Set[OpId] = {order[i] for i in partition1}
-    set2: Set[OpId] = {order[i] for i in partition2}
+    set1: set[OpId] = {order[i] for i in partition1}
+    set2: set[OpId] = {order[i] for i in partition2}
     set1_nodes = {g.get_op_by_id(x) for x in set1}
     set2_nodes = {g.get_op_by_id(x) for x in set2}
     assert len(set1) + len(set2) == len(order)

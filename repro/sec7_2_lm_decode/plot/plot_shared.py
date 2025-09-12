@@ -8,14 +8,14 @@ from repro.sec7_2_lm_decode.shared import SUMMARY_RESULTS_FILE
 """
 
 
-def gather_summary_results(results_path: Union[str, Path]) -> list[dict]:
+def gather_summary_results(results_path: str | Path) -> list[dict]:
     results_path = Path(results_path)
     # Collect all summary results from individual files
     all_summary_results = []
     for bench_dir in results_path.iterdir():
         summary_results_path = bench_dir / SUMMARY_RESULTS_FILE
         if summary_results_path.exists():
-            with open(summary_results_path, "r") as f:
+            with open(summary_results_path) as f:
                 result = json.load(f)
             all_summary_results.append(result)
 

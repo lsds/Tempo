@@ -1,10 +1,9 @@
 import functools
-from typing import Dict, List, Optional, Set, Tuple
 
+import islpy as isl
 import networkx as nx
 
 from tempo.core import index_expr as ie
-from tempo.core import isl_types as islt
 from tempo.core.analysis_ctx import AnalysisCtx
 from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.configs import ExecutionConfig
@@ -36,15 +35,15 @@ INIT_MAX_DEPTH = 5
 
 
 def get_group_dom(
-    group_nodes: Set[TensorOp],
+    group_nodes: set[TensorOp],
 ) -> Domain:
     doms = [op.domain for op in group_nodes]
     return Domain.union(*doms)
 
 
 def get_group_isl_dom(
-    ctx: CompilationCtx, group_nodes: Set[TensorOp], op_id: Optional[OpId] = None
-) -> islt.UnionSet:
+    ctx: CompilationCtx, group_nodes: set[TensorOp], op_id: OpId | None = None
+) -> isl.UnionSet:
     len_of_largest_domains = max([len(op.domain) for op in group_nodes])
     doms = [
         isl_utils.rename_union_set_tuples(ctx.analysis_ctx.get_or_make_domain(n), "")
@@ -78,28 +77,97 @@ def _can_be_part_of_group(
     if isinstance(node, (RandOp, MergeOp, ExecDataflowOp, UDFOp, EvalSymbolOp)):
         return False
 
-    ## NOTE: require static shapes on input and output
-    # if not all(s.is_static() for s in main_dg.get_input_shapes(node).values()):
+    ## NOTE: we do not group dynamic ops as these require access to the ThunkExecutionCtx,
+    ## but we can group static ops with dynamic shapes.
+    # if node.is_dynamic():
     #    return False
-    # if not all(s.is_static() for s in main_dg.get_output_shapes(node).values()):
-    #    return False
-
-    # if isinstance(node, IndexSliceOp):
-    #    return node.is_static()
 
     return True
 
 
 def get_group_dependents(
     main_dg: PDG,
-    group: Set[TensorOp],
+    group: set[TensorOp],
     include_control: bool = False,
-) -> Set[Tuple[TensorOp, DependencyData]]:
+) -> set[tuple[TensorOp, DependencyData]]:
     return {
         (o, d)
         for n in group
         for o, d in main_dg.get_flat_direct_dependents(n, include_control=include_control)
     }
+
+
+def _can_merge_groups(
+    main_dg: PDG,
+    group_1_id: int,
+    group_2_id: int,
+    group_to_nodes_: dict[int, set[TensorOp]],
+) -> bool:
+    group_1 = group_to_nodes_[group_1_id]
+    group_2 = group_to_nodes_[group_2_id]
+
+    for n in group_1:
+        for depy, depy_data in main_dg.get_flat_direct_dependencies(n, include_control=False):
+            if depy not in group_2:
+                continue
+
+            if not _can_add_to_group_basic(
+                main_dg,
+                n,
+                depy,
+                depy_data,
+                True,
+            ):
+                return False
+
+    for n in group_2:
+        for depy, depy_data in main_dg.get_flat_direct_dependencies(n, include_control=False):
+            if depy not in group_1:
+                continue
+
+            if not _can_add_to_group_basic(
+                main_dg,
+                n,
+                depy,
+                depy_data,
+                True,
+            ):
+                return False
+
+    return True
+
+
+def _can_add_to_group_basic(  # noqa: C901
+    main_dg: PDG,
+    sink: TensorOp,
+    source: TensorOp,
+    dep_data: DependencyData,
+    adding_source: bool,
+) -> bool:
+    node_to_add = source if adding_source else sink
+    node_in_group = sink if adding_source else source
+
+    # Check that the node is  not one of the forbidden ops
+    if not _can_be_part_of_group(main_dg, node_to_add):
+        return False
+
+    # NOTE: prevent dynamic shape ops from being grouped with dynamic (ctx) ops
+    if node_in_group.is_static() != node_to_add.is_static():
+        return False
+
+    if dep_data.is_control_edge:
+        return False
+
+    # If the relation across this edge is not unconditional basis, we cannot add
+    if not (dep_data.is_unconditional() and dep_data.expr.struct_eq(source.domain.basis_expr)):
+        return False
+
+    # Expensive, should be last
+    # NOTE: prevent dynamic shape ops from being grouped with static shape ops
+    if _is_dynamic_shaped(main_dg, sink) != _is_dynamic_shaped(main_dg, source):
+        return False
+
+    return True
 
 
 def _can_add_to_group(  # noqa: C901
@@ -109,26 +177,13 @@ def _can_add_to_group(  # noqa: C901
     source: TensorOp,
     dep_data: DependencyData,
     group: int,
-    node_to_group: Dict[TensorOp, int],
-    group_to_nodes_: Dict[int, Set[TensorOp]],
+    node_to_group: dict[TensorOp, int],
+    group_to_nodes_: dict[int, set[TensorOp]],
     adding_source: bool,
 ) -> bool:
     node_to_add = source if adding_source else sink
-    # node_in_group = sink if adding_source else source
 
-    ##NOTE: prevent dynamic ops from being grouped with static ops
-    if _is_dynamic_shaped(main_dg, sink) != _is_dynamic_shaped(main_dg, source):
-        return False
-
-    # Check that the node is statically shaped and not one of the forbidden ops
-    if not _can_be_part_of_group(main_dg, node_to_add):
-        return False
-
-    if dep_data.is_control_edge:
-        return False
-
-    # If the relation across this edge is not unconditional basis, we cannot add
-    if not (dep_data.is_unconditional() and dep_data.expr.struct_eq(source.domain.basis_expr)):
+    if not _can_add_to_group_basic(main_dg, sink, source, dep_data, adding_source):
         return False
 
     if sink.domain != source.domain:
@@ -201,7 +256,7 @@ def _can_add_to_group(  # noqa: C901
 
 def build_initial_groupings(
     ctx: CompilationCtx,
-) -> Tuple[int, Dict[int, Set[TensorOp]]]:
+) -> tuple[int, dict[int, set[TensorOp]]]:
     new_dg: PDG = ctx.dg
     exec_cfg: ExecutionConfig = ctx.exec_cfg
 
@@ -220,14 +275,14 @@ def build_initial_groupings(
 
 
 def propagate_groupings(  # noqa: C901
-    ctx: CompilationCtx, group_to_nodes: Dict[int, Set[TensorOp]], conservative: bool = True
-) -> Tuple[int, Dict[int, Set[TensorOp]]]:
+    ctx: CompilationCtx, group_to_nodes: dict[int, set[TensorOp]], conservative: bool = True
+) -> tuple[int, dict[int, set[TensorOp]]]:
     dg: PDG = ctx.dg
     analysis_ctx = ctx.analysis_ctx
 
     iterations = 0
     changes = True
-    node_to_group: Dict[TensorOp, int] = {
+    node_to_group: dict[TensorOp, int] = {
         n: g for g, nodes in group_to_nodes.items() for n in nodes
     }
 
@@ -237,7 +292,7 @@ def propagate_groupings(  # noqa: C901
             node_to_group[node] = -1
 
     # Invert the mapping to get the groups
-    group_to_nodes_: Dict[int, Set[TensorOp]] = {}
+    group_to_nodes_: dict[int, set[TensorOp]] = {}
     for n, n_group in node_to_group.items():
         if n_group not in group_to_nodes_:
             group_to_nodes_[n_group] = set()
@@ -323,9 +378,9 @@ def propagate_groupings(  # noqa: C901
 
 
 def ungroup_nodes(
-    group_to_nodes: Dict[int, Set[TensorOp]],
+    group_to_nodes: dict[int, set[TensorOp]],
     group_id: int,
-) -> Dict[int, Set[TensorOp]]:
+) -> dict[int, set[TensorOp]]:
     group = group_to_nodes[group_id]
 
     next_group_id = max(group_to_nodes.keys()) + 1
@@ -340,8 +395,8 @@ def ungroup_nodes(
 
 def absorb_low_cost_ops_into_groups(  # noqa: C901
     ctx: CompilationCtx,
-    group_id_to_nodes: Dict[int, Set[TensorOp]],
-) -> Tuple[Dict[int, Set[TensorOp]], int]:
+    group_id_to_nodes: dict[int, set[TensorOp]],
+) -> tuple[dict[int, set[TensorOp]], int]:
     dg: PDG = ctx.dg
     node_to_group_id = {n: g for g, nodes in group_id_to_nodes.items() for n in nodes}
     fusions = 0
@@ -399,7 +454,13 @@ def absorb_low_cost_ops_into_groups(  # noqa: C901
             merged_nodes = group_id_to_nodes[low_cost_group_id] | group_id_to_nodes[dep_group_id]
             induced_subgraph = dg.induced_subgraph(OpId(-1), merged_nodes)
             if induced_subgraph.is_dag():
-                mergeable_low_cost_and_dependent.add((low_cost_group_id, dep_group_id))
+                if _can_merge_groups(
+                    dg,
+                    low_cost_group_id,
+                    dep_group_id,
+                    group_id_to_nodes,
+                ):
+                    mergeable_low_cost_and_dependent.add((low_cost_group_id, dep_group_id))
             else:
                 log.warning(
                     "Merging %s and %s would create a cycle. Skipping.",
@@ -448,9 +509,10 @@ def absorb_low_cost_ops_into_groups(  # noqa: C901
 
 
 def absorb_consts_into_groups(  # noqa: C901
-    new_dg: PDG,
-    group_to_nodes: Dict[int, Set[TensorOp]],
-) -> Tuple[Dict[int, Set[TensorOp]], int]:
+    ctx: CompilationCtx,
+    group_to_nodes: dict[int, set[TensorOp]],
+) -> tuple[dict[int, set[TensorOp]], int]:
+    new_dg: PDG = ctx.dg
     node_to_group = {n: g for g, nodes in group_to_nodes.items() for n in nodes}
 
     group_to_nodes_copy = {**group_to_nodes}
@@ -465,7 +527,12 @@ def absorb_consts_into_groups(  # noqa: C901
             const_group = node_to_group[node]
             if snk in node_to_group:
                 snk_group = node_to_group[snk]
-                if const_group != snk_group:
+                if const_group != snk_group and _can_merge_groups(
+                    new_dg,
+                    const_group,
+                    snk_group,
+                    group_to_nodes,
+                ):
                     group_to_nodes_copy[snk_group].add(node)
                     del group_to_nodes_copy[const_group]
                     fusions += 1
@@ -474,8 +541,8 @@ def absorb_consts_into_groups(  # noqa: C901
 
 def build_group_dependency_graph(
     dg: PDG,
-    node_to_group: Dict[TensorOp, int],
-    group_doms: Dict[int, Domain],
+    node_to_group: dict[TensorOp, int],
+    group_doms: dict[int, Domain],
     dim: ie.Symbol,
 ) -> nx.MultiDiGraph:
     group_graph = nx.MultiDiGraph()
@@ -500,13 +567,13 @@ def build_group_dependency_graph(
 
 
 def check_groups_are_dags(
-    dg: PDG, group_to_nodes: Dict[int, Set[TensorOp]], stage_name: str
+    dg: PDG, group_to_nodes: dict[int, set[TensorOp]], stage_name: str
 ) -> None:
     if not check_groups_are_dags_(dg, group_to_nodes):
         raise ValueError(f"Group is not a DAG after {stage_name}.")
 
 
-def check_groups_are_dags_(dg: PDG, group_to_nodes: Dict[int, Set[TensorOp]]) -> bool:
+def check_groups_are_dags_(dg: PDG, group_to_nodes: dict[int, set[TensorOp]]) -> bool:
     for group_id, group_nodes in group_to_nodes.items():
         induced_subgraph = dg.induced_subgraph(OpId(group_id), group_nodes)
         if not induced_subgraph.is_dag():
@@ -516,8 +583,8 @@ def check_groups_are_dags_(dg: PDG, group_to_nodes: Dict[int, Set[TensorOp]]) ->
 
 def fix_any_cycles_generalized(
     ctx: CompilationCtx,
-    group_to_nodes: Dict[int, Set[TensorOp]],
-) -> Dict[int, Set[TensorOp]]:
+    group_to_nodes: dict[int, set[TensorOp]],
+) -> dict[int, set[TensorOp]]:
     new_dg: PDG = ctx.dg
     dims = new_dg.universe.variables
 
@@ -763,8 +830,8 @@ def fix_any_cycles_generalized(
 
 def get_potential_fusions(  # noqa: C901
     ctx: CompilationCtx,
-    group_to_nodes: Dict[int, Set[TensorOp]],
-) -> List[Tuple[int, int]]:
+    group_to_nodes: dict[int, set[TensorOp]],
+) -> list[tuple[int, int]]:
     dg = ctx.dg
 
     group_to_node_id = {

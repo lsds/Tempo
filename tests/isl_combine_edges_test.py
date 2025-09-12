@@ -1,4 +1,3 @@
-
 from tempo.core import index_expr as ie
 from tempo.core.domain import Domain
 from tempo.core.dependence_graph import PDG, DependencyData

@@ -26,7 +26,7 @@ HATCH_PATTERNS = ["/", "\\", "|", "-", "+", "x", "o", "O", ".", "*"]
 
 # --- DATA LOADING ---
 def load_results(path):
-    with open(path, "r") as f:
+    with open(path) as f:
         all_data = json.load(f)
     # Only keep 'tempo' framework, parse batch size and block size from name
     filtered = []

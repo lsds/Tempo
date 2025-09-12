@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Dict, Final, Optional, Sequence, Union
+from typing import Any, ClassVar, Final, Union
 
 import numpy as np
 import optree
 from numpy.typing import DTypeLike
 
+from tempo.core.dl_backends import DLBackendName
 from tempo.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -19,8 +21,8 @@ class DataType:
     name: str
     repr_bytes: int
     priority: int
-    eps: Optional[float] = None
-    minimum: Optional[float] = None
+    eps: float | None = None
+    minimum: float | None = None
 
     def __str__(self) -> str:
         return self.name
@@ -29,6 +31,33 @@ class DataType:
 
 
 DataTypeLike = Union[None, DataType, str, np.dtype]
+
+
+def _implied_int(val: int) -> DataType:
+    # Signed bounds inclusive
+    if -(2**7) <= val <= 2**7 - 1:
+        return dtypes.int8
+    elif -(2**15) <= val <= 2**15 - 1:
+        return dtypes.int16
+    elif -(2**31) <= val <= 2**31 - 1:
+        return dtypes.int32
+    else:
+        return dtypes.int64
+
+
+def _implied_float(val: float) -> DataType:
+    return dtypes.float32
+
+    ## Handle NaN/Inf first — representable at all three IEEE754 formats
+    # if math.isnan(val) or math.isinf(val):
+    # So do not need any special handling
+
+    ## Round-trip check: smallest float that preserves the value
+    ## if float(np.float16(val)) == val:
+    ##    return dtypes.float16
+    # if float(np.float32(val)) == val:
+    #    return dtypes.float32
+    # return dtypes.float64
 
 
 class dtypes:  # noqa: N801
@@ -58,16 +87,17 @@ class dtypes:  # noqa: N801
     )
 
     @staticmethod
-    def implied(val: Any) -> DataType:
+    def _implied_from_tensor(val: Any) -> DataType | None:
         if isinstance(val, np.ndarray):
             return dtypes.from_np(val.dtype)
+
         try:
             import torch
 
             if isinstance(val, torch.Tensor):
                 return TORCH_TO_TEMPO_DTYPES_DICT[val.dtype]  # type: ignore
         except Exception:
-            pass
+            ...
 
         try:
             import jax
@@ -75,33 +105,35 @@ class dtypes:  # noqa: N801
             if isinstance(val, jax.numpy.ndarray):
                 return JAX_TO_TEMPO_DTYPES_DICT[val.dtype]  # type: ignore
         except Exception:
-            pass
+            ...
 
+        return None
+
+    @staticmethod
+    def implied(val: Any) -> DataType:
         if isinstance(val, bool):
             return dtypes.bool_
         if isinstance(val, int):
-            return dtypes.default_int
-            # if val < 2 ** (8 - 1):
-            #    return dtypes.int8
-            # elif val < 2 ** (16 - 1):
-            #    return dtypes.int16
-            # elif val < 2 ** (32 - 1):
-            #    return dtypes.int32
-            # else:
-            #    return dtypes.int64
+            return _implied_int(val)
         if isinstance(val, float):
-            return dtypes.default_float
+            return _implied_float(val)
         if isinstance(val, list):
             return dtypes.upcast(
                 *[dtypes.implied(x) for x in optree.tree_flatten(val)[0]]  # type: ignore
             )
-        if hasattr(val, "dtype"):
+
+        tensor_dtype = dtypes._implied_from_tensor(val)
+        if tensor_dtype is not None:
+            return tensor_dtype
+
+        # TODO: What case does this cover exactly?
+        if hasattr(val, "dtype") and isinstance(val.dtype, DataType):
             return val.dtype  # type: ignore
 
         raise ValueError(f"Unexpected value: {val}.")
 
     # https://jax.readthedocs.io/en/latest/jep/9407-type-promotion.html
-    promo_lattice: Dict[DataType, Sequence[DataType]] = {
+    promo_lattice: dict[DataType, Sequence[DataType]] = {
         bool_: [int8, uint8],
         int8: [int16],
         int16: [int32],
@@ -210,7 +242,7 @@ class dtypes:  # noqa: N801
         return INVERSE_NUMPY_TO_TEMPO_DTYPES_DICT[x]
 
     @staticmethod
-    def fields() -> Dict[DTypeLike, DataType]:
+    def fields() -> dict[DTypeLike, DataType]:
         return NUMPY_TO_TEMPO_DTYPES_DICT
 
     @staticmethod
@@ -228,7 +260,7 @@ class dtypes:  # noqa: N801
         raise ValueError(f"Unexpected value: {x}")
 
     @staticmethod
-    def min(dtype: DataType) -> Union[float, int]:
+    def min(dtype: DataType) -> float | int:
         """Get the minimum value for a given dtype."""
         if dtype == dtypes.float32:
             return float("-inf")
@@ -248,7 +280,7 @@ class dtypes:  # noqa: N801
             return float("-inf")
 
     @staticmethod
-    def max(dtype: DataType) -> Union[float, int]:
+    def max(dtype: DataType) -> float | int:
         """Get the maximum value for a given dtype."""
         if dtype == dtypes.float32:
             return float("inf")
@@ -274,7 +306,7 @@ class dtypes:  # noqa: N801
             return float("inf")
 
 
-NUMPY_TO_TEMPO_DTYPES_DICT: Dict[DTypeLike, DataType] = {
+NUMPY_TO_TEMPO_DTYPES_DICT: dict[DTypeLike, DataType] = {
     np.bool_: dtypes.bool_,
     np.float16: dtypes.float16,
     np.float32: dtypes.float32,
@@ -287,8 +319,35 @@ NUMPY_TO_TEMPO_DTYPES_DICT: Dict[DTypeLike, DataType] = {
     np.int16: dtypes.int16,
     np.int32: dtypes.int32,
     np.int64: dtypes.int64,
+    #
+    np.dtypes.BoolDType: dtypes.bool_,
+    np.dtypes.Float16DType: dtypes.float16,
+    np.dtypes.Float32DType: dtypes.float32,
+    np.dtypes.Float64DType: dtypes.float64,
+    np.dtypes.UInt8DType: dtypes.uint8,
+    np.dtypes.UInt16DType: dtypes.uint16,
+    np.dtypes.UInt32DType: dtypes.uint32,
+    np.dtypes.UInt64DType: dtypes.uint64,
+    np.dtypes.Int8DType: dtypes.int8,
+    np.dtypes.Int16DType: dtypes.int16,
+    np.dtypes.Int32DType: dtypes.int32,
+    np.dtypes.Int64DType: dtypes.int64,
 }
-INVERSE_NUMPY_TO_TEMPO_DTYPES_DICT = {v: k for k, v in NUMPY_TO_TEMPO_DTYPES_DICT.items()}
+
+INVERSE_NUMPY_TO_TEMPO_DTYPES_DICT = {
+    dtypes.bool_: np.bool_,
+    dtypes.float16: np.float16,
+    dtypes.float32: np.float32,
+    dtypes.float64: np.float64,
+    dtypes.uint8: np.uint8,
+    dtypes.uint16: np.uint16,
+    dtypes.uint32: np.uint32,
+    dtypes.uint64: np.uint64,
+    dtypes.int8: np.int8,
+    dtypes.int16: np.int16,
+    dtypes.int32: np.int32,
+    dtypes.int64: np.int64,
+}
 
 # Backend dtype mappings (for use by both core and runtime, avoiding circular imports)
 
@@ -296,7 +355,7 @@ INVERSE_NUMPY_TO_TEMPO_DTYPES_DICT = {v: k for k, v in NUMPY_TO_TEMPO_DTYPES_DIC
 try:
     import torch
 
-    TORCH_TO_TEMPO_DTYPES_DICT: Dict[Any, DataType] = {
+    TORCH_TO_TEMPO_DTYPES_DICT: dict[Any, DataType] = {
         torch.bool: dtypes.bool_,
         torch.float16: dtypes.float16,
         torch.float32: dtypes.float32,
@@ -320,7 +379,7 @@ except ImportError:
 try:
     import jax.numpy as jnp
 
-    JAX_TO_TEMPO_DTYPES_DICT: Dict[Any, DataType] = {
+    JAX_TO_TEMPO_DTYPES_DICT: dict[Any, DataType] = {
         jnp.bool_: dtypes.bool_,
         jnp.float16: dtypes.float16,
         jnp.float32: dtypes.float32,
@@ -338,3 +397,10 @@ try:
 except ImportError:
     JAX_TO_TEMPO_DTYPES_DICT = {}
     INVERSE_JAX_TO_TEMPO_DTYPES_DICT = {}
+
+
+def set_default_int_dtype_for_backend(backend_name: DLBackendName) -> None:
+    if backend_name == DLBackendName.TORCH:
+        dtypes.default_int = dtypes.int64
+    else:
+        dtypes.default_int = dtypes.int32

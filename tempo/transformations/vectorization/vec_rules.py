@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Callable, Dict, Type
+from collections.abc import Callable
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
@@ -7,8 +7,7 @@ from tempo.core.datatypes import OpOutId
 from tempo.core.dependence_graph import OpData
 from tempo.core.dtype import dtypes
 from tempo.core.shape import Shape
-from tempo.core.symbolic_tensor import SymbolicTensor, _get_symbolic_tensor_for_op_output
-from tempo.core.thunk import UDFVectorizationCtx
+from tempo.core.thunk_udf import UDFVectorizationCtx
 from tempo.transformations.vectorization.core import OpVecCtx
 from tempo.utils import logger
 
@@ -36,7 +35,7 @@ def register_vec_op(
     }
 
     # Now we have all the information to insert the new op in the graph
-    new_op_data = OpData(new_op, new_out_shapes, old_op_data.output_dtypes)
+    new_op_data = OpData(new_op, new_out_shapes, dict(old_op_data.output_dtypes))
     op_vec_ctx.dg.insert_op(new_op_data)
 
     op_vec_ctx.op_mapping[op_vec_ctx.op] = new_op
@@ -69,14 +68,16 @@ def eval_symbol_rewrite(
 
     import numpy as np
 
-    const_ = np.arange(dim_size_int, dtype=np.int32)
+    default_int_np_dtype = dtypes.to_np(dtypes.default_int)
+
+    const_ = np.arange(dim_size_int, dtype=default_int_np_dtype)
 
     new_op = top.ConstOp(
         op_vec_ctx.dg.get_next_op_id(),
         op_vec_ctx.op.domain.remove_dim(op_vec_ctx.vec_dim_symbol),
         op_vec_ctx.op.tags,
         shape=Shape.from_((dim_size_int,)),
-        dtype=dtypes.int32,
+        dtype=dtypes.default_int,
         value=const_,
     )
     register_vec_op(op_vec_ctx, new_op)
@@ -128,6 +129,7 @@ def single_dim_rewrite(
         top.IndexSliceOp,
         top.SplitOp,
         top.PadOp,
+        top.SortOp,
     )
     assert isinstance(
         op_vec_ctx.op,
@@ -170,20 +172,19 @@ def single_dim_rewrite(
 #    scatter_s = tensor_s._scatter_based_index_add(dim=op.dim, index=index_s, src=src_s)
 
 
-class GoToBackOfQueueError(Exception):
-    pass
+class GoToBackOfQueueError(Exception): ...
 
 
 def index_select_rewrite(
     op_vec_ctx: OpVecCtx,
 ) -> top.TensorOp:
     assert isinstance(op_vec_ctx.op, top.IndexSelectOp)
-    dg = op_vec_ctx.dg
+    # dg = op_vec_ctx.dg
     deps = list(op_vec_ctx.dg.get_flat_direct_dependencies(op_vec_ctx.op))
     SRC_IDX = 0
     INDEX_IDX = 1
-    src_op, _ = deps[SRC_IDX]
-    index_op, _ = deps[INDEX_IDX]
+    src_op, src_op_data = deps[SRC_IDX]
+    index_op, index_op_data = deps[INDEX_IDX]
 
     src_tensor_is_vec = src_op in op_vec_ctx.ops_to_vectorize
     index_is_vec = index_op in op_vec_ctx.ops_to_vectorize
@@ -201,47 +202,44 @@ def index_select_rewrite(
     # assert not (
     #    src_tensor_is_vec and index_is_vec
     # ), "Vec tensor and index is not supported. Should have been promoted to gather first."
+    if (src_op in op_vec_ctx.ops_to_vectorize and src_op not in op_vec_ctx.op_vectorizations) or (
+        index_op in op_vec_ctx.ops_to_vectorize and index_op not in op_vec_ctx.op_vectorizations
+    ):
+        raise GoToBackOfQueueError(
+            "Source and index need to be vectorized before index select can be vectorized"
+        )
 
     if src_tensor_is_vec and index_is_vec:
         if index_is_symbol:
-            if src_op not in op_vec_ctx.op_vectorizations:
-                raise GoToBackOfQueueError(
-                    "Source needs to be vectorized before index select can be vectorized"
-                )
-
             # NOTE: The index was redundant, so we return the vectorized source.
             return op_vec_ctx.op_mapping[src_op]
         else:
-            # Get symbolic tensors for source and index
-            src_s: SymbolicTensor = _get_symbolic_tensor_for_op_output(
-                dg, src_op, deps[SRC_IDX][1].src_out_idx
-            ).symbolic_index(deps[SRC_IDX][1].expr)
+            raise ValueError(
+                "Attempted to vectorize index select with both source and index vectorized."
+                "This should have been promoted to gather first."
+                f"op_vec_ctx.op: {op_vec_ctx.op}"
+                f"src_op: {src_op}, index_op: {index_op}"
+                f"src_op_data: {src_op_data}, index_op_data: {index_op_data}"
+            )
+            # index_s: SymbolicTensor = get_symbolic_tensor_for_op_output(
+            #    dg, op_vec_ctx.op_mapping[index_op], index_op_data.src_out_idx
+            # ).symbolic_index(
+            #    index_op_data.expr.skip_idx(
+            #        index_op.domain.find_variable_index(op_vec_ctx.vec_dim_symbol)
+            #    )
+            # )
+            # source_s: SymbolicTensor = get_symbolic_tensor_for_op_output(
+            #    dg, op_vec_ctx.op_mapping[src_op], src_op_data.src_out_idx
+            # ).symbolic_index(
+            #    src_op_data.expr.skip_idx(
+            #        src_op.domain.find_variable_index(op_vec_ctx.vec_dim_symbol)
+            #    )
+            # )
 
-            index_s: SymbolicTensor = _get_symbolic_tensor_for_op_output(
-                dg, index_op, deps[INDEX_IDX][1].src_out_idx
-            ).symbolic_index(deps[INDEX_IDX][1].expr)
+            ## Promote to gather-based index select. Gather will introduce needed unsqueezes.
+            # gathered_s = source_s.gather(dim=op_vec_ctx.op.dim + 1, index=index_s)
 
-            # Promote to gather-based index select
-            # NOTE: _gather_based_index_select handles the broadcasting
-            # NOTE: This gather will now need to be vectorized.
-            ops_before = set(dg.nodes)
-            new_s = src_s._gather_based_index_select(dim=op_vec_ctx.op.dim, index=index_s)
-            ops_after = set(dg.nodes)
-
-            # NOTE: Then, because the gather can register many unsq and expand, we need to
-            # vectorize the new ops + the gather itself.
-            new_ops = ops_after - ops_before
-            for new_op in new_ops:
-                if op_vec_ctx.vec_dim_symbol in new_op.domain:
-                    ctx = dataclasses.replace(op_vec_ctx, op=new_op)
-                    veced_op = OP_VEC_RULES[type(new_op)](ctx)
-
-                    # NOTE: Finally we add them to the vectorization set and
-                    # update the op_vectorizations so that the edges between them are updated.
-                    ctx.ops_to_vectorize.add(new_op)
-                    ctx.op_vectorizations[new_op] = ctx.op_vectorizations[veced_op]
-
-            return new_s.op
+            # register_vec_op(op_vec_ctx, gathered_s.op)
 
     elif src_tensor_is_vec:
         return single_dim_rewrite(op_vec_ctx)
@@ -356,8 +354,8 @@ def udf_rewrite(
     return new_op
 
 
-OP_VEC_RULES: Dict[
-    Type[top.TensorOp],
+OP_VEC_RULES: dict[
+    type[top.TensorOp],
     Callable[[OpVecCtx], top.TensorOp],
 ] = {
     # Elementwise
@@ -417,4 +415,5 @@ OP_VEC_RULES: Dict[
     # top.ConvBwdOp: conv_bwd_rewrite,
     # UDF
     top.UDFOp: udf_rewrite,
+    top.SortOp: single_dim_rewrite,
 }

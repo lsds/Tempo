@@ -1,10 +1,12 @@
 import csv
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
+from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import TensorId
 from tempo.core.dependence_graph import PDG, DependencyData
@@ -26,6 +28,7 @@ from tempo.utils import logger
 from tempo.utils.dg_utils import (
     is_block_access,
     is_const_block_access,
+    is_proto_block_access,
     is_range_access,
     is_window_access,
 )
@@ -41,22 +44,10 @@ def get_default_prealloc_value_for_dtype(dtype: DataType) -> Any:
         return DEFAULT_PREALLOC_VALUE
 
 
-# TODO make sure tensors are not huge if prealloced
-# bytes_est = dg.estimate_tensor_size_bytes(
-#    tensor_id.op_id,
-#    tensor_id.output_id,
-#    bound_size_estimate=exec_cfg.bound_size_estimate,
-# )
-# if bytes_est < MAX_BYTES and all(
-#    b in dg.static_bounds for b in domain.ubounds
-# ):
-# Statically bounded checks.
-
-
 def _get_max_val_for_shape(
     snk_dom: Domain, static_bounds: Mapping[ie.Symbol, int], shape_evaled: ie.IntIndexValueLike
-) -> Optional[int]:
-    max_val: Optional[int] = None
+) -> int | None:
+    max_val: int | None = None
     if isinstance(shape_evaled, ie.IndexExpr):
         max_val_expr = isl_utils.int_index_val_max(
             shape_evaled,
@@ -79,11 +70,11 @@ def extract_block_size_from_expr(
     snk_dom: Domain,
     src_domain: Domain,
     static_bounds: Mapping[ie.Symbol, int],
-) -> Sequence[Tuple[ie.Symbol, Union[int, None]]]:
+) -> Sequence[tuple[ie.Symbol, int | None]]:
     slices_and_dims = [
         (e, d) for e, d in zip(expr.members, src_domain.variables, strict=False) if not e.is_point()
     ]
-    dims_and_block_sizes: List[Tuple[ie.Symbol, Union[int, None]]] = []
+    dims_and_block_sizes: list[tuple[ie.Symbol, int | None]] = []
     for slice_, dim in slices_and_dims:
         shape_evaled = slice_.evaluate_shape(static_bounds)[0]
         max_val = _get_max_val_for_shape(snk_dom, static_bounds, shape_evaled)
@@ -97,13 +88,13 @@ def _get_block_sizes_per_dim(
     new_dg: PDG,
     exec_cfg: ExecutionConfig,
     op: top.TensorOp,
-    dependents: Sequence[Tuple[top.TensorOp, DependencyData]],
-) -> Sequence[Tuple[ie.Symbol, int]]:
+    dependents: Sequence[tuple[top.TensorOp, DependencyData]],
+) -> Sequence[tuple[ie.Symbol, int]]:
     non_point_accesses = [
         (dep_op, dep_data.expr) for dep_op, dep_data in dependents if not dep_data.expr.is_point()
     ]
 
-    block_sizes_per_dim: Dict[ie.Symbol, int] = {}
+    block_sizes_per_dim: dict[ie.Symbol, int] = {}
     for dep_op, expr in non_point_accesses:
         dims_and_block_sizes_ = extract_block_size_from_expr(
             expr, dep_op.domain, op.domain, new_dg.static_bounds
@@ -132,7 +123,7 @@ def _get_block_sizes_per_dim(
     return dims_and_block_sizes
 
 
-def max_block_size(a: Union[int, None], b: Union[int, None]) -> Union[int, None]:
+def max_block_size(a: int | None, b: int | None) -> int | None:
     if a is None or b is None:
         return None
     else:
@@ -140,8 +131,8 @@ def max_block_size(a: Union[int, None], b: Union[int, None]) -> Union[int, None]
 
 
 def _get_window_sizes_per_dim(
-    new_dg: PDG, op: top.TensorOp, dependents: Sequence[Tuple[top.TensorOp, DependencyData]]
-) -> Sequence[Tuple[ie.Symbol, int]]:
+    new_dg: PDG, op: top.TensorOp, dependents: Sequence[tuple[top.TensorOp, DependencyData]]
+) -> Sequence[tuple[ie.Symbol, int]]:
     dims_and_window_sizes = []
     for dep_op, dep_data in dependents:
         expr = dep_data.expr
@@ -164,8 +155,57 @@ def _get_window_sizes_per_dim(
     return dims_and_window_sizes
 
 
+def fallback_to_point_if_need(
+    ctx: CompilationCtx,
+    tensor_id: TensorId,
+    mem_est: MemoryEstimator,
+    storage_method: StorageMethod,
+) -> StorageMethod:
+    if isinstance(storage_method, PointStore):
+        return storage_method
+
+    dependents = ctx.dg.get_tensor_flat_direct_dependents(tensor_id)
+    tensor_point_size = mem_est.estimate_tensor_point_size_bytes(
+        tensor_id.op_id, tensor_id.output_id
+    )
+
+    would_be_swapped = ctx.exec_cfg.enable_swap and tensor_point_size >= ctx.exec_cfg.swap_bytes_min
+
+    is_folded_pad = any(not ie.struct_eq(d.expr, d.isl_expr) for _, d in dependents)
+
+    # TODO: this should not check the expression in general but just the temporal dimension
+    # which is relevant for the storage method.
+    any_moving_point_accesses = any(
+        d.expr.is_point() and not d.expr.is_constant() for _, d in dependents
+    )
+
+    reason = None
+
+    # NOTE: For small tensors, or tensors which are also point accessed, we fall back to point
+    # store for performance reasons.
+    if ctx.exec_cfg.enable_point_store_fallback and not would_be_swapped and not is_folded_pad:
+        if any_moving_point_accesses:
+            reason = "Falling back from {} to PointStore() for {} due to point accesses.".format(
+                storage_method,
+                tensor_id,
+            )
+
+        if tensor_point_size < ctx.exec_cfg.min_block_store_tensor_point_size:
+            reason = "Falling back from {} to PointStore() for {} due to small tensor ({}).".format(
+                storage_method,
+                tensor_id,
+                bytes_to_human_readable(tensor_point_size),
+            )
+
+    if reason is None:
+        return storage_method
+
+    log.info(reason)
+    return PointStore()
+
+
 class AnalyseStorageMethods(Transformation):
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         new_dg = self.ctx.dg
 
         self.mem_est = MemoryEstimator(self.ctx)
@@ -173,7 +213,7 @@ class AnalyseStorageMethods(Transformation):
         if self.ctx.analysis_ctx._tensor_prealloc_value is None:
             self.ctx.analysis_ctx._tensor_prealloc_value = {}
 
-        storage_method_map: Dict[TensorId, StorageMethod] = {}
+        storage_method_map: dict[TensorId, StorageMethod] = {}
 
         self.ctx.analysis_ctx._tensor_storage_classes = storage_method_map
 
@@ -218,14 +258,18 @@ class AnalyseStorageMethods(Transformation):
         if not hybrid_store_enabled:
             return PointStore()
 
-        tensor_point_size = self.mem_est.estimate_tensor_point_size_bytes(
-            tensor_id.op_id, tensor_id.output_id
-        )
+        # NOTE: Don't make storage decisions based on depedents which execute once.
+        # NOTE: Idea is that we generally prefer paying a one-time concat cost over
+        # potentially paying a cost for each write.
+        dependents = [(o, d) for o, d in dependents if not o.domain.is_empty()]
 
         any_window_accesses = any(
             is_window_access(m) for _, d in dependents for m in d.expr.members
         )
         any_block_accesses = any(is_block_access(m) for _, d in dependents for m in d.expr.members)
+        any_proto_block_accesses = any(
+            is_proto_block_access(m) for _, d in dependents for m in d.expr.members
+        )
         any_common_const_block_accesses = any(
             # ((not o.domain.is_empty()) and is_const_block_access(m))
             is_const_block_access(m)
@@ -233,7 +277,9 @@ class AnalyseStorageMethods(Transformation):
             for m in d.expr.members
         )
 
-        any_type_block_accesses = any_common_const_block_accesses or any_block_accesses
+        any_type_block_accesses = (
+            any_common_const_block_accesses or any_block_accesses or any_proto_block_accesses
+        )
 
         any_range_accesses = any(is_range_access(m) for _, d in dependents for m in d.expr.members)
 
@@ -244,61 +290,33 @@ class AnalyseStorageMethods(Transformation):
             tensor_id, default_prealloc_value_for_dtype
         )
 
+        store: StorageMethod = PointStore()
         if any_window_accesses and not any_type_block_accesses:
             dims_and_window_sizes = _get_window_sizes_per_dim(new_dg, op, dependents)
-            return CircularBufferStore(
+            store = CircularBufferStore(
                 prealloc_value=prealloc_value,
                 dims_and_base_buffer_sizes=tuple(dims_and_window_sizes),
             )
             # return PreallocCircularBufferStore(tuple(dims_and_window_sizes), 4)
 
         # NOTE: Any block or fixed size slice access creates a block store.
-        if any_range_accesses:
+        elif any_range_accesses:
             dims_and_block_sizes = _get_block_sizes_per_dim(
                 new_dg, self.ctx.exec_cfg, op, dependents
             )
-            would_be_swapped = (
-                self.ctx.exec_cfg.enable_swap
-                and tensor_point_size >= self.ctx.exec_cfg.swap_bytes_min
-            )
 
-            any_point_accesses = any(d.expr.is_point() for _, d in dependents)
-            # NOTE: In the RL use-case, we have found that a single point access on a block-stored
-            # tensor leads to a significant performance drop. Thus, we might as well just use
-            # point store.
-            if (
-                self.ctx.exec_cfg.enable_point_store_fallback
-                and any_point_accesses
-                and not would_be_swapped
-            ):
-                log.info("Falling back to point store for %s due to point accesses.", tensor_id)
-                return PointStore()
-
-            # NOTE: For small tensors, we can just pay the price of concatenating, to avoid the
-            # cost of in-place writes.
-            # NOTE: For large tensors, that price becomes too high.
-            if (
-                self.ctx.exec_cfg.enable_point_store_fallback
-                and tensor_point_size < self.ctx.exec_cfg.min_block_store_tensor_point_size
-            ):
-                log.info(
-                    "Falling back to point store for %s due to small tensor (%s).",
-                    tensor_id,
-                    bytes_to_human_readable(tensor_point_size),
-                )
-                return PointStore()
-
-            ret_val = BlockStore(
+            store = BlockStore(
                 prealloc_value=prealloc_value,
                 dims_and_base_buffer_sizes=tuple(dims_and_block_sizes),
             )
-            return ret_val
 
-        return PointStore()
+        store = fallback_to_point_if_need(self.ctx, tensor_id, self.mem_est, store)
+
+        return store
 
     def _get_percentage_map(
-        self, storage_method_map: Dict[TensorId, StorageMethod]
-    ) -> Dict[str, float]:
+        self, storage_method_map: dict[TensorId, StorageMethod]
+    ) -> dict[str, float]:
         m_counts = dict.fromkeys({s.__class__ for s in storage_method_map.values()}, 0)
         for tensor_id in storage_method_map:
             method = storage_method_map[tensor_id]

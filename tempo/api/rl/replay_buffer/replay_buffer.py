@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any
 
 from tempo.api.recurrent_tensor import MaybeRecurrentTensor, RecurrentTensor
 from tempo.api.rl.replay_buffer import udfs
@@ -22,8 +23,8 @@ class ReplayBuffer:
     def make(
         max_size: int,
         # TODO do we actually need to pass in the shapes and dtypes ahead of time?
-        item_shapes: List[Shape],
-        item_dtypes: List[DataType],
+        item_shapes: list[Shape],
+        item_dtypes: list[DataType],
         storage_type: str = "deque",
         **kwargs: Any,
     ) -> ReplayBuffer:
@@ -50,7 +51,7 @@ class ReplayBuffer:
 
     def insert(
         self,
-        data: Tuple[MaybeRecurrentTensor, ...],
+        data: tuple[MaybeRecurrentTensor, ...],
         domain: DomainLike = None,
         # do_insert: Optional[MaybeRecurrentTensor] = None, #TODO optional
         **kwargs: Any,
@@ -86,7 +87,7 @@ class ReplayBuffer:
         self,
         # TODO sample expression of some kind. Possibly a RecurrentTensor itself
         domain: DomainLike,
-        token: Optional[MaybeRecurrentTensor] = None,
+        token: MaybeRecurrentTensor | None = None,
         **kwargs: Any,
     ) -> Sequence[RecurrentTensor]:
         desc = udfs.get_sample_udf_desc(self._replay_buffer_desc)

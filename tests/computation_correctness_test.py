@@ -39,8 +39,8 @@ def idfn(val: Any) -> str:
     ids=idfn,
 )
 def test_mat_mul(
-    shape: Tuple[int, ...],
-    dtypes: Tuple[torch.dtype, DataType],
+    shape: tuple[int, ...],
+    dtypes: tuple[torch.dtype, DataType],
     exec_cfg: ExecutionConfig,
     backend: str,
 ):
@@ -70,7 +70,7 @@ def test_mat_mul(
     "shape,backend",
     itertools.product([(4, 4),  (5, 4, 4, 4)], ["torch", "jax"]),
 )
-def test_mat_mul_bwd(shape: Tuple[int, ...], exec_cfg: ExecutionConfig, backend: str):
+def test_mat_mul_bwd(shape: tuple[int, ...], exec_cfg: ExecutionConfig, backend: str):
     with torch.enable_grad():
         x_t = torch.arange(prod(shape), dtype=torch.float32, requires_grad=True)
         x_t_r = x_t.reshape(shape)
@@ -149,9 +149,9 @@ def idfn_2(val: Any) -> str:
     ids=idfn_2,
 )
 def test_activations(
-    shape: Tuple[int, ...],
-    op_names: Tuple[str, str],
-    dtypes: Tuple[torch.dtype, DataType],
+    shape: tuple[int, ...],
+    op_names: tuple[str, str],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exec_cfg: ExecutionConfig,
 ):
@@ -226,9 +226,9 @@ def test_activations(
     ids=idfn_2,
 )
 def test_elementwise_unary_ops(
-    shape: Tuple[int, ...],
-    op_names: Tuple[str, str],
-    dtypes: Tuple[torch.dtype, DataType],
+    shape: tuple[int, ...],
+    op_names: tuple[str, str],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exec_cfg: ExecutionConfig,
 ) -> None:
@@ -264,7 +264,7 @@ def test_elementwise_unary_ops(
     ids=idfn_2,
 )
 def test_pow(
-    dtypes: Tuple[torch.dtype, DataType],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exponent: float,
     exec_cfg: ExecutionConfig,
@@ -309,9 +309,9 @@ def test_pow(
     ids=idfn_2,
 )
 def test_elementwise_binary_ops(
-    shape: Tuple[int, ...],
-    op_names: Tuple[str, str],
-    dtypes: Tuple[torch.dtype, DataType],
+    shape: tuple[int, ...],
+    op_names: tuple[str, str],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exec_cfg: ExecutionConfig,
 ):
@@ -363,9 +363,9 @@ def test_elementwise_binary_ops(
     ids=idfn_2,
 )
 def test_min_max_binary(
-    shape: Tuple[int, ...],
-    op_names: Tuple[str, str],
-    dtypes: Tuple[torch.dtype, DataType],
+    shape: tuple[int, ...],
+    op_names: tuple[str, str],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exec_cfg: ExecutionConfig,
 ):
@@ -412,9 +412,9 @@ def test_min_max_binary(
     ids=idfn_2,
 )
 def test_min_max_unary(
-    shape: Tuple[int, ...],
-    op_names: Tuple[str, str],
-    dtypes: Tuple[torch.dtype, DataType],
+    shape: tuple[int, ...],
+    op_names: tuple[str, str],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exec_cfg: ExecutionConfig,
 ):

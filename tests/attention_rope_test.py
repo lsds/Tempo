@@ -30,10 +30,10 @@ def test_mha_with_rope(exec_cfg: ExecutionConfig, backend: str) -> None:
     # -------------------------------------------------------------------------
     # Hyperparameters & Setup
     # -------------------------------------------------------------------------
-    max_seq_len = 4
-    embed_dim = 8
-    num_heads = 2
-    batch_size = 2
+    max_seq_len = 16
+    embed_dim = 2048
+    num_heads = 32
+    batch_size = 4
     base = 10000
 
     exec_cfg = replace(exec_cfg, backend=backend)
@@ -152,9 +152,7 @@ def test_mha_with_rope(exec_cfg: ExecutionConfig, backend: str) -> None:
 
     print("Tempo MHA (RoPE) output:\n", out_tpo_pt)
     print("PyTorch MHA (TorchTuneRoPE) output:\n", out_pt)
+    max_diff = (out_tpo_pt - out_pt).abs().max().item()
+    print(f"Max diff: {max_diff}")
     assert out_tpo_pt.shape == out_pt.shape, "Shape mismatch!"
-    assert torch.allclose(out_tpo_pt, out_pt, atol=1e-4), (
-        f"RoPE MHA mismatch!\n\nTempo:\n{out_tpo_pt}\n\n"
-        f"PyTorch:\n{out_pt}\n\n"
-        f"Max diff: {(out_tpo_pt - out_pt).abs().max().item()}"
-    )
+    assert torch.allclose(out_tpo_pt, out_pt, atol=1e-4), (f"RoPE MHA mismatch!\n\nTempo:\n{out_tpo_pt}\n\nPyTorch:\n{out_pt}\n\nMax diff: {max_diff}")

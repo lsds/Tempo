@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Set, Type
+from typing import Any
 
 from tempo.core import tensor_ops as top
 from tempo.core.compilation_ctx import CompilationCtx
@@ -36,7 +36,7 @@ class MatchReplacer(ABC):
         return class_name
 
     @abstractmethod
-    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Optional[Any]:
+    def match(self, ctx: CompilationCtx, op: top.TensorOp) -> Any | None:
         """
         Check if this optimization can be applied to the given operation.
 
@@ -47,7 +47,7 @@ class MatchReplacer(ABC):
         Returns:
             MatchResult if the optimization can be applied, None otherwise
         """
-        pass
+        ...
 
     @abstractmethod
     def replace(self, ctx: CompilationCtx, op: top.TensorOp, match_result: Any) -> None:
@@ -62,16 +62,16 @@ class MatchReplacer(ABC):
         Returns:
             True if the transformation was applied successfully, False otherwise
         """
-        pass
+        ...
 
 
 class MatchReplacerRegistry:
     """Registry for match and replace operations organized by operation type."""
 
     def __init__(self) -> None:
-        self._registry: Dict[Type[top.TensorOp], list[MatchReplacer]] = {}
+        self._registry: dict[type[top.TensorOp], list[MatchReplacer]] = {}
 
-    def register(self, op_type: Type[top.TensorOp], replacer: MatchReplacer) -> None:
+    def register(self, op_type: type[top.TensorOp], replacer: MatchReplacer) -> None:
         """Register a match replacer for a specific operation type."""
         if op_type not in self._registry:
             self._registry[op_type] = []
@@ -86,6 +86,6 @@ class MatchReplacerRegistry:
 
         return results
 
-    def get_all_registered_optimizations(self) -> Set[Type[MatchReplacer]]:
+    def get_all_registered_optimizations(self) -> set[type[MatchReplacer]]:
         """Get all registered optimizations."""
         return {type(o) for r in self._registry.values() for o in r}

@@ -1,6 +1,7 @@
 import random
 from collections import deque
-from typing import Any, Deque, List, Sequence
+from collections.abc import Sequence
+from typing import Any, Deque
 
 import numpy as np
 
@@ -9,7 +10,7 @@ from tempo.api.rl.replay_buffer.runtime_replay_buffer_interface import (
     ReplayBufferCtx,
     RuntimeReplayBufferInterface,
 )
-from tempo.runtime.backends.backend import DLBackend
+from tempo.core.dl_backend import DLBackend
 
 
 class DequeReplayBuffer(RuntimeReplayBufferInterface):
@@ -30,7 +31,7 @@ class DequeReplayBuffer(RuntimeReplayBufferInterface):
             dq.clear()
             return dq
 
-        self._buffers: List[Deque] = [mk_deque() for _ in range(self.num_items)]
+        self._buffers: list[Deque] = [mk_deque() for _ in range(self.num_items)]
 
     def clear(self) -> None:
         for b in self._buffers:
@@ -70,7 +71,7 @@ class DequeReplayBuffer(RuntimeReplayBufferInterface):
             #        print(f"{self.capacity=}, {num_samples=}, {i=}, {len(b)=}")
             #        print(f"{idx=}")
             #        raise e
-            batch_sample = self.backend.stack(samples, axis=0)
+            batch_sample = self.backend.stack(samples)
             ret.append(batch_sample)
 
         return ret

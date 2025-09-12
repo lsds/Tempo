@@ -1,5 +1,4 @@
 from collections import Counter
-from typing import Tuple
 
 from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.dependence_graph import PDG
@@ -18,7 +17,7 @@ class AlgebraicOptimizer(Transformation):
         super().__init__(ctx)
         self.reg = build_algebraic_optim_registry(ctx.exec_cfg, disable_lifts=is_post_inc)
 
-    def _run(self) -> Tuple[PDG, bool]:  # noqa: C901
+    def _run(self) -> tuple[PDG, bool]:  # noqa: C901
         dg = self.ctx.dg
         new_ctx = self.ctx
 

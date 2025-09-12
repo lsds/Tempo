@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, Generic, Tuple, Union
+from collections.abc import Callable
+from typing import Any, Generic, Union
 
 import gymnasium as gym
 
@@ -39,12 +40,12 @@ class TempoEnvWrapper(gym.Wrapper, Generic[BackendTensorT]):
             self.env.close()
         self._closed = True
 
-    def reset(self, **kwargs: Any) -> Tuple[BackendTensorT, BackendTensorTPyTree]:
+    def reset(self, **kwargs: Any) -> tuple[BackendTensorT, BackendTensorTPyTree]:
         raise NotImplementedError
 
     def step(
         self, action: BackendTensorT
-    ) -> Tuple[
+    ) -> tuple[
         BackendTensorT,
         BackendTensorT,
         BackendTensorT,
@@ -65,7 +66,7 @@ class BoxToDiscreteWrapper(TempoEnvWrapper):
         self.high = high
         self.dof = dof
 
-        from tempo.runtime.backends.backend import DLBackend
+        from tempo.core.dl_backend import DLBackend
 
         self.backend = DLBackend.get_backend(exec_cfg.backend)
 
@@ -73,16 +74,16 @@ class BoxToDiscreteWrapper(TempoEnvWrapper):
         if isinstance(env, gym.vector.VectorEnv) or hasattr(env, "num_envs"):
             bs = env.num_envs  # type: ignore
 
-            self._single_box_shape: Tuple[int, ...] = env.single_action_space.shape  # type: ignore
-            self._full_box_shape: Tuple[int, ...] = (bs,) + self._single_box_shape
+            self._single_box_shape: tuple[int, ...] = env.single_action_space.shape  # type: ignore
+            self._full_box_shape: tuple[int, ...] = (bs,) + self._single_box_shape
             self._single_box_shape_prod = math.prod(self._single_box_shape)
             self.single_action_space = gym.spaces.Discrete(
                 dof ** (self._single_box_shape_prod // bs)
             )
             self.stack_axis = 1
         else:
-            self._single_box_shape: Tuple[int, ...] = env.action_space.shape  # type: ignore
-            self._full_box_shape: Tuple[int, ...] = self._single_box_shape
+            self._single_box_shape: tuple[int, ...] = env.action_space.shape  # type: ignore
+            self._full_box_shape: tuple[int, ...] = self._single_box_shape
             self._single_box_shape_prod = math.prod(self._single_box_shape)
             self.single_action_space = self.action_space
             self.stack_axis = 0
@@ -93,12 +94,12 @@ class BoxToDiscreteWrapper(TempoEnvWrapper):
     def rescale(self, action: BackendTensorT) -> BackendTensorT:
         return (action / (self.dof - 1) * (self.high - self.low)) + self.low  # type: ignore
 
-    def reset(self, **kwargs: Dict[str, Any]) -> Tuple[BackendTensorT, BackendTensorTPyTree]:
+    def reset(self, **kwargs: dict[str, Any]) -> tuple[BackendTensorT, BackendTensorTPyTree]:
         return self.env.reset(**kwargs)  # type: ignore
 
     def step(
         self, action: BackendTensorT
-    ) -> Tuple[
+    ) -> tuple[
         BackendTensorT,
         BackendTensorT,
         BackendTensorT,
@@ -132,7 +133,7 @@ class ToBackendTensorTWrapper(TempoEnvWrapper):
         self.to_backend_tensor = to_backend_tensor
         self.from_backend_tensor = from_backend_tensor
 
-    def reset(self, **kwargs: Dict[str, Any]) -> Tuple[BackendTensorT, BackendTensorTPyTree]:
+    def reset(self, **kwargs: dict[str, Any]) -> tuple[BackendTensorT, BackendTensorTPyTree]:
         o, info = self.env.reset(**kwargs)
         o = self.to_backend_tensor(o)
         # info = optree.tree_map(self.to_backend_tensor, info)  # type: ignore
@@ -141,7 +142,7 @@ class ToBackendTensorTWrapper(TempoEnvWrapper):
 
     def step(
         self, action: BackendTensorT
-    ) -> Tuple[
+    ) -> tuple[
         BackendTensorT,
         BackendTensorT,
         BackendTensorT,
@@ -167,13 +168,13 @@ class DoneToTermTruncAPIConverterWrapper(TempoEnvWrapper):
     ) -> None:
         super().__init__(env, exec_cfg)
 
-    def reset(self, **kwargs: Dict[str, Any]) -> Tuple[BackendTensorT, BackendTensorTPyTree]:
+    def reset(self, **kwargs: dict[str, Any]) -> tuple[BackendTensorT, BackendTensorTPyTree]:
         o = self.env.reset(**kwargs)
         return o, {}
 
     def step(
         self, action: BackendTensorT
-    ) -> Tuple[
+    ) -> tuple[
         BackendTensorT,
         BackendTensorT,
         BackendTensorT,
@@ -190,7 +191,7 @@ class DoneToTermTruncAPIConverterWrapper(TempoEnvWrapper):
 class SinglePrecisionRewardWrapper(TempoEnvWrapper):
     def __init__(self, env: RuntimeEnv, exec_cfg: ExecutionConfig):
         super().__init__(env, exec_cfg)
-        from tempo.runtime.backends.backend import DLBackend
+        from tempo.core.dl_backend import DLBackend
 
         self.backend = DLBackend.get_backend(exec_cfg.backend)
         self.backend_dtype = self.backend.to_backend_datatype(dtypes.float32)
@@ -228,7 +229,7 @@ class SinglePrecisionRewardWrapper(TempoEnvWrapper):
 class NoAutoResetWrapper(TempoEnvWrapper):
     def __init__(self, env: RuntimeEnv, exec_cfg: ExecutionConfig):
         super().__init__(env, exec_cfg)
-        from tempo.runtime.backends.backend import DLBackend
+        from tempo.core.dl_backend import DLBackend
 
         self.backend = DLBackend.get_backend(exec_cfg.backend)
 
@@ -261,7 +262,7 @@ class PermuteObservationChannelAxis(TempoEnvWrapper):
     def __init__(self, env: RuntimeEnv, exec_cfg: ExecutionConfig):
         super().__init__(env, exec_cfg)
 
-        from tempo.runtime.backends.backend import DLBackend
+        from tempo.core.dl_backend import DLBackend
 
         self.backend = DLBackend.get_backend(exec_cfg.backend)
 

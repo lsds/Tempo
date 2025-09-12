@@ -1,8 +1,9 @@
 # type: ignore
 # TODO: remove this
+from collections.abc import Sequence
 from functools import partial
 from math import ceil, floor
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
@@ -11,11 +12,13 @@ from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.core.dim_utils import normalize_negative_dim
 from tempo.core.utils import bytes_to_human_readable
 from tempo.transformations.compilation_pass import CompilationCtx
-from tempo.transformations.incrementalization.incrementalization_common import (
+from tempo.transformations.incrementalization.inc_core import (
     ALLOWED_START_OPS,
     IncKind,
     IncRoundCtx,
     IncStartOp,
+)
+from tempo.transformations.incrementalization.incrementalization_mechanism import (
     _can_incrementalize_base,
     create_inc_symbol_and_block_idxs,
 )
@@ -49,13 +52,17 @@ def closest_divisor(x: int, y: float) -> int:
     return 1
 
 
+def get_all_divisors(n: int) -> list[int]:
+    return sorted({d for i in range(1, int(n**0.5) + 1) if n % i == 0 for d in (i, n // i)})
+
+
 def get_divisor_at_percentile(n: int, percentile: int = 75) -> int:
     """Get the divisor at the given percentile of the sorted divisors of n.
     NOTE: If used as a block size, larger percentiles will result in larger block sizes,
     meaning fewer block iterations.
 
     """
-    divisors = sorted({d for i in range(1, int(n**0.5) + 1) if n % i == 0 for d in (i, n // i)})
+    divisors = get_all_divisors(n)
 
     if not 0 <= percentile <= 100:
         raise ValueError("Percentile must be between 0 and 100")
@@ -72,8 +79,8 @@ def _needs_incrementalize(
     op: top.TensorOp,
     comp_ctx: CompilationCtx,
     initial: bool = False,
-    mem_est: Optional[MemoryEstimator] = None,
-    start_ops: Optional[Sequence[top.TensorOp]] = None,
+    mem_est: MemoryEstimator | None = None,
+    start_ops: Sequence[top.TensorOp] | None = None,
 ) -> bool:
     if mem_est is None:
         mem_est = MemoryEstimator(comp_ctx)
@@ -110,7 +117,7 @@ def dimension_originates_from_temporal_indexing(
     in_dim: int,
     in_dim_size: int,
     max_depth_to_check: int = 50,
-) -> Tuple[bool, Optional[ie.Symbol]]:
+) -> tuple[bool, ie.Symbol | None]:
     """Check if a dimension originates from temporal indexing.
 
     A dimension originates from temporal indexing if it was created through symbolic indexing.
@@ -153,9 +160,9 @@ def dimension_originates_from_temporal_indexing(
         dg: PDG,
         op: top.TensorOp,
         op_out_dim: int,
-        op_in_dims: Dict[OpInId, int],
+        op_in_dims: dict[OpInId, int],
         ctx: int,
-    ) -> Tuple[PDG, Any]:
+    ) -> tuple[PDG, Any]:
         nonlocal has_temporal_indexing
         nonlocal temporal_indexing_var
         ctx += 1
@@ -218,14 +225,13 @@ class IncrementalizationPolicy:
     - How to derive the block/tile symbol and block idxs
     """
 
-    def __init__(self):
-        pass
+    def __init__(self): ...
 
     def get_round_info(
         self,
         ctx: CompilationCtx,
         inc_round: int,
-    ) -> Optional[IncRoundCtx]:
+    ) -> IncRoundCtx | None:
         """Get the incrementalization round context based on the policy."""
         raise NotImplementedError("Subclasses must implement get_round_info")
 
@@ -245,14 +251,14 @@ class PreferTemporalDimsFirstBatchSecond(IncrementalizationPolicy):
         super().__init__()
         self.max_inc_rounds = max_inc_rounds
 
-        self.mem_est: Optional[MemoryEstimator] = None
-        self.ctx: Optional[CompilationCtx] = None
+        self.mem_est: MemoryEstimator | None = None
+        self.ctx: CompilationCtx | None = None
 
     def _compute_block_size_and_num_blocks(
         self,
-        ub: Union[int, ie.IntIndexValue],
-        inc_start_ops_with_reduced_ub: List[IncStartOp],
-    ) -> Tuple[int, ie.IntIndexValueLike]:
+        ub: int | ie.IntIndexValue,
+        inc_start_ops_with_reduced_ub: list[IncStartOp],
+    ) -> tuple[int, ie.IntIndexValueLike]:
         assert self.ctx is not None
         assert self.mem_est is not None
 
@@ -274,7 +280,7 @@ class PreferTemporalDimsFirstBatchSecond(IncrementalizationPolicy):
     def _determine_block_size(
         self,
         ub: ie.IntIndexValueLike,
-        inc_start_ops: List[IncStartOp],
+        inc_start_ops: list[IncStartOp],
     ) -> int:
         if self.fully_incrementalize:
             return 1
@@ -299,7 +305,7 @@ class PreferTemporalDimsFirstBatchSecond(IncrementalizationPolicy):
     def _determine_block_size_from_mem_usage(
         self,
         ub: ie.IntIndexValueLike,
-        inc_start_ops: List[IncStartOp],
+        inc_start_ops: list[IncStartOp],
     ) -> int:
         assert self.ctx is not None
         assert self.mem_est is not None
@@ -343,12 +349,12 @@ class PreferTemporalDimsFirstBatchSecond(IncrementalizationPolicy):
 
     def pick_inc_start_dims(
         self, inc_start_ops: Sequence[IncStartOp], inc_round: int
-    ) -> Tuple[Optional[int], List[Tuple[IncStartOp, int, ie.IntIndexValueLike]]]:
+    ) -> tuple[int | None, list[tuple[IncStartOp, int, ie.IntIndexValueLike]]]:
         assert self.ctx is not None
         dg = self.ctx.dg
 
         # NOTE: 2.0 Finds all dims contracted by matmul ops and reduced by reduce ops
-        potential_reduce_dim_sizes: Set[Tuple[IncStartOp, int, ie.IntIndexValueLike]] = set()
+        potential_reduce_dim_sizes: set[tuple[IncStartOp, int, ie.IntIndexValueLike]] = set()
         for op in inc_start_ops:
             s = dg.get_input_shape(op, OpInId(0))
             if isinstance(op, top.MatMulOp):
@@ -406,7 +412,7 @@ class PreferTemporalDimsFirstBatchSecond(IncrementalizationPolicy):
 
         return None, []
 
-    def _search_dependents(self, dg: PDG, op: top.TensorOp, max_depth: int) -> Set[top.TensorOp]:
+    def _search_dependents(self, dg: PDG, op: top.TensorOp, max_depth: int) -> set[top.TensorOp]:
         to_explore = {op}
         for _ in range(max_depth):
             if not to_explore:
@@ -436,7 +442,7 @@ class PreferTemporalDimsFirstBatchSecond(IncrementalizationPolicy):
 
         return list(can_start_inc)
 
-    def _get_valid_start_ops(self, inc_round: int) -> Tuple[Optional[int], Sequence[IncStartOp]]:
+    def _get_valid_start_ops(self, inc_round: int) -> tuple[int | None, Sequence[IncStartOp]]:
         assert self.ctx is not None
         assert self.mem_est is not None
 
@@ -487,7 +493,7 @@ class PreferTemporalDimsFirstBatchSecond(IncrementalizationPolicy):
             )
 
         # NOTE: 3. Filter ops to only those that have the chosen dimension
-        chosen_inc_start_ops: List[IncStartOp] = []
+        chosen_inc_start_ops: list[IncStartOp] = []
         for op, _, size in ops_and_input_0_spatial_dim_and_sizes:
             if size == picked_dim_size:
                 # TODO: should be appending (op, d, in_id) to simplify the code below
@@ -502,7 +508,7 @@ class PreferTemporalDimsFirstBatchSecond(IncrementalizationPolicy):
         self,
         ctx: CompilationCtx,
         inc_round: int,
-    ) -> Optional[IncRoundCtx]:
+    ) -> IncRoundCtx | None:
         self.ctx = ctx
         self.mem_est = MemoryEstimator(ctx)
         self.fully_incrementalize = False
@@ -543,7 +549,7 @@ class PreferTemporalDimsFirstBatchSecond(IncrementalizationPolicy):
 
         # NOTE: 6. Create the start op and input side dims mapping
         # NOTE: If many dims have same size, we always pick the first one, which is arbitrary
-        def get_start_op_input_and_dim(op: top.TensorOp) -> Sequence[Tuple[OpInId, int]]:
+        def get_start_op_input_and_dim(op: top.TensorOp) -> Sequence[tuple[OpInId, int]]:
             shape0 = dg.get_input_shape(op, OpInId(0))
             if isinstance(op, top.MatMulOp):
                 # matmul, contracting dim -> both sides inc
@@ -617,8 +623,8 @@ class IncTemporalOnce(IncrementalizationPolicy):
 
     def __init__(self):
         super().__init__()
-        self.mem_est: Optional[MemoryEstimator] = None
-        self.ctx: Optional[CompilationCtx] = None
+        self.mem_est: MemoryEstimator | None = None
+        self.ctx: CompilationCtx | None = None
 
     def _get_start_ops(
         self, dg: PDG, ops_needing_inc: Sequence[top.TensorOp]
@@ -637,7 +643,7 @@ class IncTemporalOnce(IncrementalizationPolicy):
 
         return list(can_start_inc)
 
-    def _search_dependents(self, dg: PDG, op: top.TensorOp, max_depth: int) -> Set[top.TensorOp]:
+    def _search_dependents(self, dg: PDG, op: top.TensorOp, max_depth: int) -> set[top.TensorOp]:
         """Search for dependent ops that can start incrementalization."""
         to_explore = {op}
         for _ in range(max_depth):
@@ -653,10 +659,10 @@ class IncTemporalOnce(IncrementalizationPolicy):
 
     def _find_temporal_dims(
         self, dg: PDG, inc_start_ops: Sequence[top.TensorOp]
-    ) -> Tuple[Optional[int], Optional[ie.Symbol], List[top.TensorOp]]:
+    ) -> tuple[int | None, ie.Symbol | None, list[top.TensorOp]]:
         """Find dimensions that originate from temporal indexing."""
         # Find all potential reduce dimensions
-        potential_reduce_dim_sizes: Set[Tuple[top.TensorOp, int, ie.IntIndexValueLike]] = set()
+        potential_reduce_dim_sizes: set[tuple[top.TensorOp, int, ie.IntIndexValueLike]] = set()
         for op in inc_start_ops:
             s = dg.get_input_shape(op, OpInId(0))
             if isinstance(op, top.MatMulOp):
@@ -696,8 +702,8 @@ class IncTemporalOnce(IncrementalizationPolicy):
         return ub, picked_var, chosen_ops
 
     def _expand_to_temporal_access_ops(
-        self, dg: PDG, inc_start_ops: List[top.TensorOp], temporal_var: ie.Symbol
-    ) -> List[top.TensorOp]:
+        self, dg: PDG, inc_start_ops: list[top.TensorOp], temporal_var: ie.Symbol
+    ) -> list[top.TensorOp]:
         """Expand to include all ops that access the temporal dimension."""
         inc_candidates = set(inc_start_ops)
 
@@ -718,7 +724,7 @@ class IncTemporalOnce(IncrementalizationPolicy):
 
     def _get_start_op_input_and_dim(
         self, op: top.TensorOp, ub: int
-    ) -> Sequence[Tuple[OpInId, int]]:
+    ) -> Sequence[tuple[OpInId, int]]:
         """Get input dimensions for a start op."""
         dg = self.ctx.dg
         shape0 = dg.get_input_shape(op, OpInId(0))
@@ -755,7 +761,7 @@ class IncTemporalOnce(IncrementalizationPolicy):
         self,
         ctx: CompilationCtx,
         inc_round: int,
-    ) -> Optional[IncRoundCtx]:
+    ) -> IncRoundCtx | None:
         """Get incrementalization round info - only runs once for temporal indexing."""
         if inc_round != 0:
             return None

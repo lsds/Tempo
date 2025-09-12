@@ -1,10 +1,9 @@
 import islpy as isl
 
-from tempo.core import isl_types as islt
 from tempo.core.configs import ExecutionConfig
 
 
-def get_isl_context(exec_cfg: ExecutionConfig) -> islt.Context:
+def get_isl_context(exec_cfg: ExecutionConfig) -> isl.Context:
     ctx = isl.Context()
 
     SCHED_ALGO_PLUTO = 0

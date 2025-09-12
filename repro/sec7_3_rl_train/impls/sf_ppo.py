@@ -51,7 +51,7 @@ class BraxEnvConverter(gym.Env):
         self,
         brax_env,
         num_actors,
-        render_mode: Optional[str],
+        render_mode: str | None,
         render_res: int,
         clamp_actions: bool,
         clamp_rew_obs: bool,
@@ -81,7 +81,7 @@ class BraxEnvConverter(gym.Env):
             self.observation_space = convert_space(self.env.observation_space)
             self.action_space = convert_space(self.env.action_space)
 
-    def reset(self, *args, **kwargs) -> Tuple[Tensor, Dict]:
+    def reset(self, *args, **kwargs) -> tuple[Tensor, dict]:
         obs = self.env.reset()
         obs = jax_to_torch(obs)
         return obs, {}
@@ -104,7 +104,7 @@ class BraxEnvConverter(gym.Env):
 
         return next_obs, reward, terminated, truncated, info
 
-    def render(self) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
+    def render(self) -> RenderFrame | list[RenderFrame] | None:
         if self.renderer is None:
             from sf_examples.brax.brax_render import BraxRenderer
 
@@ -143,7 +143,7 @@ class TrivialEnvConverter(gym.Env):
             self.observation_space = convert_space(self.env.single_observation_space)
             self.action_space = convert_space(self.env.single_action_space)
 
-    def reset(self, *args, **kwargs) -> Tuple[Tensor, Dict]:
+    def reset(self, *args, **kwargs) -> tuple[Tensor, dict]:
         obs, info = self.env.reset()
         # NOTE: flatten to prevent SF from using a CNN encoder:
         # https://github.com/alex-petrenko/sample-factory/blob/abbc4591fcfa3f2cb20b98bb9b0f2a1ee83f47fa/sample_factory/model/encoder.py#L44
@@ -171,7 +171,7 @@ class TrivialEnvConverter(gym.Env):
 
 
 def make_brax_env(
-    full_env_name: str, cfg: Config, _env_config=None, render_mode: Optional[str] = None
+    full_env_name: str, cfg: Config, _env_config=None, render_mode: str | None = None
 ) -> Env:
     batch_size = cfg.env_agents
     ep_len = cfg.max_ep_len
@@ -198,7 +198,7 @@ def make_brax_env(
 
 
 def make_trivial_env(
-    full_env_name: str, cfg: Config, _env_config=None, render_mode: Optional[str] = None
+    full_env_name: str, cfg: Config, _env_config=None, render_mode: str | None = None
 ) -> Env:
     batch_size = cfg.env_agents
     assert batch_size != 1
@@ -256,14 +256,14 @@ class StatsAlgoObserver(AlgoObserver):
     def on_init(self, runner: Runner) -> None:
         """Called after ctor, but before signal-slots are connected or any processes are started."""
 
-        def train_handler(runner: Runner, msg: Dict, policy_id: PolicyID) -> None:
+        def train_handler(runner: Runner, msg: dict, policy_id: PolicyID) -> None:
             m = msg["train"]
             self.last_loss += m["loss"]
             self.last_entropy_loss = m["exploration_loss"]
             self.last_value_loss += m["value_loss"]
             self.last_policy_loss += m["policy_loss"]
 
-        def episodic_handler(runner: Runner, msg: Dict, policy_id: PolicyID) -> None:
+        def episodic_handler(runner: Runner, msg: dict, policy_id: PolicyID) -> None:
             m = msg["episodic"]
             rew = np.array(m["reward"])
             assert rew.ndim == 1
@@ -278,11 +278,11 @@ class StatsAlgoObserver(AlgoObserver):
 
     def on_connect_components(self, runner: Runner) -> None:
         """Connect additional signal-slot pairs in the observers if needed."""
-        pass
+        ...
 
     def on_start(self, runner: Runner) -> None:
         """Called right after sampling/learning processes are started."""
-        pass
+        ...
 
     def on_training_step(self, runner: Runner, training_iteration_since_resume: int) -> None:
         """Called after each training step."""
@@ -308,11 +308,9 @@ class StatsAlgoObserver(AlgoObserver):
 
     def extra_summaries(
         self, runner: Runner, policy_id: PolicyID, env_steps: int, writer: SummaryWriter
-    ) -> None:
-        pass
+    ) -> None: ...
 
-    def on_stop(self, runner: Runner) -> None:
-        pass
+    def on_stop(self, runner: Runner) -> None: ...
 
 
 def get_sample_factory_ppo_execute_fn(
@@ -328,10 +326,10 @@ def get_sample_factory_ppo_execute_fn(
     iterations: int = 5,
     gamma: float = 0.99,
     start_lr: float = 1e-3,
-    lambda_: Optional[float] = 0.96,
+    lambda_: float | None = 0.96,
     ent_coef: float = 0.01,
     vf_coef: float = 0.5,
-    obs_shape: Tuple[int, ...] = (3, 256, 256),
+    obs_shape: tuple[int, ...] = (3, 256, 256),
     minibatch_size: int = 32,
     **kwargs,
 ):

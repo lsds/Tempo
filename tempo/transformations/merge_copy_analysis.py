@@ -1,4 +1,4 @@
-from typing import Dict, Sequence, Tuple
+from collections.abc import Sequence
 
 from tempo.core import tensor_ops as top
 from tempo.core.datatypes import OpId, TensorId
@@ -11,11 +11,11 @@ log = logger.get_logger(__name__)
 
 
 class MergeCopyAnalysis(Transformation):
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         dg = self.ctx.dg
         analysis_ctx = self.ctx.analysis_ctx
         count = 0
-        merge_copies: Dict[OpId, Sequence[bool]] = {}
+        merge_copies: dict[OpId, Sequence[bool]] = {}
         total_count = 0
 
         for op in list(dg.nodes):

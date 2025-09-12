@@ -1,5 +1,4 @@
 import time
-from typing import Dict, Tuple
 
 import gymnasium as gym
 import jax
@@ -13,7 +12,7 @@ class TrivialEnv(gym.vector.VectorEnv):
         self,
         num_envs: int = 1,
         max_ep_len: int = 100,
-        observation_shape: Tuple[int, ...] = (3, 256, 256),
+        observation_shape: tuple[int, ...] = (3, 256, 256),
         continuous: bool = True,
         dev: str = "gpu",
         auto_reset: bool = False,
@@ -46,9 +45,7 @@ class TrivialEnv(gym.vector.VectorEnv):
         self.observation_space = batch_observation_space
         self.reward_range = (-1, 0)
 
-        super(TrivialEnv, self).__init__(
-            num_envs, self.single_observation_space, self.single_action_space
-        )
+        super().__init__(num_envs, self.single_observation_space, self.single_action_space)
 
         self.continuous = continuous
         self.max_ep_len = max_ep_len
@@ -68,7 +65,7 @@ class TrivialEnv(gym.vector.VectorEnv):
 
         def _step(
             state: jnp.ndarray, action: jnp.ndarray
-        ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
             if self.continuous:
                 change = jnp.clip(action, -1.0, 1.0).reshape((-1,))
             else:
@@ -90,7 +87,7 @@ class TrivialEnv(gym.vector.VectorEnv):
 
         self._step = jax.jit(_step, device=self.dev, donate_argnums=(0,))
 
-    def reset(self, seed: int = 0) -> Tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
+    def reset(self, seed: int = 0) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         # if seed:
         #    self.random_key = jax.random.PRNGKey(seed)
 
@@ -106,7 +103,7 @@ class TrivialEnv(gym.vector.VectorEnv):
 
     def step(
         self, action: jnp.ndarray
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
         self.state, obs, reward = self._step(self.state, action)
         self.step_count += 1
 
@@ -120,5 +117,4 @@ class TrivialEnv(gym.vector.VectorEnv):
 
         return obs, reward, done, done, {}
 
-    def render(self, mode: str = "human") -> None:
-        pass
+    def render(self, mode: str = "human") -> None: ...

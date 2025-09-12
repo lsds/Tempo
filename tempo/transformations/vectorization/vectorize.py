@@ -1,6 +1,5 @@
 import dataclasses
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
 
 import tempo.core.global_objects as glob
 from tempo.core import index_expr as ie
@@ -9,7 +8,7 @@ from tempo.core.datatypes import OpInId, OpOutId
 from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.core.symbolic_tensor import (
     SymbolicTensor,
-    _get_symbolic_tensor_for_op_output,
+    get_symbolic_tensor_for_op_output,
     lift_to_symbolic_tensor,
     translate_ie_to_st,
 )
@@ -21,6 +20,7 @@ from tempo.transformations.vectorization.vec_rules import OP_VEC_RULES, GoToBack
 from tempo.transformations.vectorization.vectorizibility import (
     filter_ops_to_vectorize,
     get_ops_to_vectorize,
+    is_trivial_dim,
 )
 from tempo.utils import logger
 from tempo.utils.dg_utils import (
@@ -33,7 +33,7 @@ log = logger.get_logger(__name__)
 
 def _promote_index_ops(
     dg: PDG,
-    ops_to_vectorize: Set[TensorOp],
+    ops_to_vectorize: set[TensorOp],
 ) -> None:
     """
     INDEX SELECT CASES
@@ -62,33 +62,33 @@ def _promote_index_ops(
             ten = deps[TENSOR_PARAM_IDX]
             ind = deps[INDEX_PARAM_IN_IDX]
 
-            # ten_vec = ten[0] in ops_to_vectorize
-            # ind_vec = ind[0] in ops_to_vectorize
+            ten_vec = ten[0] in ops_to_vectorize
+            ind_vec = ind[0] in ops_to_vectorize
 
-            tensor_s: SymbolicTensor = _get_symbolic_tensor_for_op_output(  # type: ignore
+            tensor_s: SymbolicTensor = get_symbolic_tensor_for_op_output(  # type: ignore
                 dg, ten[0], ten[1].src_out_idx
             ).symbolic_index(ten[1].expr)
 
-            index_s: SymbolicTensor = _get_symbolic_tensor_for_op_output(
+            index_s: SymbolicTensor = get_symbolic_tensor_for_op_output(
                 dg, ind[0], ind[1].src_out_idx
             ).symbolic_index(ind[1].expr)
 
             dg_ops_start = set(dg.nodes)
 
-            new_s: Optional[SymbolicTensor] = None
+            new_s: SymbolicTensor | None = None
             if type(op) is top.IndexAddOp:
                 # TODO: There are probably opportunities for nuance like below, but these
                 # ops are rare.
                 src = deps[SRC_TENSOR_IN_IDX]
-                src_s = _get_symbolic_tensor_for_op_output(
+                src_s = get_symbolic_tensor_for_op_output(
                     dg, src[0], src[1].src_out_idx
                 ).symbolic_index(src[1].expr)
                 new_s = tensor_s._scatter_based_index_add(dim=op.dim, index=index_s, src=src_s)
-            # else:
-            #    if ten_vec and ind_vec:
-            #        # NOTE: _gather_based_index_select handles the broadcasting
-            #        # NOTE: This gather will now need to be vectorized.
-            #        new_s = tensor_s._gather_based_index_select(dim=op.dim, index=index_s)
+            else:
+                if ten_vec and ind_vec:
+                    # NOTE: _gather_based_index_select handles the broadcasting
+                    # NOTE: This gather will now need to be vectorized.
+                    new_s = tensor_s._gather_based_index_select(dim=op.dim, index=index_s)
 
             if new_s:
                 dg.move_dependents(op, new_s.op)
@@ -106,8 +106,8 @@ class Vectorize(Transformation):
     def __init__(self, ctx: CompilationCtx):
         super().__init__(ctx)
 
-        self.op_vectorizations: Dict[
-            TensorOp, Tuple[List[ie.Symbol], List[ie.IntIndexValueLike]]
+        self.op_vectorizations: dict[
+            TensorOp, tuple[list[ie.Symbol], list[ie.IntIndexValueLike]]
         ] = defaultdict(lambda: ([], []))
 
     def _vectorize_all_ops(
@@ -115,9 +115,9 @@ class Vectorize(Transformation):
         dg: PDG,
         dim: ie.Symbol,
         size: ie.IntIndexValueLike,
-        op_mapping: Dict[TensorOp, TensorOp],
-        op_vectorizations: Dict[TensorOp, Tuple[List[ie.Symbol], List[ie.IntIndexValueLike]]],
-        ops_to_vectorize: Set[TensorOp],
+        op_mapping: dict[TensorOp, TensorOp],
+        op_vectorizations: dict[TensorOp, tuple[list[ie.Symbol], list[ie.IntIndexValueLike]]],
+        ops_to_vectorize: set[TensorOp],
     ) -> None:
         remaining_ops = list(ops_to_vectorize)
 
@@ -153,10 +153,10 @@ class Vectorize(Transformation):
     def vectorize_edges(  # noqa: C901
         self,
         dg: PDG,
-        op_mapping: Dict[TensorOp, TensorOp],
+        op_mapping: dict[TensorOp, TensorOp],
         dim: ie.Symbol,
         size: ie.IntIndexValueLike,
-        ops_to_vectorize: Set[TensorOp],
+        ops_to_vectorize: set[TensorOp],
     ) -> None:
         for snk, src, data in dg.get_all_edges():
             for k, v in snk.tags.items():
@@ -240,7 +240,7 @@ class Vectorize(Transformation):
         snk: TensorOp,
         src: TensorOp,
         dep_data: DependencyData,
-        ops_to_vectorize: Set[TensorOp],
+        ops_to_vectorize: set[TensorOp],
     ) -> None:
         # If, for some reason, snk can't be vectorized, we need to make it access
         # it's vectorized dependency src at the current dim value.
@@ -269,7 +269,7 @@ class Vectorize(Transformation):
         elif dim_index_expr.is_constant():
             # We insert an index_op to perform the indexing
             new_e = dep_data.expr.skip_idx(dim_idx)
-            symb_t = _get_symbolic_tensor_for_op_output(dg, src, dep_data.src_out_idx)
+            symb_t = get_symbolic_tensor_for_op_output(dg, src, dep_data.src_out_idx)
             # NOTE: 0 because the newly vectorized dim will be the first dim of src
             indexed = symb_t.index_select(dim=0, index=lift_to_symbolic_tensor(dim_index_expr))
             new_dep_data = DependencyData(new_e, OpOutId(0), dep_data.sink_in_idx, dep_data.cond)
@@ -282,7 +282,7 @@ class Vectorize(Transformation):
         else:
             # NOTE: recently changed, adding replace_idx.
             new_e = dep_data.expr.replace_idx(dim_idx, dim)
-            symb_t = _get_symbolic_tensor_for_op_output(dg, src, dep_data.src_out_idx)
+            symb_t = get_symbolic_tensor_for_op_output(dg, src, dep_data.src_out_idx)
 
             # NOTE: 0 because the newly vectorized dim will be the first dim
             if isinstance(dim_index_expr, ie.Slice):
@@ -351,7 +351,7 @@ class Vectorize(Transformation):
         if (not src_vectorized) and slices_before_vec_dim == 0:
             old_e = old_dep_data.expr.members[dim_idx]
             if old_e.struct_eq(ie.Slice(dim, dim + 1)):
-                stensor = _get_symbolic_tensor_for_op_output(dg, new_src, old_dep_data.src_out_idx)
+                stensor = get_symbolic_tensor_for_op_output(dg, new_src, old_dep_data.src_out_idx)
                 stensor = stensor.unsqueeze(0)
                 self.op_vectorizations[stensor.op][0].append(dim)
                 self.op_vectorizations[stensor.op][1].append(size)
@@ -360,7 +360,7 @@ class Vectorize(Transformation):
             dg.add_edge(new_snk, new_src, new_dep_data)
             return
 
-        stensor = _get_symbolic_tensor_for_op_output(dg, new_src, old_dep_data.src_out_idx)
+        stensor = get_symbolic_tensor_for_op_output(dg, new_src, old_dep_data.src_out_idx)
         stensor = stensor.symbolic_index(new_dep_data.expr)
 
         # For each dimension in the tensor, assign each a number starting from 0
@@ -405,7 +405,7 @@ class Vectorize(Transformation):
         snk: TensorOp,
         src: TensorOp,
         dep_data: DependencyData,
-        ops_to_vectorize: Set[TensorOp],
+        ops_to_vectorize: set[TensorOp],
     ) -> None:
         e = dep_data.expr
 
@@ -438,7 +438,7 @@ class Vectorize(Transformation):
             print("dep_data traceback:")
             print(dep_data.creation_traceback)
             print()
-            raise ValueError("Expected %s but got %s" % (dim, e.members[dim_idx]))
+            raise ValueError(f"Expected {dim} but got {e.members[dim_idx]}")
 
         new_e = e.replace_idx(
             dim_idx, ie.slice_(ie.ConstInt(0), dim.as_bound().partial_eval(dg.static_bounds))
@@ -461,7 +461,7 @@ class Vectorize(Transformation):
         vec_snk: TensorOp,
         src: TensorOp,
         dep_data: DependencyData,
-        ops_to_vectorize: Set[TensorOp],
+        ops_to_vectorize: set[TensorOp],
     ) -> None:
         # case = isinstance(snk, top.CatOp) and isinstance(src, top.ConstOp)
         # I think, if is_index_src_tensor_param is true and the index param has been vec,
@@ -486,7 +486,7 @@ class Vectorize(Transformation):
                 dg.add_edge(vec_snk, src, dep_data)
                 return
 
-        symb_t = _get_symbolic_tensor_for_op_output(dg, src, dep_data.src_out_idx)
+        symb_t = get_symbolic_tensor_for_op_output(dg, src, dep_data.src_out_idx)
         symb_t = symb_t.symbolic_index(dep_data.expr)
         expanded = symb_t.unsqueeze(0).expand(symb_t.shape.prepend_dim(size))
         self.op_vectorizations[expanded.op][0].append(dim)
@@ -514,7 +514,7 @@ class Vectorize(Transformation):
         snk: TensorOp,
         src: TensorOp,
         dep_data: DependencyData,
-        ops_to_vectorize: Set[TensorOp],
+        ops_to_vectorize: set[TensorOp],
     ) -> None:
         e = dep_data.expr
 
@@ -537,7 +537,7 @@ class Vectorize(Transformation):
     ) -> bool:
         return any(d.struct_eq(dim) for d in self.op_vectorizations[op][0])
 
-    def _run(self) -> Tuple[PDG, bool]:  # noqa: C901
+    def _run(self) -> tuple[PDG, bool]:  # noqa: C901
         new_dg = self.copy_dg()
         glob.set_active_dg(new_dg)
         new_ctx: CompilationCtx = dataclasses.replace(self.ctx, dg=new_dg)
@@ -548,11 +548,17 @@ class Vectorize(Transformation):
             dim_vectorizations_done = 0
             # Mapping between the original ops in the graph, and their new vectorized versions
             # for this dimension
-            op_mapping: Dict[TensorOp, TensorOp] = {}
+            op_mapping: dict[TensorOp, TensorOp] = {}
 
             # dim_idx = new_dg.universe.find_variable_index(dim)
             # if dim_idx != 2:
             #    continue
+
+            if not self.ctx.exec_cfg.enable_non_trivial_vectorization:
+                # NOTE: If we are only allowed to vectorize trivial dimensions,
+                # we skip if the dimension is not trivial.
+                if not is_trivial_dim(new_dg, dim):
+                    continue
 
             ops_to_vectorize = get_ops_to_vectorize(new_dg, dim)
 
@@ -565,7 +571,6 @@ class Vectorize(Transformation):
             if len(ops_to_vectorize) == 0:
                 continue
 
-            # TODO: remove once we move the scatter add code too
             _promote_index_ops(new_dg, ops_to_vectorize)
 
             bound = dim.as_bound()

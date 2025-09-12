@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import copy
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Mapping, Optional, Protocol, Union
+from collections.abc import Mapping
+from typing import Any, Optional, Protocol, Union
 
 from tempo.api.recurrent_tensor import RecurrentTensor
 from tempo.core.domain import Domain, DomainLike
@@ -12,13 +13,14 @@ from tempo.core.shape import ShapeLike
 
 # type declaration of function initializer
 class InitFn(Protocol):
-    def __call__(self, *, shape: ShapeLike, dtype: DataType, domain: DomainLike) -> RecurrentTensor:
-        pass
+    def __call__(
+        self, *, shape: ShapeLike, dtype: DataType, domain: DomainLike
+    ) -> RecurrentTensor: ...
 
 
 # InitFn = Callable[[ShapeLike, DataType, DomainLike], RecurrentTensor]
 MaybeInitFn = Optional[InitFn]
-MaybeInitFnList = Optional[List[MaybeInitFn]]
+MaybeInitFnList = Optional[list[MaybeInitFn]]
 MaybeInitFnOrList = Union[MaybeInitFn, MaybeInitFnList]
 
 
@@ -28,9 +30,9 @@ class Module(ABC):
         domain: DomainLike = None,  # TODO: eventually, rename to update_domain
         independent_domain: DomainLike = None,
     ) -> None:
-        self._reg_parameters: List[RecurrentTensor] = []
-        self._parameters: List[RecurrentTensor] = []
-        self._buffers: List[RecurrentTensor] = []
+        self._reg_parameters: list[RecurrentTensor] = []
+        self._parameters: list[RecurrentTensor] = []
+        self._buffers: list[RecurrentTensor] = []
 
         if independent_domain is None:
             independent_domain = Domain.empty()
@@ -48,7 +50,7 @@ class Module(ABC):
         raise NotImplementedError
 
     @property
-    def reg_parameters(self) -> List[RecurrentTensor]:
+    def reg_parameters(self) -> list[RecurrentTensor]:
         params = [*self._reg_parameters]
         for module in self.__dict__.values():
             if isinstance(module, Module):
@@ -56,7 +58,7 @@ class Module(ABC):
         return params
 
     @property
-    def parameters(self) -> List[RecurrentTensor]:
+    def parameters(self) -> list[RecurrentTensor]:
         params = [*self._parameters]
         for module in self.__dict__.values():
             if isinstance(module, Module):
@@ -64,7 +66,7 @@ class Module(ABC):
         return params
 
     @property
-    def buffers(self) -> List[RecurrentTensor]:
+    def buffers(self) -> list[RecurrentTensor]:
         buffers = [*self._buffers]
         for module in self.__dict__.values():
             if isinstance(module, Module):
@@ -117,7 +119,7 @@ class Module(ABC):
     def state_dict(self) -> Mapping[str, Any]:
         # clz_name = self.__class__.__name__
 
-        ret: Dict[str, Any] = {}
+        ret: dict[str, Any] = {}
         for i, param in enumerate(self._parameters):
             full_name = f"param_{i}"
             ret[full_name] = param
@@ -195,21 +197,21 @@ class Sequential(Module):
         return x
 
     @property
-    def parameters(self) -> List[RecurrentTensor]:
+    def parameters(self) -> list[RecurrentTensor]:
         params = []
         for module in self.modules:
             params.extend(module.parameters)
         return params
 
     @property
-    def reg_parameters(self) -> List[RecurrentTensor]:
+    def reg_parameters(self) -> list[RecurrentTensor]:
         params = []
         for module in self.modules:
             params.extend(module.reg_parameters)
         return params
 
     @property
-    def buffers(self) -> List[RecurrentTensor]:
+    def buffers(self) -> list[RecurrentTensor]:
         buffers = []
         for module in self.modules:
             buffers.extend(module.buffers)

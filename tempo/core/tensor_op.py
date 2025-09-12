@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import traceback
 from abc import ABC, abstractmethod, abstractproperty
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Sequence, Set
+from typing import Any
 
 import optree
 
 from tempo.core import index_expr as ie
 from tempo.core.datatypes import OpId
+from tempo.core.debug_utils import get_creation_traceback
 from tempo.core.domain import Domain
 from tempo.core.dtype import DataType
 from tempo.core.shape import Shape
@@ -21,16 +22,17 @@ log = logger.get_logger(__name__)
 class TensorOp(ABC):
     op_id: OpId
     domain: Domain = field(repr=True)
-    tags: Dict[str, Any] = field(repr=False)
-    _creation_traceback: List[str] = field(
+    tags: dict[str, Any] = field(repr=False)
+    _creation_traceback: list[str] = field(
         init=False,
-        default_factory=lambda: traceback.format_stack()[:-1],
         repr=False,
         hash=False,
+        compare=False,
+        default_factory=lambda: get_creation_traceback(),
     )
 
     @property
-    def flat_tags(self) -> Dict[str, List[Any]]:
+    def flat_tags(self) -> dict[str, list[Any]]:
         return {k: sorted(set(optree.tree_flatten(v)[0])) for k, v in self.tags.items()}
 
     @property
@@ -88,12 +90,10 @@ class TensorOp(ABC):
         return hash((type(self), self.op_id))
 
     @abstractmethod
-    def infer_output_shapes(self, input_shapes: Sequence[Shape]) -> Sequence[Shape]:
-        pass
+    def infer_output_shapes(self, input_shapes: Sequence[Shape]) -> Sequence[Shape]: ...
 
     @abstractmethod
-    def infer_output_dtypes(self, input_dtypes: Sequence[DataType]) -> Sequence[DataType]:
-        pass
+    def infer_output_dtypes(self, input_dtypes: Sequence[DataType]) -> Sequence[DataType]: ...
 
     @property
     def is_source(self) -> bool:
@@ -122,5 +122,5 @@ class TensorOp(ABC):
     def num_outputs(self) -> int:
         raise NotImplementedError
 
-    def vars_used(self) -> Set[ie.Symbol]:
+    def vars_used(self) -> set[ie.Symbol]:
         return set()

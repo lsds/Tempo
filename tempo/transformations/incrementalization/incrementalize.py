@@ -1,9 +1,7 @@
-from typing import Tuple
-
 from tempo.core.dependence_graph import PDG
 from tempo.core.utils import bytes_to_human_readable
 from tempo.transformations.compilation_pass import CompilationCtx, Transformation
-from tempo.transformations.incrementalization.incrementalization_common import (
+from tempo.transformations.incrementalization.incrementalization_mechanism import (
     perform_incrementalization,
 )
 from tempo.transformations.incrementalization.incrementalization_policy import (  # type: ignore
@@ -20,7 +18,7 @@ class Incrementalize(Transformation):
         super().__init__(ctx)
         self.current_compilation_ctx = ctx
 
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         inc_ops_count = 0
         pad_ops_count = 0
         new_dg = self.ctx.dg

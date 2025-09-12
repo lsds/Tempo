@@ -1,5 +1,6 @@
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
@@ -8,14 +9,15 @@ from tempo.core.datatypes import OpInId, OpOutId
 from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.transformations.compilation_pass import Transformation
 from tempo.transformations.incrementalization.apply_masks import apply_mask_to_edge, op_needs_mask
-from tempo.transformations.incrementalization.incrementalization_common import (
+from tempo.transformations.incrementalization.inc_core import (
     IncKind,
     IncRoundCtx,
     PadInfo,
+)
+from tempo.transformations.incrementalization.incrementalization_mechanism import (
     create_inc_symbol_and_block_idxs,
     perform_incrementalization,
 )
-from tempo.transformations.optimizer.dead_code_elimination import DeadCodeElimination
 from tempo.utils import isl as isl_utils
 from tempo.utils import logger
 from tempo.utils.dg_utils import (
@@ -48,9 +50,7 @@ class DynDimEliminationInfo:
     masks_needed: Sequence[MaskInfo]
 
 
-def get_dyn_dim_idx(
-    expr: ie.IndexSequence, static_bounds: Mapping[ie.Symbol, int]
-) -> Optional[int]:
+def get_dyn_dim_idx(expr: ie.IndexSequence, static_bounds: Mapping[ie.Symbol, int]) -> int | None:
     for i, m in enumerate(expr.members):
         val_tuple = m.evaluate_shape(static_bounds)
         if len(val_tuple) == 0:
@@ -82,13 +82,13 @@ def find_dim_elimination_points(
     dep_data: DependencyData,
     src_op: top.TensorOp,
     dim: int,
-) -> Tuple[
-    List[Tuple[top.TensorOp, int, OpInId]],
-    List[MaskInfo],
+) -> tuple[
+    list[tuple[top.TensorOp, int, OpInId]],
+    list[MaskInfo],
 ]:
     # Tracks the ops that eliminate dim
-    eliminating_ops: List[Tuple[top.TensorOp, int, OpInId]] = []
-    masks_to_apply: List[MaskInfo] = []
+    eliminating_ops: list[tuple[top.TensorOp, int, OpInId]] = []
+    masks_to_apply: list[MaskInfo] = []
 
     def should_recurr(
         dg: PDG,
@@ -106,10 +106,10 @@ def find_dim_elimination_points(
         op: top.TensorOp,
         edge_data: DependencyData,
         src_op: top.TensorOp,
-        op_out_dim: Dict[OpOutId, int],
+        op_out_dim: dict[OpOutId, int],
         op_in_dim: int,
         state: Any,
-    ) -> Tuple[PDG, Any]:
+    ) -> tuple[PDG, Any]:
         needs_mask = op_needs_mask(dg, op, edge_data, op_in_dim)
 
         if needs_mask:
@@ -139,8 +139,8 @@ def find_dim_elimination_points(
     return list(set(eliminating_ops)), list(set(masks_to_apply))
 
 
-def find_all_relevant_pad_infos(dg: PDG, inc_ctx: IncRoundCtx, m: MaskInfo) -> List[PadInfo]:
-    pad_infos: Dict[top.PadOp, PadInfo] = {}
+def find_all_relevant_pad_infos(dg: PDG, inc_ctx: IncRoundCtx, m: MaskInfo) -> list[PadInfo]:
+    pad_infos: dict[top.PadOp, PadInfo] = {}
 
     if m.op_to_mask not in inc_ctx.op_mapping:
         return []
@@ -166,9 +166,9 @@ def find_all_relevant_pad_infos(dg: PDG, inc_ctx: IncRoundCtx, m: MaskInfo) -> L
         dg: PDG,
         op: top.TensorOp,
         op_out_dim: int,
-        op_in_dims: Dict[OpInId, int],
+        op_in_dims: dict[OpInId, int],
         ctx: Any,
-    ) -> Tuple[PDG, Any]:
+    ) -> tuple[PDG, Any]:
         if isinstance(op, top.PadOp) and op.dim == op_out_dim:
             assert op in inc_ctx.padding_applied
             pad_infos[op] = inc_ctx.padding_applied[op]
@@ -190,8 +190,8 @@ def find_all_relevant_pad_infos(dg: PDG, inc_ctx: IncRoundCtx, m: MaskInfo) -> L
 # TODO: maybe also capture the paths from elim to srcs?
 def find_all_dependency_dynamic_ops(
     dg: PDG, elim_op: top.TensorOp, in_id: OpInId, in_dim: int
-) -> Set[top.TensorOp]:
-    dynamic_ops: Set[top.TensorOp] = set()
+) -> set[top.TensorOp]:
+    dynamic_ops: set[top.TensorOp] = set()
 
     dynamic_ops.add(elim_op)
 
@@ -222,9 +222,9 @@ def find_all_dependency_dynamic_ops(
         dg: PDG,
         op: top.TensorOp,
         op_out_dim: int,
-        op_in_dims: Dict[OpInId, int],
+        op_in_dims: dict[OpInId, int],
         ctx: Any,
-    ) -> Tuple[PDG, Any]:
+    ) -> tuple[PDG, Any]:
         dynamic_ops.add(op)
         return dg, ctx
 
@@ -242,18 +242,18 @@ def find_all_dependency_dynamic_ops(
 
 def setup_round_ctx(
     ctx: CompilationCtx,
-    inc_dims_and_input_ids_grouped_by_start_op: Dict[top.TensorOp, List[Tuple[OpInId, int]]],
+    inc_dims_and_input_ids_grouped_by_start_op: dict[top.TensorOp, list[tuple[OpInId, int]]],
     dim_size: ie.IntIndexValue,
     round_num: int,
     block_size: int,
-    all_dyn_ops: Set[top.TensorOp],
+    all_dyn_ops: set[top.TensorOp],
 ) -> IncRoundCtx:
     # NOTE: eg dim_size = t+1-0 or T-t.
     num_blocks = ie.Ceil((dim_size) / block_size)
     num_blocks = isl_utils.simplify_int_index_value(num_blocks, known_symbols=ctx.dg.static_bounds)
 
     inc_var, block_idx = create_inc_symbol_and_block_idxs(
-        ctx.dg, round_num, block_size, num_blocks, inc_var_name="ds"
+        ctx.dg, round_num, block_size, num_blocks, inc_var_name="ds", allow_reuse_symbol=False
     )
 
     inc_start_ops = set(inc_dims_and_input_ids_grouped_by_start_op.keys())
@@ -286,7 +286,7 @@ class StatifyingIncrementalize(Transformation):
     def __init__(self, ctx: CompilationCtx):
         self.ctx = ctx
 
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         # Keeps track of how many incrementalisations have been carried out
 
         op_inc_count = 0
@@ -309,7 +309,7 @@ class StatifyingIncrementalize(Transformation):
                 break
 
             # NOTE: Now, organize them by dynamic dim size.
-            dim_infos_by_size: Dict[ie.IntIndexValue, List[DynDimEliminationInfo]] = {}
+            dim_infos_by_size: dict[ie.IntIndexValue, list[DynDimEliminationInfo]] = {}
             for info in all_elimination_infos:
                 dim_infos_by_size.setdefault(info.dyn_dim_size, []).append(info)
 
@@ -336,8 +336,8 @@ class StatifyingIncrementalize(Transformation):
 
             block_size = int(min(self.ctx.exec_cfg.inc_statify_block_size, max_val))
 
-            inc_dims_and_input_ids_grouped_by_start_op: Dict[
-                top.TensorOp, Set[Tuple[OpInId, int]]
+            inc_dims_and_input_ids_grouped_by_start_op: dict[
+                top.TensorOp, set[tuple[OpInId, int]]
             ] = {}
             for info in chosen_infos:
                 inc_dims_and_input_ids_grouped_by_start_op.setdefault(info.elim_op, set()).add(
@@ -390,10 +390,10 @@ class StatifyingIncrementalize(Transformation):
             #    CompilationCtx(new_dg, self.ctx.analysis_ctx, self.ctx.exec_cfg),
             #    self.ctx.exec_cfg.path + f"statifying_incrementalize_{round_num}",
             # ).render()
-            new_ctx_, _, _ = DeadCodeElimination(
-                CompilationCtx(new_dg, self.ctx.analysis_ctx, self.ctx.exec_cfg)
-            ).run()
-            new_dg = new_ctx_.dg
+            # new_ctx_, _, _ = DeadCodeElimination(
+            #    CompilationCtx(new_dg, self.ctx.analysis_ctx, self.ctx.exec_cfg)
+            # ).run()
+            # new_dg = new_ctx_.dg
             from tempo.core import global_objects as glob
 
             glob.set_active_dg(new_dg)
@@ -417,7 +417,7 @@ class StatifyingIncrementalize(Transformation):
         dyn_dim_snk: top.TensorOp,
         dyn_dim_src: top.TensorOp,
         dyn_dim_dep: DependencyData,
-    ) -> Tuple[Optional[ie.Symbol], Optional[int]]:
+    ) -> tuple[ie.Symbol | None, int | None]:
         dyn_temporal_dim_idx = get_dyn_dim_idx(dyn_dim_dep.expr, new_dg.static_bounds)
 
         # NOTE: First check for dynamism in the edge
@@ -451,12 +451,12 @@ class StatifyingIncrementalize(Transformation):
                     snk_side_spatial_dim = dim + dyn_dim_dep.expr.num_slices()
                     return dyn_dim_src_var, snk_side_spatial_dim
             elif isinstance(dyn_dim_src, top.IndexSelectOp):
-                pass  # TODO
+                ...  # TODO
 
         return None, None
 
-    def _get_all_dyn_dim_eliminations(self, new_dg: PDG) -> List[DynDimEliminationInfo]:
-        elimination_infos: List[DynDimEliminationInfo] = []
+    def _get_all_dyn_dim_eliminations(self, new_dg: PDG) -> list[DynDimEliminationInfo]:
+        elimination_infos: list[DynDimEliminationInfo] = []
 
         # NOTE: (dim_size, elim_op, dim, in_idx)
         for dyn_dim_snk, dyn_dim_src, dyn_dim_dep in new_dg.get_all_edges():

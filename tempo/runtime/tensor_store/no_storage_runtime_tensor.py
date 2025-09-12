@@ -1,11 +1,9 @@
-from typing import Tuple, Union
-
 from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT, TensorId
+from tempo.core.dl_backend import DLBackend
 from tempo.core.domain import Domain
 from tempo.core.dtype import DataType
 from tempo.core.shape import Shape
-from tempo.runtime.backends.backend import DLBackend
 from tempo.runtime.tensor_store.tensor_store import RuntimeTensor
 from tempo.utils import logger
 
@@ -45,41 +43,32 @@ class NoStorageRuntimeTensor(RuntimeTensor[BackendTensorT]):
         return self.tensor_id == other.tensor_id
 
     def __getitem__(  # noqa: C901
-        self, item: Tuple[Union[int, slice], ...]
+        self, item: tuple[int | slice, ...]
     ) -> BackendTensorT:
         raise NotImplementedError
 
-    def all_int_fast_path(self, item: Tuple[Union[int, slice], ...]) -> BackendTensorT:
+    def all_int_fast_path(self, item: tuple[int | slice, ...]) -> BackendTensorT:
         raise NotImplementedError
 
     def __setitem__(  # noqa: C901
-        self, item: Tuple[Union[int, slice], ...], value: BackendTensorT
-    ) -> None:
-        pass
+        self, item: tuple[int | slice, ...], value: BackendTensorT
+    ) -> None: ...
 
-    def all_int_fast_path_set(self, item: Tuple[int, ...], value: BackendTensorT) -> None:
-        pass
+    def all_int_fast_path_set(self, item: tuple[int, ...], value: BackendTensorT) -> None: ...
 
-    def flush(self) -> None:
-        pass
+    def flush(self) -> None: ...
 
-    def deallocate_point(self, item: Tuple[int, ...]) -> None:
-        pass
+    def deallocate_point(self, item: tuple[int, ...]) -> None: ...
 
-    def offload_point(self, item: Tuple[int, ...]) -> None:
-        pass
+    def offload_point(self, item: tuple[int, ...]) -> None: ...
 
-    def fetch_point(self, item: Tuple[int, ...]) -> None:
-        pass
+    def fetch_point(self, item: tuple[int, ...]) -> None: ...
 
-    def deallocate_block(self, block: Tuple[Union[int, slice], ...]) -> None:
-        pass
+    def deallocate_block(self, block: tuple[int | slice, ...]) -> None: ...
 
-    def offload_block(self, block: Tuple[Union[int, slice], ...]) -> None:
-        pass
+    def offload_block(self, block: tuple[int | slice, ...]) -> None: ...
 
-    def fetch_block(self, block: Tuple[Union[int, slice], ...]) -> None:
-        pass
+    def fetch_block(self, block: tuple[int | slice, ...]) -> None: ...
 
     def mem_usage_bytes(self) -> int:
         return 0

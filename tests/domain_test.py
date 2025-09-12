@@ -4,7 +4,7 @@ from tempo.core import global_objects as glob
 from tempo.core import index_expr as ie
 from typing import Dict
 
-def mock_dg(domain: Domain, bounds: Dict[ie.Symbol, int]) -> PDG:
+def mock_dg(domain: Domain, bounds: dict[ie.Symbol, int]) -> PDG:
     class MockDG:
         universe = domain
 

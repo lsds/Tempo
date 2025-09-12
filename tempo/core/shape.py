@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import typing
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterator, List, Mapping, Sequence, Tuple, Union
+from typing import Any, Union
 
 from tempo.core import index_expr as ie
 from tempo.utils.common import as_seq
@@ -11,7 +12,7 @@ from tempo.utils.common import as_seq
 
 def _try_resolve_index_value(
     dim: ie.IntIndexValue, symbols: Mapping[ie.Symbol, int]
-) -> Union[int, ie.IntIndexValue]:
+) -> int | ie.IntIndexValue:
     try:
         return dim.evaluate(symbols)
     except KeyError:
@@ -83,14 +84,14 @@ def broadcast(*shapes: ShapeLike) -> Shape:
     return Shape(tuple(final_shape))
 
 
-def unsq_align_shapes_1_pad_right(shapes: Tuple[ShapeLike, ...]) -> List[Shape]:
+def unsq_align_shapes_1_pad_right(shapes: tuple[ShapeLike, ...]) -> list[Shape]:
     shapes = tuple(Shape.from_(shape) for shape in shapes)
     target_length = max(len(shape) for shape in shapes)
 
     return [Shape(shape._shape + (1,) * (target_length - len(shape))) for shape in shapes]
 
 
-def unsq_align_shapes_1_pad_left(shapes: Tuple[ShapeLike, ...]) -> List[Shape]:
+def unsq_align_shapes_1_pad_left(shapes: tuple[ShapeLike, ...]) -> list[Shape]:
     shapes = tuple(Shape.from_(shape) for shape in shapes)
 
     target_length = max(len(shape) for shape in shapes)
@@ -99,8 +100,8 @@ def unsq_align_shapes_1_pad_left(shapes: Tuple[ShapeLike, ...]) -> List[Shape]:
 
 def _bcast_compute_final_shape(
     padded_shapes: Sequence[Shape],
-) -> Sequence[Union[int, ie.IntIndexValue]]:
-    final_shape: List[Union[int, ie.IntIndexValue]] = []
+) -> Sequence[int | ie.IntIndexValue]:
+    final_shape: list[int | ie.IntIndexValue] = []
     # TODO why are we walking backwards?
     for dim in range(1, len(padded_shapes[0]) + 1):
         dimension_values = [shape._shape[-dim] for shape in padded_shapes]
@@ -112,8 +113,8 @@ def _bcast_compute_final_shape(
 
 
 def handle_symbolic_dimensions(
-    dimension_values: Sequence[Union[int, ie.IntIndexValue]],
-) -> Union[int, ie.IntIndexValue]:
+    dimension_values: Sequence[int | ie.IntIndexValue],
+) -> int | ie.IntIndexValue:
     index_values = [value for value in dimension_values if isinstance(value, ie.IntIndexValue)]
     if not all(value.logical_eq(index_values[0]) for value in index_values):
         raise ValueError(f"Symbolic dimensions mismatch during broadcast: {index_values}")
@@ -123,7 +124,7 @@ def handle_symbolic_dimensions(
     return index_values[0]
 
 
-def handle_integer_dimensions(dimension_values: List[int]) -> int:
+def handle_integer_dimensions(dimension_values: list[int]) -> int:
     max_dim = max(dimension_values)
     if not all(dim == max_dim or dim == 1 for dim in dimension_values):
         raise ValueError(f"Dimension mismatch during broadcast, {dimension_values}")
@@ -132,23 +133,25 @@ def handle_integer_dimensions(dimension_values: List[int]) -> int:
 
 @dataclass(frozen=True, eq=False)
 class Shape:
-    _shape: Tuple[Union[ie.IntIndexValue, int], ...]
+    _shape: tuple[ie.IntIndexValue | int, ...]
 
     @staticmethod
-    def from_(shape: ShapeLike) -> Shape:
+    def from_(shape: ShapeLike, simplify: bool = True) -> Shape:
         if shape is None:
             return Shape(())
         if isinstance(shape, Shape):
-            return shape.simplify()
+            return shape.simplify() if simplify else shape
         if type(shape) is int:
             return StaticShape((shape,))
         elif type(shape) is tuple or type(shape) is list:
             if all(isinstance(d, (int, ie.ConstInt)) for d in shape):
-                sh = typing.cast(Tuple[Union[ie.ConstInt, int], ...], shape)
-                return StaticShape(
-                    tuple((d.const if isinstance(d, ie.ConstInt) else d) for d in sh)
-                )
-            return Shape(tuple(shape)).simplify()
+                sh_tup = typing.cast(tuple[Union[ie.ConstInt, int], ...], shape)
+                return StaticShape(tuple(int(d) for d in sh_tup))
+
+            sh = Shape(tuple(shape))
+            if simplify:
+                sh = sh.simplify()
+            return sh
         raise ValueError(f"Should be unreachable: {shape}, {type(shape)}")
 
     def __add__(self, other: ShapeLike) -> Shape:
@@ -161,7 +164,7 @@ class Shape:
     def __getitem__(self, item: Any) -> Shape:
         return Shape(as_seq(self._shape[item]))  # type: ignore
 
-    def __iter__(self) -> Iterator[Union[ie.IntIndexValue, int]]:
+    def __iter__(self) -> Iterator[ie.IntIndexValue | int]:
         return iter(self._shape)
 
     def __repr__(self) -> str:
@@ -212,7 +215,7 @@ class Shape:
     def is_scalar(self) -> bool:
         return len(self) == 0
 
-    def is_shape_without_extra_dim(self, maybe_shape_with_extra_one: Shape) -> Tuple[bool, int]:
+    def is_shape_without_extra_dim(self, maybe_shape_with_extra_one: Shape) -> tuple[bool, int]:
         if len(maybe_shape_with_extra_one) != len(self) + 1:
             return False, -1
 
@@ -225,7 +228,7 @@ class Shape:
 
         return False, -1
 
-    def prepend_dim(self, dim: Union[int, ie.IntIndexValue]) -> Shape:
+    def prepend_dim(self, dim: int | ie.IntIndexValue) -> Shape:
         return Shape.from_((dim,) + self._shape)
 
     def drop_first_dim(self) -> Shape:
@@ -239,7 +242,7 @@ class Shape:
             )
         )
 
-    def evaluate(self, symbols: Mapping[ie.Symbol, int]) -> Tuple[int, ...]:
+    def evaluate(self, symbols: Mapping[ie.Symbol, int]) -> tuple[int, ...]:
         inner = []
 
         for dim in self._shape:
@@ -255,7 +258,7 @@ class Shape:
     def has_negative_dim(self) -> bool:
         return any(isinstance(dim, int) and dim < 0 for dim in self._shape)
 
-    def vars_used(self) -> List[ie.Symbol]:
+    def vars_used(self) -> list[ie.Symbol]:
         return list(
             {v for dim in self._shape if isinstance(dim, ie.IntIndexValue) for v in dim.vars_used()}
         )
@@ -270,6 +273,9 @@ class Shape:
         )
 
     def simplify(self) -> Shape:
+        if self.is_static():
+            return self
+
         import tempo.core.global_objects as glob
         from tempo.utils.isl import simplify_shape
 
@@ -291,19 +297,8 @@ class Shape:
     def is_static(self) -> bool:
         import tempo.core.global_objects as glob
 
-        if glob.has_active_dg():
-            dg = glob.get_active_dg()
-            return all(
-                type(dim) is int
-                or (
-                    dg is not None
-                    and isinstance(dim, ie.IntIndexValue)
-                    and dim.try_eval(dg.static_bounds)
-                )
-                for dim in self._shape
-            )
-        else:
-            return all(type(dim) is int for dim in self._shape)
+        bounds = glob.get_active_dg().static_bounds if glob.has_active_dg() else {}
+        return all(type(ie.lift_to_int_ie(dim).try_eval(bounds)) is int for dim in self._shape)
 
     def as_static(self) -> StaticShape:
         assert self.is_static()
@@ -313,7 +308,7 @@ class Shape:
         bounds = glob.get_active_dg().static_bounds if glob.has_active_dg() else {}
         return StaticShape(self.evaluate(bounds))  # type: ignore
 
-    def at(self, index: int) -> Union[int, ie.IntIndexValue]:
+    def at(self, index: int) -> int | ie.IntIndexValue:
         return self._shape[index]
 
     def int_at(self, index: int) -> int:
@@ -321,7 +316,7 @@ class Shape:
         assert type(x) is int, f"Expected int, got {x}"
         return x
 
-    def prod(self) -> Union[int, ie.IntIndexValue]:
+    def prod(self) -> int | ie.IntIndexValue:
         # This is complicated, but just aims to compute the product of the shape, pre-computing
         # the static part completely.
 
@@ -359,7 +354,7 @@ class Shape:
 
 @dataclass(frozen=True, eq=False)
 class StaticShape(Shape):
-    _shape: Tuple[int, ...]
+    _shape: tuple[int, ...]
 
     @staticmethod
     def from_(shape: StaticShapeLike) -> StaticShape:  # type: ignore
@@ -369,7 +364,7 @@ class StaticShape(Shape):
             return StaticShape((shape,))
         elif isinstance(shape, Sequence):
             if all(isinstance(d, (int, ie.ConstInt)) for d in shape):
-                sh = typing.cast(Tuple[Union[ie.ConstInt, int], ...], shape)
+                sh = typing.cast(tuple[Union[ie.ConstInt, int], ...], shape)
                 return StaticShape(
                     tuple((d.const if isinstance(d, ie.ConstInt) else d) for d in sh)
                 )
@@ -395,7 +390,7 @@ class StaticShape(Shape):
     def __iter__(self) -> Iterator[int]:
         return iter(self._shape)
 
-    def prepend_dim(self, dim: Union[int, ie.IntIndexValue]) -> Shape:
+    def prepend_dim(self, dim: int | ie.IntIndexValue) -> Shape:
         if isinstance(dim, ie.IntIndexValue):
             return Shape((dim,) + self._shape)
         return StaticShape((dim,) + self._shape)
@@ -406,7 +401,7 @@ class StaticShape(Shape):
     def has_negative_dim(self) -> bool:
         return any(dim < 0 for dim in self._shape)
 
-    def vars_used(self) -> List[ie.Symbol]:
+    def vars_used(self) -> list[ie.Symbol]:
         return []
 
     def is_dynamic(self) -> bool:

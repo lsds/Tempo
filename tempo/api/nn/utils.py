@@ -1,4 +1,4 @@
-from typing import Sequence, Tuple
+from collections.abc import Sequence
 
 from tempo.api.recurrent_tensor import MaybeRecurrentTensor, RecurrentTensor
 
@@ -8,7 +8,7 @@ def clip_norm(
     max_norm: MaybeRecurrentTensor,
     norm_type: MaybeRecurrentTensor = 2.0,
     eps: MaybeRecurrentTensor = 1e-6,
-) -> Tuple[Sequence[RecurrentTensor], RecurrentTensor]:
+) -> tuple[Sequence[RecurrentTensor], RecurrentTensor]:
     """This assumes grads are already reduced across the batch and time dimensions.
 
     Args:

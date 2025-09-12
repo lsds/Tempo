@@ -1,5 +1,3 @@
-from typing import Optional, Set, Tuple
-
 from tempo.core import tensor_ops as top
 from tempo.core.datatypes import OpId
 from tempo.core.dependence_graph import PDG
@@ -13,7 +11,7 @@ log = logger.get_logger(__name__)
 def _is_dead(
     dg: PDG,
     node: top.TensorOp,
-    visited: Optional[Set[OpId]] = None,
+    visited: set[OpId] | None = None,
 ) -> bool:
     if visited is None:
         visited = {node.op_id}
@@ -30,7 +28,7 @@ def _is_dead(
 
 
 class DeadCodeElimination(Transformation):
-    def _run(self) -> Tuple[PDG, bool]:  # noqa: C901
+    def _run(self) -> tuple[PDG, bool]:  # noqa: C901
         # new_dg = self.copy_dg()
         dg = self.ctx.dg
 

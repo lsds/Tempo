@@ -7,13 +7,11 @@ from tempo.utils import isl as isl_utils
 
 
 def mock_dg(domain: Domain) -> PDG:
-    class MockDG:
-        universe = domain
+    dg = PDG(domain)
 
-        static_bounds = {d: 100 for d in domain.ubounds}
-        dynamic_bounds = {}
+    dg.bound_defs = {d: 100 for d in domain.ubounds}
 
-    return MockDG()
+    return dg
 
 
 def test_simplify_cond(domain_3d: Domain) -> None:
@@ -73,13 +71,18 @@ def test_reverse_dependence_expr(domain_3d: Domain) -> None:
         ie.IndexSequence((d1 + 2, ie.Slice(ie.ConstInt(0), d2 + 1)))
     )
 
-    # 0:D0, d1 - 2, d2:D2 -> d1 + 2, 0:d2 + 1
+    # Constant exprs invert into nothing
     e = ie.IndexSequence((ie.ConstInt(5), ie.ConstInt(2), ie.ConstInt(1)))
     reversed_expr = isl_utils.reverse_dependence_expr(e, e.vars_used(), domain_3d)
     assert reversed_expr.struct_eq(ie.IndexSequence(()))
 
     domain_1d = Domain.from_vars((d1,))
     domain_2d = Domain.from_vars((d0, d1))
+
+    e = ie.IndexSequence((ie.slice_(ie.max(0, d1 - 3), d1+1),))
+    reversed_expr = isl_utils.reverse_dependence_expr(e, domain_1d, domain_1d)
+    expected = ie.IndexSequence((ie.slice_(d1, ie.min(glob.get_active_dg().static_bounds[D1], d1 + 4 )),))
+    assert ie.logical_eq(reversed_expr,expected), f"For inverting {e}, expected {expected} got {reversed_expr}"
 
     # Sink[d0,d1] = f(Source[d1])
     e = ie.IndexSequence((d1,))

@@ -1,5 +1,3 @@
-from typing import List, Union
-
 from tempo.api import autodiff as ad
 from tempo.api.recurrent_tensor import RecurrentTensor
 from tempo.core import index_expr as ie
@@ -64,7 +62,7 @@ def _sum_over_extra_dims(
 
         # Build expression to sum over all diff_dom variables at once
         grad_dom_vars = tensor_in_grad.domain.variables
-        expr: List[Union[slice, ie.IndexAtom]] = []
+        expr: list[slice | ie.IndexAtom] = []
         sum_count = 0
         for i in range(len(grad_dom_vars)):
             if grad_dom_vars[i] in diff_dom:

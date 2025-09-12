@@ -1,11 +1,11 @@
 import itertools
+from collections.abc import Iterator, Sequence
 from math import prod
-from typing import Iterator, List, Sequence, Tuple, Union
 
 from tempo.core.index_expr import Symbol
 
 
-def make_symbols(symbols: Sequence[str], start_idx: int = 0) -> List[Tuple[Symbol, Symbol]]:
+def make_symbols(symbols: Sequence[str], start_idx: int = 0) -> list[tuple[Symbol, Symbol]]:
     """Generates pairs of symbols (e.g. (b, B), (t, T)) for all symbol names
     provided (e.g. "b t").
 
@@ -29,7 +29,7 @@ def make_symbols(symbols: Sequence[str], start_idx: int = 0) -> List[Tuple[Symbo
     return results
 
 
-def enum_block_points(space: Tuple[Union[int, slice], ...]) -> Iterator[Tuple[int, ...]]:
+def enum_block_points(space: tuple[int | slice, ...]) -> Iterator[tuple[int, ...]]:
     """Generates every point in the given space defined by a tuple of int and slice elements."""
     # Fast path if all elements are integers
     if all(type(dim) is int for dim in space):
@@ -44,22 +44,22 @@ def enum_block_points(space: Tuple[Union[int, slice], ...]) -> Iterator[Tuple[in
     yield from itertools.product(*ranges)
 
 
-def count_block_points(space: Tuple[Union[int, slice], ...]) -> int:
+def count_block_points(space: tuple[int | slice, ...]) -> int:
     """Counts the number of points in the given space
     defined by a tuple of int and slice elements."""
-    return prod((dim.stop - dim.start) // dim.step for dim in space if type(dim) is slice)
+    return prod((dim.stop - dim.start) // (dim.step or 1) for dim in space if type(dim) is slice)
 
 
 def identify_block_from_points(
-    points: Sequence[Tuple[int, ...]],
-) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    points: Sequence[tuple[int, ...]],
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Given a collection of points,
     returns the start and end of the block that contains all points."""
     # This is sort of just a slow hull?
 
     zip_points = zip(*points, strict=False)
-    start: Tuple[int, ...] = tuple(min(p) for p in zip_points)
-    end: Tuple[int, ...] = tuple(max(p) for p in zip_points)
+    start: tuple[int, ...] = tuple(min(p) for p in zip_points)
+    end: tuple[int, ...] = tuple(max(p) for p in zip_points)
 
     # Assert that every point is covered
     assert all(start[i] <= p[i] <= end[i] for p in points for i in range(len(p))), (
@@ -91,3 +91,21 @@ def bytes_to_human_readable(byte_count: int) -> str:
         index += 1
 
     return f"{size:.2f} {suffixes[index]}"
+
+
+def get_all_subclasses(cls: type) -> list[type]:
+    """Recursively get all subclasses of a given class.
+
+    Args:
+        cls (Type): The class to get the subclasses of.
+
+    Returns:
+        List[Type]: A list of all subclasses of the given class.
+
+    """
+    subclasses = cls.__subclasses__()
+    all_subclasses = []
+    for subclass in subclasses:
+        all_subclasses.append(subclass)
+        all_subclasses.extend(get_all_subclasses(subclass))
+    return all_subclasses

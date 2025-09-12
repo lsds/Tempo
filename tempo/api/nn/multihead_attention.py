@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import tempo.core.index_expr as ie
 from tempo.api.nn.linear import Linear
 from tempo.api.nn.module import MaybeInitFnOrList, Module
@@ -40,8 +38,8 @@ class MultiHeadAttention(Module):
         w_init_funs: MaybeInitFnOrList = None,
         b_init_funs: MaybeInitFnOrList = None,
         rope_theta: float = 10_000.0,
-        rope_scaling_params: Optional[RopeScalingParams] = None,
-        num_kv_heads: Optional[int] = None,
+        rope_scaling_params: RopeScalingParams | None = None,
+        num_kv_heads: int | None = None,
     ) -> None:
         super().__init__(domain, independent_domain)
 
@@ -133,7 +131,6 @@ class MultiHeadAttention(Module):
         if self.apply_rope:
             self.rope = RotaryPositionalEmbeddings(
                 dim=self.head_dim,
-                n_heads=self.num_heads,
                 t=seq_len,
                 base=rope_theta,
                 domain=domain,
@@ -146,21 +143,39 @@ class MultiHeadAttention(Module):
 
         self.n_rep = self.num_heads // self.num_kv_heads
 
-    def forward(
-        self, x: RecurrentTensor, pattern: Optional[ie.IndexAtom] = None
-    ) -> RecurrentTensor:
+    def forward(self, x: RecurrentTensor, pattern: ie.IndexAtom | None = None) -> RecurrentTensor:
         """
         Computes multi-head attention
         Args:
-            x: RecurrentTensor with domain=(b, s), shape=(embed_dim,)
-            pattern: Optional index expression, indicating the attention pattern. By default,
+            x: Input tensor.
+            pattern: Optional index expression atom, indicating the attention pattern. By default,
             causal attention is used.
-        Returns:
-            RecurrentTensor with domain=(b, s), shape=(embed_dim,)
         """
 
         if pattern is None:
-            pattern = ie.Slice(ie.ConstInt(0), self.seq_len + 1)
+            return self.causal_forward(x)
+
+        return self._forward(x, pattern)
+
+    def causal_forward(self, x: RecurrentTensor) -> RecurrentTensor:
+        """
+        Computes causal multi-head attention.
+        Args:
+            x: Input tensor.
+        """
+        return self._forward(x, ie.Slice(ie.ConstInt(0), self.seq_len + 1))
+
+    def windowed_forward(self, x: RecurrentTensor, window_size: int) -> RecurrentTensor:
+        """
+        Computes windowed multi-head attention.
+        Args:
+            x: Input tensor.
+            window_size: int, the size of the window
+        """
+        pat = ie.slice_(ie.max(0, self.seq_len - window_size + 1), self.seq_len + 1)
+        return self._forward(x, pat)
+
+    def _forward(self, x: RecurrentTensor, pattern: ie.IndexAtom) -> RecurrentTensor:
         seq_len_idx = x.domain.find_variable_index(self.seq_len)
         attention_pattern = x.domain.basis_expr.replace_idx(seq_len_idx, pattern)
 
@@ -184,7 +199,7 @@ class MultiHeadAttention(Module):
         # assert attention_scores.dtype == dtypes.float16, "attention_scores.dtype is not float16"
 
         # Apply softmax to get attention weights
-        attention_weights = attention_scores.cast(dtypes.float32).softmax(dim=-1).cast(x.dtype)
+        attention_weights = attention_scores.softmax(dim=-1)
         attention_weights = attention_weights.unsqueeze(1)
 
         # Apply attention weights to values

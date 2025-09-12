@@ -3,9 +3,10 @@ import os
 import shutil
 import signal
 import time
+from collections.abc import Callable
 from multiprocessing import current_process, get_context
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any
 
 """
 This file offers utilities for launching experiments in parallel, helping to speed-up the
@@ -19,16 +20,16 @@ class StatsLogger:
     Imitates the interface of wandb, but writes to a CSV file instead.
     """
 
-    def __init__(self, csv_file_path: Union[Path, str]) -> None:
+    def __init__(self, csv_file_path: Path | str) -> None:
         self.csv_file = Path(csv_file_path)
         self.config_file = self.csv_file.with_suffix(".config")
         self.fields = set()
-        self.rows: List[Dict[str, Any]] = [{} for _ in range(100_000)]
+        self.rows: list[dict[str, Any]] = [{} for _ in range(100_000)]
         self.num_rows = 0
 
         self.start_time = time.perf_counter_ns()
 
-    def set_config(self, config: Dict[str, Any]) -> None:
+    def set_config(self, config: dict[str, Any]) -> None:
         # Make dirs if they don't exist
         self.config_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -37,7 +38,7 @@ class StatsLogger:
             writer.writeheader()
             writer.writerow(config)
 
-    def log(self, data: Dict[str, Any]) -> None:
+    def log(self, data: dict[str, Any]) -> None:
         ts = time.perf_counter_ns()
         elapsed_ns = ts - self.start_time
         print(data)
@@ -116,7 +117,7 @@ class StrictSemaphore:
 
 
 def create_timeout_file(
-    results_path: Union[Path, str],
+    results_path: Path | str,
     timeout_minutes: int,
     process_pid: int,
     experiment_name: str,
@@ -150,7 +151,7 @@ def terminate_process_and_children(pid: int):
     try:
         os.kill(pid, signal.SIGTERM)  # Terminate the process
     except OSError:
-        pass  # Process might have already exited
+        ...  # Process might have already exited
 
     time.sleep(2)  # Wait for the process to terminate
 
@@ -159,7 +160,7 @@ def terminate_process_and_children(pid: int):
         for child_pid in os.popen(f"pgrep -P {pid}").read().split():
             os.kill(int(child_pid), signal.SIGTERM)
     except OSError:
-        pass
+        ...
 
 
 def set_flags(
@@ -172,6 +173,9 @@ def set_flags(
     # Set the GPU for this process
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+
+    # NOTE: Disable asserts and other debug features
+    os.environ["PYTHONOPTIMIZE"] = "1"
 
     # if is_jax:
     #    os.environ["XLA_FLAGS"] = (
@@ -233,7 +237,7 @@ def worker(
         try:
             semaphore.release()
         except Exception:
-            pass
+            ...
         exit(1)
 
     # Register the signal handler for termination signals
@@ -275,12 +279,12 @@ def worker(
         try:
             semaphore.release()
         except Exception:
-            pass
+            ...
 
 
 def launch_par(
-    configs: List[Dict[str, Any]],
-    visible_gpus: Tuple[int, ...] = (0, 1, 2, 3),
+    configs: list[dict[str, Any]],
+    visible_gpus: tuple[int, ...] = (0, 1, 2, 3),
     timeout_minutes: int = 60,
 ) -> None:
     """Launch a sequence of experiments in parallel.
@@ -311,6 +315,9 @@ def launch_par(
     finished = 0
     is_par = concurrent_processes > 1
     timeout_seconds = timeout_minutes * 60
+
+    # NOTE: Disable asserts and other debug features
+    os.environ["PYTHONOPTIMIZE"] = "1"
 
     while configs_kwargs or processes:
         print(f"Progress (par={is_par}): {finished}/{total}")
@@ -381,10 +388,10 @@ def launch_par(
 
 
 def launch_seq(
-    configs: List[Dict[str, Any]],
+    configs: list[dict[str, Any]],
     timeout_minutes: int = 60,
     retry_attempts: int = 0,
-    visible_gpus: Tuple[int, ...] = (0, 1, 2, 3),
+    visible_gpus: tuple[int, ...] = (0, 1, 2, 3),
     phbgpu: int = None,
 ) -> None:
     """Launch a sequence of experiments in sequence.
@@ -408,6 +415,9 @@ def launch_seq(
         import random
 
         random.shuffle(available_gpus)
+
+    # NOTE: Disable asserts and other debug features
+    os.environ["PYTHONOPTIMIZE"] = "1"
 
     active_sys_cfgs = {}  # Map to track active sys_cfgs
     ctx = get_context("spawn")

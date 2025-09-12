@@ -1,5 +1,3 @@
-from typing import Set
-
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
 from tempo.core.compilation_ctx import CompilationCtx
@@ -16,9 +14,9 @@ log = logger.get_logger(__name__)
 
 def filter_ops_to_vectorize(
     ctx: CompilationCtx,
-    ops_to_vectorize: Set[TensorOp],
+    ops_to_vectorize: set[TensorOp],
     dim: ie.Symbol,
-) -> Set[TensorOp]:
+) -> set[TensorOp]:
     ops_to_vectorize = _filter_ops_to_vectorize_index_select(ctx, ops_to_vectorize, dim)
     ops_to_vectorize = _filter_small_groups(ctx, ops_to_vectorize, dim)
     ops_to_vectorize = _filter_groups_with_dynamic_dependents(ctx, ops_to_vectorize, dim)
@@ -27,9 +25,9 @@ def filter_ops_to_vectorize(
 
 def _filter_ops_to_vectorize_index_select(
     ctx: CompilationCtx,
-    ops_to_vectorize: Set[TensorOp],
+    ops_to_vectorize: set[TensorOp],
     dim: ie.Symbol,
-) -> Set[TensorOp]:
+) -> set[TensorOp]:
     """
     Filter out index select ops with symbol index params, where the spatial src dim
     is not equal to the full domain range of the temporal dim, i.e., where vectorization
@@ -61,7 +59,7 @@ def _filter_ops_to_vectorize_index_select(
                 # NOTE: This is the key part: Do not vectorize if the spatial src dim
                 # is not equal to the full domain range of the temporal dim.
                 if not bound.struct_eq(src_shape_at_dim):
-                    # print(f"Filtering index op: {op} on dim {dim}")
+                    print(f"Filtering index op: {op} on dim {dim}, {bound=} {src_shape_at_dim=}")
                     ops_to_vec_copy.remove(op)
                     ops_to_vec_copy.remove(index_param_op)
 
@@ -76,9 +74,9 @@ def _filter_ops_to_vectorize_index_select(
 
 def _filter_small_groups(
     ctx: CompilationCtx,
-    ops_to_vectorize: Set[TensorOp],
+    ops_to_vectorize: set[TensorOp],
     dim: ie.Symbol,
-) -> Set[TensorOp]:
+) -> set[TensorOp]:
     """
     Filter out operations that belong to small weakly connected components.
     If a weakly connected component has fewer than 5 operations, we filter out
@@ -111,9 +109,17 @@ def _filter_small_groups(
     for i, wcc in enumerate(wccs):
         # NOTE: Cond 1: Reject groups smaller than min_group_size
         if len(wcc) <= min_group_size:
+            print(
+                f"Filtering group {wcc} due to "
+                f"small size for dim {dim}: {len(wcc)} <= {min_group_size}"
+            )
             continue
         # NOTE: Cond 2: Reject groups with lots of external dependencies in relation to their size
         if wcc_ext_deps_count[i] >= len(wcc) * allowed_ext_deps_ratio:
+            print(
+                f"Filtering group {wcc} due to external deps for dim {dim}:"
+                f" {wcc_ext_deps_count[i]} >= {len(wcc)} * {allowed_ext_deps_ratio}"
+            )
             continue
 
         # NOTE: Not rejected yet, so keep the group
@@ -130,9 +136,9 @@ def _filter_small_groups(
 
 def _filter_groups_with_dynamic_dependents(
     ctx: CompilationCtx,
-    ops_to_vectorize: Set[TensorOp],
+    ops_to_vectorize: set[TensorOp],
     dim: ie.Symbol,
-) -> Set[TensorOp]:
+) -> set[TensorOp]:
     """
     Filter out groups containing index_slice ops with dynamic length params.
     This is because support for this still needs to be added in statifying incrementalization.
@@ -215,6 +221,7 @@ def can_vectorize_basic(  # noqa: C901
     if isinstance(op, top.RandOp):
         small_dim = 5000
         if dg.static_bounds.get(dim.as_bound(), small_dim) >= small_dim:
+            log.warning("Filtering out rand op due to large dim: %s", dim)
             return False
         ## NOTE: Vectorize only on trivial dims
         # if (not is_trivial_dim(dg, dim)):
@@ -227,6 +234,7 @@ def can_vectorize_basic(  # noqa: C901
         log.info("No vectorization rule for op %s", op)
         return False
 
+    # TODO: should probably require simplify here.
     # NOTE: If the op has shapes dynamic on dim, we can't vectorize it
     if any(dim in ie.lift_to_ie(s.prod()).vars_used() for s in dg.get_output_shapes_list(op)):
         return False
@@ -243,7 +251,7 @@ def can_vectorize(  # noqa: C901
     dg: PDG,
     op: TensorOp,
     dim: ie.Symbol,
-    nonvectorizable_ops_due_to_cycles: Set[TensorOp],
+    nonvectorizable_ops_due_to_cycles: set[TensorOp],
 ) -> bool:
     if op in nonvectorizable_ops_due_to_cycles:
         return False
@@ -311,7 +319,7 @@ def is_trivial_dim(dg: PDG, dim: ie.Symbol) -> bool:
 def get_ops_to_vectorize(
     dg: PDG,
     dim: ie.Symbol,
-) -> Set[TensorOp]:
+) -> set[TensorOp]:
     # Step 1: Identify candidate ops (have dim and are basically vectorizable)
     candidate_ops = set()
     non_candidate_ops = set()
@@ -378,7 +386,7 @@ def get_ops_to_vectorize(
 
 
 def _restore_original_submission_vectorization(
-    dg: PDG, dim: ie.Symbol, candidate_ops: Set[TensorOp], non_candidate_ops: Set[TensorOp]
+    dg: PDG, dim: ie.Symbol, candidate_ops: set[TensorOp], non_candidate_ops: set[TensorOp]
 ) -> None:
     """
     In the original submission, backpropagation itself would vectorize the backward region.
@@ -412,7 +420,7 @@ def _restore_original_submission_vectorization(
 
 
 def _propagate_vectorization(
-    dg: PDG, dim: ie.Symbol, candidate_ops: Set[TensorOp], non_candidate_ops: Set[TensorOp]
+    dg: PDG, dim: ie.Symbol, candidate_ops: set[TensorOp], non_candidate_ops: set[TensorOp]
 ) -> None:
     """
     For any set of vec candidates proposed, we can easily propagate vectorization to all
@@ -442,7 +450,7 @@ def _propagate_vectorization(
 def get_ops_to_vectorize_old(
     dg: PDG,
     dim: ie.Symbol,
-) -> Set[TensorOp]:
+) -> set[TensorOp]:
     # print(f"Getting ops to vectorize for dim {dim} with is_trivial_dim={is_trivial_dim}")
 
     # NOTE: This version was too eager to vectorize unvectorizable ops, due to using SCCs instead

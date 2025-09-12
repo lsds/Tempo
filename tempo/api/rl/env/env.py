@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple, Type
+from typing import Any
 
 import gymnasium as gym
 
@@ -30,9 +31,9 @@ class Env:
     @staticmethod
     def make_env(
         name: str,
-        num_envs: Optional[int] = None,
-        max_episode_steps: Optional[int] = None,
-        wrappers: Optional[Sequence[Type[TempoEnvWrapper]]] = None,
+        num_envs: int | None = None,
+        max_episode_steps: int | None = None,
+        wrappers: Sequence[type[TempoEnvWrapper]] | None = None,
         **kwargs: Any,
     ) -> Env:
         """Creates and register a supported environment in the context env registry.
@@ -53,7 +54,7 @@ class Env:
         exec_cfg = get_active_exec_cfg()
 
         # TODO we should not be importing backend here in the API...
-        from tempo.runtime.backends.backend import DLBackend
+        from tempo.core.dl_backend import DLBackend
 
         backend = DLBackend.get_backend(exec_cfg.backend)
 
@@ -97,7 +98,7 @@ class Env:
 
     def reset(
         self,
-        seed: Optional[MaybeRecurrentTensor] = None,
+        seed: MaybeRecurrentTensor | None = None,
         domain: DomainLike = None,
         # ) -> Tuple[ObservationsRecurrentTensor, Dict[str, InfoRecurrentTensor]]:
     ) -> ObservationsRecurrentTensor:
@@ -119,7 +120,7 @@ class Env:
         self,
         actions: MaybeRecurrentTensor,
         domain: DomainLike = None,
-    ) -> Tuple[
+    ) -> tuple[
         ObservationsRecurrentTensor,
         RewardsRecurrentTensor,
         TerminationsRecurrentTensor,

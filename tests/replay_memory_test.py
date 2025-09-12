@@ -11,7 +11,7 @@ from tempo.core.shape import Shape
 
 def log_to_arr(
     x: Any,
-    arr: List[Any],
+    arr: list[Any],
 ) -> None:
     arr.append(x)
 
@@ -25,8 +25,8 @@ def test_replay(exec_cfg: ExecutionConfig) -> None:
     ]
     item_dtypes = [dtypes.float32]
 
-    inserted_data: List[float] = []
-    sampled_data: List[float] = []
+    inserted_data: list[float] = []
+    sampled_data: list[float] = []
 
     with ctx:
         s, i = ctx.variables

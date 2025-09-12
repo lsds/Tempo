@@ -1,14 +1,14 @@
-from typing import Any, Dict, Tuple, Type
+from typing import Any
 
 import torch
 
+from tempo.core.dl_backend import DLBackend
 from tempo.core.fast_object_pool import ObjectPool
-from tempo.runtime.backends.backend import DLBackend
 
 BackendDType = Any
 
 
 class PageLockedBufferManager:
-    def __init__(self, backend: Type[DLBackend]) -> None:
+    def __init__(self, backend: type[DLBackend]) -> None:
         self.backend = backend
-        self._manager_map: Dict[Tuple[Tuple[int, ...], BackendDType], ObjectPool[torch.Tensor]] = {}
+        self._manager_map: dict[tuple[tuple[int, ...], BackendDType], ObjectPool[torch.Tensor]] = {}

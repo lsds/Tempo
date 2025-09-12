@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import copy
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Union
 
 from tempo.core import index_expr as ie
 from tempo.utils import logger
 
 log = logger.get_logger(__name__)
+
+SymbolUnivIdx = int
 
 
 @dataclass
@@ -16,13 +18,19 @@ class Domain:
 
     variables: Sequence[ie.Symbol]
     _ubounds: Sequence[ie.Symbol]
-    _ubound_overrides: Dict[ie.Symbol, ie.IntIndexValue] = field(default_factory=dict)
+    _ubound_overrides: dict[SymbolUnivIdx, ie.IntIndexValue] = field(default_factory=dict)
+    _override_symbol_univ_idx_to_symbol: dict[SymbolUnivIdx, ie.Symbol] = field(
+        default_factory=dict
+    )
+    _var_idx_to_domain_idx: dict[int, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.basis_expr = ie.IndexSequence(tuple(self.variables))
         self.full_range_expr = ie.IndexSequence(
             tuple(ie.slice_(ie.ConstInt(0), v.as_bound()) for v in self.variables)
         )
+        for i, v in enumerate(self.variables):
+            self._var_idx_to_domain_idx[v.idx] = i
 
     def __iter__(self) -> Iterator[ie.Symbol]:
         return iter(self.variables)
@@ -44,50 +52,68 @@ class Domain:
         return self._ubounds
 
     def get_ubound_override(self, var: ie.Symbol, default: ie.Symbol) -> ie.IntIndexValue:
-        with ie.StructEqCheckCtxManager():
-            return self._ubound_overrides.get(var, default)
+        # with ie.StructEqCheckCtxManager():
+        return self._ubound_overrides.get(var.idx, default)
 
     def set_ubound_override(self, bound_symbol: ie.Symbol, val: ie.IntIndexValue) -> None:
-        with ie.StructEqCheckCtxManager():
-            self._ubound_overrides[bound_symbol] = val
+        # with ie.StructEqCheckCtxManager():
+        self._ubound_overrides[bound_symbol.idx] = val
+        self._override_symbol_univ_idx_to_symbol[bound_symbol.idx] = bound_symbol
 
     def del_ubound_override(self, bound_symbol: ie.Symbol) -> None:
-        with ie.StructEqCheckCtxManager():
-            if bound_symbol in self._ubound_overrides:
-                del self._ubound_overrides[bound_symbol]
+        # with ie.StructEqCheckCtxManager():
+        if bound_symbol.idx in self._ubound_overrides:
+            del self._ubound_overrides[bound_symbol.idx]
+            del self._override_symbol_univ_idx_to_symbol[bound_symbol.idx]
 
     def ubound_overrides_empty(self) -> bool:
-        with ie.StructEqCheckCtxManager():
-            return len(self._ubound_overrides) == 0
+        # with ie.StructEqCheckCtxManager():
+        return len(self._ubound_overrides) == 0
 
     def prepend_dim(self, var: ie.Symbol, ubound: ie.Symbol) -> Domain:
         return Domain(
             [var, *self.variables],
             [ubound, *self._ubounds],
-            _ubound_overrides=self._ubound_overrides,
+            _ubound_overrides=dict(self._ubound_overrides),
+            _override_symbol_univ_idx_to_symbol=dict(self._override_symbol_univ_idx_to_symbol),
         )
 
     def append_dim(self, var: ie.Symbol, ubound: ie.Symbol) -> Domain:
         return Domain(
             [*self.variables, var],
             [*self._ubounds, ubound],
-            _ubound_overrides=self._ubound_overrides,
+            _ubound_overrides=dict(self._ubound_overrides),
+            _override_symbol_univ_idx_to_symbol=dict(self._override_symbol_univ_idx_to_symbol),
         )
 
     def remove_dim(self, dim: ie.Symbol) -> Domain:
-        with ie.StructEqCheckCtxManager():
-            idx = self.find_variable_index(dim)
-            new_ubound_overrides = {
-                k: v for k, v in self._ubound_overrides.items() if not k.struct_eq(dim.as_bound())
-            }
-            return Domain(
-                [v for i, v in enumerate(self.variables) if i != idx],
-                [b for i, b in enumerate(self._ubounds) if i != idx],
-                new_ubound_overrides,
-            )
+        # with ie.StructEqCheckCtxManager():
+        idx = self._var_idx_to_domain_idx[dim.idx]
+        new_ubound_overrides = {
+            k: v
+            for k, v in self._ubound_overrides.items()
+            if not self._override_symbol_univ_idx_to_symbol[k].struct_eq(dim.as_bound())
+        }
+        new_override_symbol_univ_idx_to_symbol = {
+            k: v
+            for k, v in self._override_symbol_univ_idx_to_symbol.items()
+            if not v.struct_eq(dim.as_bound())
+        }
+
+        return Domain(
+            [v for i, v in enumerate(self.variables) if i != idx],
+            [b for i, b in enumerate(self._ubounds) if i != idx],
+            _ubound_overrides=new_ubound_overrides,
+            _override_symbol_univ_idx_to_symbol=new_override_symbol_univ_idx_to_symbol,
+        )
 
     def copy(self) -> Domain:
-        return copy.deepcopy(self)
+        return Domain(
+            [*self.variables],
+            [*self._ubounds],
+            _ubound_overrides=dict(self._ubound_overrides),
+            _override_symbol_univ_idx_to_symbol=dict(self._override_symbol_univ_idx_to_symbol),
+        )
 
     def __getitem__(self, index: int) -> ie.Symbol:
         # Returns the variable at the index when ignoring disabled dimensions
@@ -99,10 +125,15 @@ class Domain:
 
         return (
             len(self.variables) == len(other.variables)
-            and all(a.struct_eq(b) for a, b in zip(self.variables, other.variables, strict=False))
-            and all(a.struct_eq(b) for a, b in zip(self._ubounds, other._ubounds, strict=False))
-            and all(a.struct_eq(b) for a, b in zip(self.ubounds, other.ubounds, strict=False))
-            and self._ubound_overrides == other._ubound_overrides
+            and all(a.struct_eq(b) for a, b in zip(self.variables, other.variables, strict=True))
+            and all(a.struct_eq(b) for a, b in zip(self._ubounds, other._ubounds, strict=True))
+            and all(a.struct_eq(b) for a, b in zip(self.ubounds, other.ubounds, strict=True))
+            and len(self._ubound_overrides) == len(other._ubound_overrides)
+            and all(
+                k in other._ubound_overrides
+                and self._ubound_overrides[k].struct_eq(other._ubound_overrides[k])
+                for k in self._ubound_overrides
+            )
         )
 
     def __ne__(self, value: object) -> bool:
@@ -112,9 +143,8 @@ class Domain:
     def from_vars_and_bounds(
         variables: Sequence[ie.Symbol],
         bounds: Sequence[ie.Symbol],
-        overrides: Optional[Dict[ie.Symbol, ie.IntIndexValue]] = None,
     ) -> Domain:
-        return Domain([*variables], [*bounds], overrides or {})
+        return Domain([*variables], [*bounds])
 
     @staticmethod
     def union(*domains: DomainLike) -> Domain:
@@ -125,8 +155,9 @@ class Domain:
 
         result = Domain.from_vars(all_variables)
 
-        ubound_overrides = Domain._merge_ubound_overrides(domains_, result)
+        ubound_overrides, override_symbol_map = Domain._merge_ubound_overrides(domains_, result)
         result._ubound_overrides = ubound_overrides
+        result._override_symbol_univ_idx_to_symbol = override_symbol_map
         # log.debug("Unioning domains %s resulted in %s", domains_, result)
         return result
 
@@ -146,33 +177,34 @@ class Domain:
                 variables_in_all.append(v)
 
         result = Domain.from_vars(variables_in_all)
-        ubound_overrides = Domain._merge_ubound_overrides(domains_, result)
+        ubound_overrides, override_symbol_map = Domain._merge_ubound_overrides(domains_, result)
         result._ubound_overrides = ubound_overrides
+        result._override_symbol_univ_idx_to_symbol = override_symbol_map
         # log.debug("Intersecting domains %s resulted in %s", domains_, result)
         return result
 
     @staticmethod
     def _merge_ubound_overrides(  # noqa: C901
         domains_: Sequence[Domain], result: Domain
-    ) -> Dict[ie.Symbol, ie.IntIndexValue]:
-        with ie.StructEqCheckCtxManager():
-            ubound_overrides = {}
-            for d in domains_:
-                for k, v in d._ubound_overrides.items():
-                    if not result.has_dim(k.as_var()):
+    ) -> tuple[dict[SymbolUnivIdx, ie.IntIndexValue], dict[SymbolUnivIdx, ie.Symbol]]:
+        # with ie.StructEqCheckCtxManager():
+        ubound_overrides = {}
+        override_symbol_map = {}
+        for d in domains_:
+            for k, v in d._ubound_overrides.items():
+                if not result.has_dim(d._override_symbol_univ_idx_to_symbol[k]):
+                    continue
+                if k not in ubound_overrides:
+                    ubound_overrides[k] = v
+                    override_symbol_map[k] = d._override_symbol_univ_idx_to_symbol[k]
+                else:
+                    if v.struct_eq(ubound_overrides[k]):
                         continue
-                    if k not in ubound_overrides:
-                        ubound_overrides[k] = v
                     else:
-                        if v.struct_eq(ubound_overrides[k]):
-                            continue
-                        else:
-                            raise ValueError(
-                                f"Conflicting ubound overrides {v=} {ubound_overrides[k]}"
-                            )
+                        raise ValueError(f"Conflicting ubound overrides {v=} {ubound_overrides[k]}")
 
-            # ubound_overrides = {}
-            return ubound_overrides
+        # ubound_overrides = {}
+        return ubound_overrides, override_symbol_map
 
     @staticmethod
     def difference(a: DomainLike, b: DomainLike) -> Domain:
@@ -188,31 +220,29 @@ class Domain:
 
         variables = [v for v in a.variables if not b.has_dim(v)]
         result = Domain.from_vars(variables)
-        ubound_overrides = Domain._merge_ubound_overrides([a, b], result)
+        ubound_overrides, override_symbol_map = Domain._merge_ubound_overrides([a, b], result)
         result._ubound_overrides = ubound_overrides
+        result._override_symbol_univ_idx_to_symbol = override_symbol_map
         return result
 
     def has_dim(self, dim: ie.Symbol) -> bool:
-        try:
-            self.find_variable_index(dim)
-            return True
-        except ValueError:
-            return False
+        return dim.idx in self._var_idx_to_domain_idx
 
     __contains__ = has_dim
 
     def indexed_real_domain(self, index: ie.IndexSequence) -> Domain:
-        with ie.StructEqCheckCtxManager():
-            assert len(index.members) == self.num_dimensions
+        # with ie.StructEqCheckCtxManager():
+        assert len(index.members) == self.num_dimensions
 
-            variables_involved = index.vars_used()
+        variables_involved = index.vars_used()
 
-            new_dom = Domain.from_vars(
-                variables_involved,
-            )
-            overrides = Domain._merge_ubound_overrides([self], new_dom)
+        new_dom = Domain.from_vars(
+            variables_involved,
+        )
+        overrides, override_symbol_map = Domain._merge_ubound_overrides([self], new_dom)
 
-            new_dom._ubound_overrides = overrides
+        new_dom._ubound_overrides = overrides
+        new_dom._override_symbol_univ_idx_to_symbol = override_symbol_map
         return new_dom
 
     def is_contained_in(self, other: Domain) -> bool:
@@ -229,20 +259,19 @@ class Domain:
         return ie.ConstInt(0)
 
     def get_corresponding_ubound(self, var: ie.Symbol) -> ie.IntIndexValue:
-        idx = self.find_variable_index(var)
+        idx = self._var_idx_to_domain_idx[var.idx]
         ubound = self._ubounds[idx]
         overriden = self.get_ubound_override(ubound, ubound)
         return overriden
 
     def find_variable_index(self, var: ie.Symbol) -> int:
-        idx = -1
-        for i, v in enumerate(self.variables):
-            if v.struct_eq(var):
-                idx = i
-                break
-        if idx == -1:
-            raise ValueError(f"Variable not in domain, {var=} {self.variables=}")
-        return idx
+        return self._var_idx_to_domain_idx[var.idx]
+
+    def get_variable_by_name(self, name: str) -> ie.Symbol:
+        for v in self.variables:
+            if v.name == name:
+                return v
+        raise ValueError(f"Variable not in domain, {name=} {self.variables=}")
 
     def __len__(self) -> int:
         return self.num_dimensions
@@ -252,7 +281,7 @@ class Domain:
         return len(self.variables)
 
     @property
-    def paired_vars_and_upper_bounds(self) -> Sequence[Tuple[ie.Symbol, ie.Symbol]]:
+    def paired_vars_and_upper_bounds(self) -> Sequence[tuple[ie.Symbol, ie.Symbol]]:
         return list(zip(self.variables, self._ubounds, strict=False))
 
     @property
@@ -285,7 +314,7 @@ class Domain:
         if len(vars_) == 1:
             return ie.IndexSequence((vars_[0] - 1,))
 
-        prev_indices: List[ie.IntIndexValue] = [*self.variables]
+        prev_indices: list[ie.IntIndexValue] = [*self.variables]
         bounds = self.ubounds
 
         still_needs_dec: ie.BooleanIndexValue = ie.ConstBool(True)
@@ -325,7 +354,7 @@ class Domain:
     @property
     def lex_next_expr(self) -> ie.IndexSequence:
         vars_ = self.variables
-        next_indices: List[ie.IntIndexValue] = [*self.variables]
+        next_indices: list[ie.IntIndexValue] = [*self.variables]
         bounds = self.ubounds
 
         still_needs_inc: ie.BooleanIndexValue = ie.ConstBool(True)
@@ -357,21 +386,21 @@ class Domain:
         return self.num_dimensions == 0
 
     def select_vars(self, *variables: ie.Symbol) -> Domain:
-        with ie.StructEqCheckCtxManager():
-            # assert self.condition.equivalent(ie.ConstBool(True))
+        # Get variables and bounds in the order they appear in the current domain
+        variables = sorted(variables, key=lambda v: v.idx)
+        bounds = []
+        overrides = {}
+        override_symbol_map = {}
+        for v in variables:
+            if v.idx in self._var_idx_to_domain_idx:
+                idx = self._var_idx_to_domain_idx[v.idx]
+                bounds.append(self._ubounds[idx])
 
-            idxs = list({self.find_variable_index(v) for v in variables})
+            if v.idx in self._ubound_overrides:
+                overrides[v.idx] = self._ubound_overrides[v.idx]
+                override_symbol_map[v.idx] = v
 
-            pairs = [(self.variables[i], i) for i in idxs]
-            sorted_pairs = sorted(pairs, key=lambda p: p[1])
-            vars_sorted = [p[0] for p in sorted_pairs]
-
-            universe = Domain.universe()
-            bounds = [universe._ubounds[universe.find_variable_index(v)] for v in vars_sorted]
-            overrides = {
-                v: self._ubound_overrides[v] for v in bounds if v in self._ubound_overrides
-            }
-            return Domain(vars_sorted, bounds, overrides)
+        return Domain(variables, bounds, overrides, override_symbol_map)
 
     @staticmethod
     def empty() -> Domain:
@@ -387,12 +416,9 @@ class Domain:
     @staticmethod
     def from_vars(
         variables: Iterable[ie.Symbol],
-        overrides: Optional[Dict[ie.Symbol, ie.IntIndexValue]] = None,
     ) -> Domain:
         universe = Domain.universe()
         dom = universe.select_vars(*variables)
-        dom._ubound_overrides = overrides or {}
-
         return dom
 
     @staticmethod

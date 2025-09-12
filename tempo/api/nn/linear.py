@@ -29,7 +29,6 @@ class Linear(Module):
             w_init_fun = partial(
                 RecurrentTensor.linear_init_uniform,
                 num_input_features=in_features,
-                # gain=float(np.sqrt(2)),
             )
         if b_init_fun is None:
             b_init_fun = partial(RecurrentTensor.zeros, requires_grad=False)  # type: ignore

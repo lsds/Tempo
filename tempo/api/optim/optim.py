@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
 
 from tempo.api.nn import utils
 from tempo.api.recurrent_tensor import MaybeRecurrentTensor, RecurrentTensor
@@ -11,10 +11,10 @@ from tempo.core.domain import Domain, DomainLike
 class Optimizer:
     def __init__(
         self,
-        params: List[RecurrentTensor],
-        buffers: List[RecurrentTensor],
+        params: list[RecurrentTensor],
+        buffers: list[RecurrentTensor],
         lr: MaybeRecurrentTensor,
-        max_norm: Optional[MaybeRecurrentTensor] = None,
+        max_norm: MaybeRecurrentTensor | None = None,
         norm_type: MaybeRecurrentTensor = 2.0,
         independent_domain: DomainLike = None,
     ):
@@ -42,8 +42,8 @@ class Optimizer:
         )
 
         # TODO shouldn't this filter out params that don't require grad?
-        self.params: List[RecurrentTensor] = list(set(params))
-        self.buffers: List[RecurrentTensor] = list(set(buffers))
+        self.params: list[RecurrentTensor] = list(set(params))
+        self.buffers: list[RecurrentTensor] = list(set(buffers))
         self.lr = RecurrentTensor.lift(lr)
 
     @abstractmethod
@@ -59,13 +59,13 @@ class Optimizer:
 class SGD(Optimizer):
     def __init__(
         self,
-        params: List[RecurrentTensor],
-        buffers: List[RecurrentTensor],
+        params: list[RecurrentTensor],
+        buffers: list[RecurrentTensor],
         lr: MaybeRecurrentTensor = 0.001,
         momentum: MaybeRecurrentTensor = 0.0,
         weight_decay: MaybeRecurrentTensor = 0.0,
         nesterov: bool = False,
-        max_norm: Optional[MaybeRecurrentTensor] = None,
+        max_norm: MaybeRecurrentTensor | None = None,
         norm_type: MaybeRecurrentTensor = 2.0,
         independent_domain: DomainLike = None,
     ):
@@ -129,14 +129,14 @@ class SGD(Optimizer):
 # LAMB is essentially just the trust ratio part of LARS applied to Adam/W so if we just set
 # the trust ratio to 1.0 its just Adam/W.
 def AdamW(  # noqa: N802
-    params: List[RecurrentTensor],
-    buffers: List[RecurrentTensor],
+    params: list[RecurrentTensor],
+    buffers: list[RecurrentTensor],
     lr: MaybeRecurrentTensor = 0.001,
     b1: MaybeRecurrentTensor = 0.9,
     b2: MaybeRecurrentTensor = 0.999,
     eps: MaybeRecurrentTensor = 1e-8,
     wd: MaybeRecurrentTensor = 0.01,
-    max_norm: Optional[MaybeRecurrentTensor] = None,
+    max_norm: MaybeRecurrentTensor | None = None,
     norm_type: MaybeRecurrentTensor = 2.0,
     independent_domain: DomainLike = None,
 ) -> LAMB:
@@ -156,13 +156,13 @@ def AdamW(  # noqa: N802
 
 
 def Adam(  # noqa: N802
-    params: List[RecurrentTensor],
-    buffers: List[RecurrentTensor],
+    params: list[RecurrentTensor],
+    buffers: list[RecurrentTensor],
     lr: MaybeRecurrentTensor = 0.001,
     b1: MaybeRecurrentTensor = 0.9,
     b2: MaybeRecurrentTensor = 0.999,
     eps: MaybeRecurrentTensor = 1e-8,
-    max_norm: Optional[MaybeRecurrentTensor] = None,
+    max_norm: MaybeRecurrentTensor | None = None,
     norm_type: MaybeRecurrentTensor = 2.0,
     independent_domain: DomainLike = None,
 ) -> LAMB:
@@ -184,15 +184,15 @@ def Adam(  # noqa: N802
 class LAMB(Optimizer):
     def __init__(
         self,
-        params: List[RecurrentTensor],
-        buffers: List[RecurrentTensor],
+        params: list[RecurrentTensor],
+        buffers: list[RecurrentTensor],
         lr: MaybeRecurrentTensor = 0.001,
         b1: MaybeRecurrentTensor = 0.9,
         b2: MaybeRecurrentTensor = 0.999,
         eps: MaybeRecurrentTensor = 1e-6,
         wd: MaybeRecurrentTensor = 0.0,
         adam: bool = False,
-        max_norm: Optional[MaybeRecurrentTensor] = None,
+        max_norm: MaybeRecurrentTensor | None = None,
         norm_type: MaybeRecurrentTensor = 2.0,
         independent_domain: DomainLike = None,
     ):

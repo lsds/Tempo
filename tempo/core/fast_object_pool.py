@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Callable, Generic, List, Type, TypeVar
+from collections.abc import Callable
+from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 
@@ -13,7 +14,7 @@ def custom_del(obj: Any) -> None:
         obj.__original_del__()  # type: ignore
 
 
-def apply_custom_del(cls: Type[T]) -> None:
+def apply_custom_del(cls: type[T]) -> None:
     if hasattr(cls, "__original_del__"):
         return
     # def repr_custom(self):
@@ -35,7 +36,7 @@ class ObjectPool(Generic[T]):
     def __init__(self, builder: Callable[[], T], max_unused: int = sys.maxsize) -> None:
         self.builder: Callable[[], T] = builder
         self.max_unused: int = max_unused
-        self.pool: List[T] = []
+        self.pool: list[T] = []
 
     def borrow(self) -> T:
         if len(self.pool) == 0:

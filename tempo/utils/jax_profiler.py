@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from types import TracebackType
-from typing import ContextManager, Optional, Type
+from typing import ContextManager
 
 import jax
 
@@ -17,10 +17,10 @@ class JaxProfiler:
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> Optional[bool]:
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
         jax.profiler.stop_trace()
         return None
 

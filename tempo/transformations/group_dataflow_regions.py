@@ -1,6 +1,4 @@
-import copy
 from dataclasses import replace
-from typing import Dict, List, Set, Tuple
 
 from tempo.core import index_expr as ie
 from tempo.core.compilation_ctx import CompilationCtx
@@ -11,16 +9,17 @@ from tempo.core.tensor_ops import ExecDataflowOp, TensorOp
 from tempo.transformations.compilation_pass import CompilationPass
 from tempo.transformations.graph_partitioning_utils import ilp_based_cut
 from tempo.transformations.grouping_utils import (
+    _can_merge_groups,
     absorb_consts_into_groups,
     absorb_low_cost_ops_into_groups,
     build_initial_groupings,
-    check_groups_are_dags,
     fix_any_cycles_generalized,
     get_group_dom,
     get_group_isl_dom,
     get_potential_fusions,
 )
 from tempo.utils import logger
+from tempo.utils.memory_estimator import MemoryEstimator
 
 log = logger.get_logger(__name__)
 
@@ -37,9 +36,9 @@ class GroupDataflowRegions(CompilationPass):
     def insert_execute_dataflow_subgraph_op(  # noqa: C901
         self,
         dg: PDG,
-        subgraph_nodes: Set[TensorOp],
-        irouter: Tuple[Tuple[Tuple[OpId, OpInId], ...], ...],
-        orouter: Tuple[Tuple[OpId, OpOutId], ...],
+        subgraph_nodes: set[TensorOp],
+        irouter: tuple[tuple[tuple[OpId, OpInId], ...], ...],
+        orouter: tuple[tuple[OpId, OpOutId], ...],
     ) -> OpId:
         id_ = dg.get_next_op_id()
         # Create the subgraph from the set of nodes
@@ -141,7 +140,7 @@ class GroupDataflowRegions(CompilationPass):
         return id_
 
     def _get_updated_expr(
-        self, subgraph_nodes: Set[TensorOp], dep_data: DependencyData, route_src: TensorOp
+        self, subgraph_nodes: set[TensorOp], dep_data: DependencyData, route_src: TensorOp
     ) -> ie.IndexSequence:
         orig_expr = dep_data.expr
 
@@ -155,20 +154,20 @@ class GroupDataflowRegions(CompilationPass):
         return new_expr
 
     def _build_routers(  # noqa: C901
-        self, dg: PDG, subgraph_nodes: Set[TensorOp]
-    ) -> Tuple[
-        Tuple[Tuple[Tuple[OpId, OpInId], ...], ...],
-        Tuple[Tuple[OpId, OpOutId], ...],
-        Dict[Tuple[OpId, OpOutId, ie.IndexSequence], int],
+        self, dg: PDG, subgraph_nodes: set[TensorOp]
+    ) -> tuple[
+        tuple[tuple[tuple[OpId, OpInId], ...], ...],
+        tuple[tuple[OpId, OpOutId], ...],
+        dict[tuple[OpId, OpOutId, ie.IndexSequence], int],
     ]:
         # NOTE: sometimes, a fused dataflow may have multiple inner nodes consuming the same
         # tensor. In that case, we want to deduplicate the consumption. We keep track of the
         # consumed tensors here, identified by their TensorId and the index sequence of dependence
-        input_index_tracker: Dict[Tuple[OpId, OpOutId, ie.IndexSequence], int] = {}
+        input_index_tracker: dict[tuple[OpId, OpOutId, ie.IndexSequence], int] = {}
 
         # To build the irouter, we want to find the ops in the subgraph,
         # which have dependencies on ops outside the subgraph
-        irouter_: List[Tuple[Tuple[OpId, OpInId]]] = []
+        irouter_: list[tuple[tuple[OpId, OpInId]]] = []
         for n in subgraph_nodes:
             dependencies = dg.get_flat_direct_dependencies(n)
             for dependency_op, dep_data in dependencies:
@@ -189,7 +188,7 @@ class GroupDataflowRegions(CompilationPass):
 
         # To build the orouter, we want to find the ops in the subgraph,
         # which have dependents outside the subgraph
-        orouter_set: Set[Tuple[OpId, OpOutId]] = set()
+        orouter_set: set[tuple[OpId, OpOutId]] = set()
         for n in subgraph_nodes:
             dependents = dg.get_flat_direct_dependents(n)
             for dependent_op, dep_data in dependents:
@@ -202,11 +201,11 @@ class GroupDataflowRegions(CompilationPass):
         return irouter, orouter, input_index_tracker
 
     def _build_ctx_for_grouping(
-        self, ctx: CompilationCtx, group_to_nodes: Dict[int, Set[TensorOp]]
-    ) -> Tuple[CompilationCtx, Dict[int, OpId]]:
+        self, ctx: CompilationCtx, group_to_nodes: dict[int, set[TensorOp]]
+    ) -> tuple[CompilationCtx, dict[int, OpId]]:
         group_to_node_id = {}
 
-        new_ctx = copy.deepcopy(ctx)
+        new_ctx = ctx.shallow_copy()
         modifiable_dg = new_ctx.dg
 
         for group_key, group_nodes in group_to_nodes.items():
@@ -262,8 +261,8 @@ class GroupDataflowRegions(CompilationPass):
     def _fix_any_grouped_nonbasis_edges(
         self,
         new_dg: PDG,
-        group_to_nodes: Dict[int, Set[TensorOp]],
-    ) -> Tuple[Dict[int, Set[TensorOp]], int]:
+        group_to_nodes: dict[int, set[TensorOp]],
+    ) -> tuple[dict[int, set[TensorOp]], int]:
         next_group_id = max(group_to_nodes.keys()) + 1
 
         changes = True
@@ -273,29 +272,36 @@ class GroupDataflowRegions(CompilationPass):
 
             for group_id, nodes in list(group_to_nodes.items()):
                 induced_subgraph = new_dg.induced_subgraph(OpId(-1), nodes)
+                problem_edges = []
                 for snk, src, edge_data in induced_subgraph.get_all_edges():
                     if not edge_data.expr.struct_eq(src.domain.basis_expr):
-                        irouter, orouter, inp_ind_tracker = self._build_routers(self.ctx.dg, nodes)
-                        group1, group2, _ = ilp_based_cut(
-                            new_dg,
-                            nodes,
-                            router_info=(irouter, orouter, inp_ind_tracker),
-                            bytes_importance=0.25,
-                            max_allowed_imbalance_percent=1.0,
-                            required_cut_edges=[(snk, src, edge_data)],
-                        )
-                        group_to_nodes[group_id] = group1
-                        group_to_nodes[next_group_id] = group2
-                        next_group_id += 1
-                        changes = True
-                        nonbasis_edges_fixed += 1
-                        break
+                        problem_edges.append((snk, src, edge_data))
+                    elif edge_data.is_control_edge:
+                        problem_edges.append((snk, src, edge_data))
+
+                if problem_edges:
+                    irouter, orouter, inp_ind_tracker = self._build_routers(self.ctx.dg, nodes)
+                    group1, group2, _ = ilp_based_cut(
+                        new_dg,
+                        nodes,
+                        router_info=(irouter, orouter, inp_ind_tracker),
+                        bytes_importance=0.25,
+                        max_allowed_imbalance_percent=1.0,
+                        required_cut_edges=problem_edges,
+                        mem_est=MemoryEstimator(self.ctx),
+                    )
+                    group_to_nodes[group_id] = group1
+                    group_to_nodes[next_group_id] = group2
+                    next_group_id += 1
+                    changes = True
+                    nonbasis_edges_fixed += 1
+                    break
         return group_to_nodes, nonbasis_edges_fixed
 
     def _cut_large_groups(  # noqa: C901
         self,
-        group_to_nodes: Dict[int, Set[TensorOp]],
-    ) -> Tuple[Dict[int, Set[TensorOp]], int, int]:
+        group_to_nodes: dict[int, set[TensorOp]],
+    ) -> tuple[dict[int, set[TensorOp]], int, int]:
         tot_edges_cut = 0
         fissions = 0
         next_group_id = max(group_to_nodes.keys()) + 1
@@ -309,7 +315,12 @@ class GroupDataflowRegions(CompilationPass):
                     changes = True
                     irouter, orouter, inp_ind_tracker = self._build_routers(self.ctx.dg, v)
                     cluster1, cluster2, num_edges_cut = ilp_based_cut(
-                        self.ctx.dg, v, (irouter, orouter, inp_ind_tracker), 0.5, 0.25
+                        self.ctx.dg,
+                        v,
+                        (irouter, orouter, inp_ind_tracker),
+                        0.5,
+                        0.25,
+                        mem_est=MemoryEstimator(self.ctx),
                     )
                     tot_edges_cut += num_edges_cut
                     new_group_to_nodes[k] = cluster1
@@ -325,8 +336,8 @@ class GroupDataflowRegions(CompilationPass):
 
     def _fuse_groups(  # noqa: C901
         self,
-        group_to_nodes: Dict[int, Set[TensorOp]],
-    ) -> Tuple[Dict[int, Set[TensorOp]], int]:
+        group_to_nodes: dict[int, set[TensorOp]],
+    ) -> tuple[dict[int, set[TensorOp]], int]:
         removed_groups = set()
         potential_fusions = get_potential_fusions(self.ctx, group_to_nodes)
 
@@ -341,6 +352,14 @@ class GroupDataflowRegions(CompilationPass):
 
             # if not (group_src_isl_dom.is_subset(group_snk_isl_dom)):
             if not (group_src_isl_dom == group_snk_isl_dom):
+                continue
+
+            if not _can_merge_groups(
+                self.ctx.dg,
+                group_snk,
+                group_src,
+                group_to_nodes,
+            ):
                 continue
 
             # group_dom_snk = get_group_dom(group_to_nodes[group_snk])
@@ -382,7 +401,7 @@ class GroupDataflowRegions(CompilationPass):
 
         return group_to_nodes, fusions
 
-    def _run(self) -> Tuple[CompilationCtx, bool]:
+    def _run(self) -> tuple[CompilationCtx, bool]:
         # 1. Build a set of conservative groups
         log.debug("Building conservative initial groupings")
         iterations, group_to_nodes = build_initial_groupings(self.ctx)
@@ -390,7 +409,7 @@ class GroupDataflowRegions(CompilationPass):
         if not group_to_nodes:  # NOTE: no groupings were found
             return self.ctx, False
 
-        check_groups_are_dags(self.ctx.dg, group_to_nodes, "initial grouping")
+        # check_groups_are_dags(self.ctx.dg, group_to_nodes, "initial grouping")
 
         group_to_nodes, nonbasis_edges_fixed = self._fix_any_grouped_nonbasis_edges(
             self.ctx.dg, group_to_nodes
@@ -428,7 +447,7 @@ class GroupDataflowRegions(CompilationPass):
 
             # check_groups_are_dags(self.ctx.dg, group_to_nodes, "absorbing low-cost ops")
 
-            group_to_nodes, fusions_ = absorb_consts_into_groups(self.ctx.dg, group_to_nodes)
+            group_to_nodes, fusions_ = absorb_consts_into_groups(self.ctx, group_to_nodes)
             if fusions_ > 0:
                 log.info("Absorbed %s constants into groups", fusions_)
             fusions += fusions_

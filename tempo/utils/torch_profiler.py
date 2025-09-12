@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from types import TracebackType
-from typing import ContextManager, Optional, Type
+from typing import ContextManager
 
 import torch
 
@@ -29,10 +29,10 @@ class TorchProfiler:
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> Optional[bool]:
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
         self.torch_prof.__exit__(exc_type, exc_val, exc_tb)
 
         self.torch_prof.export_chrome_trace(f"{self.results_path}/torch_profile.json")

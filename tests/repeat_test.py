@@ -1,8 +1,8 @@
-
 import itertools
 from dataclasses import replace
 from math import prod
-from typing import Any, Tuple, Union, Sequence
+from typing import Any, Tuple, Union
+from collections.abc import Sequence
 
 import pytest
 import torch
@@ -11,7 +11,7 @@ from tempo.api.recurrent_tensor import RecurrentTensor
 from tempo.api.tempo_context_manager import TempoContext
 from tempo.core.configs import ExecutionConfig
 from tempo.core.dtype import DataType, dtypes
-from tempo.runtime.backends.backend import DLBackend
+from tempo.core.dl_backend import DLBackend
 
 def idfn_2(val: Any) -> str:
     if isinstance(val, tuple):
@@ -30,7 +30,7 @@ def idfn_2(val: Any) -> str:
     raise ValueError(f"Unexpected value: {val}")
 
 
-def _pad_repeats(num_repeats: Union[int, Sequence[int]], tensor_ndim: int) -> Tuple[int, ...]:
+def _pad_repeats(num_repeats: int | Sequence[int], tensor_ndim: int) -> tuple[int, ...]:
     """Pad num_repeats with 1s to match tensor dimensions."""
     if isinstance(num_repeats, int):
         return (num_repeats,) + (1,) * (tensor_ndim - 1)
@@ -64,9 +64,9 @@ def _pad_repeats(num_repeats: Union[int, Sequence[int]], tensor_ndim: int) -> Tu
     ids=idfn_2,
 )
 def test_repeat(
-    shape: Tuple[int, ...],
-    num_repeats: Union[int, Sequence[int]],
-    dtypes: Tuple[torch.dtype, DataType],
+    shape: tuple[int, ...],
+    num_repeats: int | Sequence[int],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exec_cfg: ExecutionConfig,
 ):
@@ -110,10 +110,10 @@ def test_repeat(
     ids=idfn_2,
 )
 def test_repeat_interleave(
-    shape: Tuple[int, ...],
+    shape: tuple[int, ...],
     num_repeats: int,
     dim: int,
-    dtypes: Tuple[torch.dtype, DataType],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exec_cfg: ExecutionConfig,
 ):
@@ -130,11 +130,11 @@ def test_repeat_interleave(
         z = x.repeat_interleave(num_repeats, dim=dim)
 
         exec = ctx.compile({})
-        exec.execute()
-        z_computed = exec.get_spatial_tensor_torch(z.tensor_id, ())
+    exec.execute()
+    z_computed = exec.get_spatial_tensor_torch(z.tensor_id, ())
 
-        assert z_t.shape == z_computed.shape, f"Shape mismatch: expected {z_t.shape}, got {z_computed.shape}"
-        assert torch.allclose(z_t, z_computed), f"Values mismatch: expected {z_t}, got {z_computed}"
+    assert z_t.shape == z_computed.shape, f"Shape mismatch: expected {z_t.shape}, got {z_computed.shape}"
+    assert torch.allclose(z_t, z_computed), f"Values mismatch: expected {z_t}, got {z_computed}"
 
 
 @pytest.mark.parametrize(
@@ -159,9 +159,9 @@ def test_repeat_interleave(
     ids=idfn_2,
 )
 def test_repeat_identity(
-    shape: Tuple[int, ...],
-    num_repeats: Union[int, Sequence[int]],
-    dtypes: Tuple[torch.dtype, DataType],
+    shape: tuple[int, ...],
+    num_repeats: int | Sequence[int],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exec_cfg: ExecutionConfig,
 ):
@@ -207,10 +207,10 @@ def test_repeat_identity(
     ids=idfn_2,
 )
 def test_repeat_interleave_edge_cases(
-    shape: Tuple[int, ...],
+    shape: tuple[int, ...],
     num_repeats: int,
     dim: int,
-    dtypes: Tuple[torch.dtype, DataType],
+    dtypes: tuple[torch.dtype, DataType],
     backend: str,
     exec_cfg: ExecutionConfig,
 ):

@@ -1,11 +1,10 @@
 import functools
-from collections.abc import Mapping
-from typing import Any, List, Optional, Sequence, Tuple, cast
+from collections.abc import Mapping, Sequence
+from typing import Any, cast
 
 import islpy as isl
 
 from tempo.core import index_expr as ie
-from tempo.core import isl_types as islt
 from tempo.core import tensor_op as top
 from tempo.core.datatypes import OpId, TensorId
 from tempo.core.dependence_graph import DependencyData
@@ -22,8 +21,8 @@ empty_str = ""
 
 
 def get_parameters_and_var_bounds_strs(
-    domain: Domain, var_renaming: Optional[Sequence[str]] = None
-) -> Tuple[str, str]:
+    domain: Domain, var_renaming: Sequence[str] | None = None
+) -> tuple[str, str]:
     from tempo.core import global_objects as glob
 
     dynamic_bounds = dict(glob.get_dynamic_bounds_or_empty())
@@ -117,9 +116,7 @@ def tensor_id_to_fetch_stmt(tensor_id: TensorId, num: int) -> str:
     return f"{StmtType.FETCH.value}_{int(tensor_id.op_id)}_{int(tensor_id.output_id)}_{num}"
 
 
-def get_params_set(
-    symbols_: Mapping[ie.Symbol, int], ctx: Optional[islt.Context] = None
-) -> islt.Set:
+def get_params_set(symbols_: Mapping[ie.Symbol, int], ctx: isl.Context | None = None) -> isl.Set:
     only_bounds = [s for s in symbols_.keys() if s.is_bound]
     from tempo.core import global_objects as glob
 
@@ -135,7 +132,7 @@ def get_params_set(
 def simplify_boolean_index_expr(
     domain: Domain,
     expr: ie.BooleanIndexValue,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
 ) -> ie.BooleanIndexValue:
     if known_symbols is None:
         known_symbols = {}
@@ -172,7 +169,7 @@ def simplify_boolean_index_expr(
     return expr
 
 
-def isl_set_to_index_value(set_: islt.Set, domain: Domain) -> ie.IndexValue:
+def isl_set_to_index_value(set_: isl.Set, domain: Domain) -> ie.IndexValue:
     parameters_str, bounds_str = get_parameters_and_var_bounds_strs(domain)
 
     vars_ = list(domain.variables)
@@ -200,9 +197,9 @@ def simplify_dependence_expr(
     expr: ie.IndexSequence,
     snk_dom: DomainLike,
     src_dom: DomainLike,
-    condition: Optional[ie.BooleanIndexValue] = None,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-    ctx: Optional[islt.Context] = None,
+    condition: ie.BooleanIndexValue | None = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
 ) -> ie.IndexSequence:
     # print(f"Calling dependence_to_isl_map with {expr}, {snk_dom}, {src_dom}, {condition}")
     map_ = dependence_to_isl_map(expr, snk_dom, src_dom, condition=condition, ctx=ctx)
@@ -217,11 +214,22 @@ def simplify_dependence_expr(
     return union_map_to_seq_expr(snk_dom, src_dom, map_, ctx=ctx)
 
 
-def simplify_expr(
+def simplify_sequence(
+    expr: ie.IndexSequence,
+    condition: ie.BooleanIndexValue | None = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
+) -> ie.IndexSequence:
+    return ie.IndexSequence(
+        tuple(simplify_expr_atom(e, condition, known_symbols, ctx) for e in expr)
+    )
+
+
+def simplify_expr_atom(
     expr: ie.IndexAtomLike,
-    condition: Optional[ie.BooleanIndexValue] = None,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-    ctx: Optional[islt.Context] = None,
+    condition: ie.BooleanIndexValue | None = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
 ) -> ie.IndexAtom:
     expr = ie.lift_to_ie_atom(expr)
     if isinstance(expr, ie.Slice):
@@ -236,9 +244,9 @@ def simplify_expr(
 
 def simplify_slice(
     expr: ie.Slice,
-    condition: Optional[ie.BooleanIndexValue] = None,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-    ctx: Optional[islt.Context] = None,
+    condition: ie.BooleanIndexValue | None = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
 ) -> ie.Slice:
     lb = simplify_int_index_value(
         expr.start, condition=condition, known_symbols=known_symbols, ctx=ctx
@@ -251,9 +259,9 @@ def simplify_slice(
 
 def simplify_int_index_value(
     expr: ie.IntIndexValueLike,
-    condition: Optional[ie.BooleanIndexValue] = None,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-    ctx: Optional[islt.Context] = None,
+    condition: ie.BooleanIndexValue | None = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
 ) -> ie.IntIndexValue:
     expr = ie.lift_to_int_ie(expr)
     # print(f"simp expr: {expr}")
@@ -272,26 +280,22 @@ def simplify_int_index_value(
     return pw_aff_to_index_value(pw_aff)
 
 
-def simplify_shape(shape: Shape, known_symbols: Optional[Mapping[ie.Symbol, int]] = None) -> Shape:
-    res_shape: List[ie.IntIndexValueLike] = []
+def simplify_shape(shape: Shape, known_symbols: Mapping[ie.Symbol, int] | None = None) -> Shape:
+    res_shape: list[ie.IntIndexValueLike] = []
 
     # print(f"Simplifying shape: {shape}")
     for s in shape:
         # print(f"s: {s}, {type(s)}, {s.__class__}")
-        if isinstance(s, int):
+        if isinstance(s, (int, ie.ConstInt)):
             # print(f"s is an int: {s}")
-            res_shape.append(s)
-        elif isinstance(s, ie.ConstInt):
-            # print(f"s is a ConstInt: {s}")
-            res_shape.append(s.const)
+            res_shape.append(int(s))
         else:
-            # print(f"s is not an int or a ConstInt: {s}, {type(s)}, {s.__class__}")
             try:
-                # if not isinstance(s, ie.IntIndexValue):
-                #    print(f"s is not an IntIndexValue: {s}, {type(s)}, {s.__class__}")
                 assert isinstance(s, ie.IntIndexValue)
-                pw_aff = int_index_value_to_pw_aff(s, known_symbols=known_symbols)
-                res_shape.append(pw_aff_to_index_value(pw_aff))
+                # TODO: pass in isl ctx
+                res_shape.append(simplify_int_index_value(s, known_symbols=known_symbols))
+                # pw_aff = int_index_value_to_pw_aff(s, known_symbols=known_symbols)
+                # res_shape.append(pw_aff_to_index_value(pw_aff))
             except Exception:
                 # print(f"exception simplifying shape: {s}")
                 # print(f"exception: {e}")
@@ -318,8 +322,9 @@ def reverse_dependence_expr(
     map_ = map_.reverse()
     # print(f"Reversed map {map_}")
     res = union_map_to_seq_expr(src_dom, snk_dom, map_)
+    res_simp = simplify_sequence(res)
     # print(f"Reversed expr {res}")
-    return res
+    return res_simp
 
 
 # def reverse_condition(condition: ie.BooleanIndexValue, domain: DomainLike)
@@ -376,10 +381,10 @@ def reverse_dependence_expr(
 
 
 def combine_many_edges(
-    ops: List[top.TensorOp],
-    edges: List[DependencyData],
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-    ctx: Optional[islt.Context] = None,
+    ops: list[top.TensorOp],
+    edges: list[DependencyData],
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
 ) -> DependencyData:
     # edges[i] is the edge from ops[i] to ops[i+1]
     assert len(ops) == len(edges) + 1
@@ -408,8 +413,8 @@ def can_combine_edges(
     mid: top.TensorOp,
     edge2: DependencyData,
     src: top.TensorOp,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-    ctx: Optional[islt.Context] = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
 ) -> bool:
     from tempo.core import global_objects as glob
 
@@ -450,8 +455,8 @@ def combine_edges(
     mid: top.TensorOp,
     edge2: DependencyData,
     src: top.TensorOp,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-    ctx: Optional[islt.Context] = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
 ) -> DependencyData:
     try:
         union_dom = Domain.union(snk.domain, mid.domain, src.domain)
@@ -484,8 +489,8 @@ def combine_edges_dom(
     mid_dom: DomainLike,
     edge2: DependencyData,
     src_dom: DomainLike,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-    ctx: Optional[islt.Context] = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
 ) -> DependencyData:
     snk_dom = Domain.from_(snk_dom)
     mid_dom = Domain.from_(mid_dom)
@@ -494,7 +499,7 @@ def combine_edges_dom(
     dom_union = Domain.union(snk_dom, mid_dom, src_dom)
     parameters, _ = get_parameters_and_var_bounds_strs(dom_union)
 
-    cond: Optional[ie.BooleanIndexValue] = (edge1.cond or ie.ConstBool(True)) & (
+    cond: ie.BooleanIndexValue | None = (edge1.cond or ie.ConstBool(True)) & (
         edge2.cond or ie.ConstBool(True)
     )
     if cond == ie.ConstBool(True):
@@ -525,7 +530,7 @@ def combine_edges_dom(
     )
 
 
-def set_to_seq_expr(set_: islt.Set, domain: DomainLike) -> ie.IndexSequence:
+def set_to_seq_expr(set_: isl.Set, domain: DomainLike) -> ie.IndexSequence:
     dom = Domain.from_(domain)
     vars_ = dom.variables
 
@@ -538,7 +543,7 @@ def set_to_seq_expr(set_: islt.Set, domain: DomainLike) -> ie.IndexSequence:
     lex_min_pw_multi_aff = set_.lexmin_pw_multi_aff()
     lex_max_pw_multi_aff = set_.lexmax_pw_multi_aff()
 
-    new_members: List[ie.IndexAtom] = []
+    new_members: list[ie.IndexAtom] = []
 
     # Loop over dimensions and analyze bounds
     for i in range(lex_min_pw_multi_aff.n_piece()):
@@ -570,8 +575,8 @@ def set_to_seq_expr(set_: islt.Set, domain: DomainLike) -> ie.IndexSequence:
 def union_map_to_seq_expr(
     snk_dom: DomainLike,
     src_dom: DomainLike,
-    map_: islt.UnionMap,
-    ctx: Optional[islt.Context] = None,
+    map_: isl.UnionMap,
+    ctx: isl.Context | None = None,
 ) -> ie.IndexSequence:
     snk_dom = Domain.from_(snk_dom)
     src_dom = Domain.from_(src_dom)
@@ -592,7 +597,7 @@ def union_map_to_seq_expr(
 
     lex_min_multi_pw_aff = isl.UnionPwMultiAff.from_union_map(lex_min_map).as_pw_multi_aff()
     lex_max_multi_pw_aff = isl.UnionPwMultiAff.from_union_map(lex_max_map).as_pw_multi_aff()
-    new_members: List[ie.IndexAtom] = []
+    new_members: list[ie.IndexAtom] = []
     for i in range(len(src_dom)):  # TODO also use lex_min_multi_pw_aff.n_piece()??
         lex_min_pw_aff = lex_min_multi_pw_aff.get_pw_aff(i)
         lex_max_pw_aff = lex_max_multi_pw_aff.get_pw_aff(i)
@@ -615,7 +620,7 @@ def union_map_to_seq_expr(
     return ie.IndexSequence(tuple(new_members))
 
 
-def _make_map(map_str: str, ctx: Optional[islt.Context]) -> islt.UnionMap:
+def _make_map(map_str: str, ctx: isl.Context | None) -> isl.UnionMap:
     # try:
     map_ = isl.UnionMap(map_str, context=ctx)
     # except Exception as e:
@@ -629,9 +634,9 @@ def _make_map(map_str: str, ctx: Optional[islt.Context]) -> islt.UnionMap:
 def int_index_value_to_union_map(
     expr: ie.IntIndexValue,
     domain: DomainLike,
-    condition: Optional[ie.BooleanIndexValue] = None,
-    ctx: Optional[islt.Context] = None,
-) -> islt.UnionMap:
+    condition: ie.BooleanIndexValue | None = None,
+    ctx: isl.Context | None = None,
+) -> isl.UnionMap:
     if ctx is None:
         ctx = get_isl_context(None)  # type: ignore
 
@@ -661,10 +666,10 @@ def int_index_value_to_union_map(
 
 def int_index_value_to_pw_aff(
     expr: ie.IntIndexValue,
-    condition: Optional[ie.BooleanIndexValue] = None,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-    ctx: Optional[islt.Context] = None,
-) -> islt.PwAff:
+    condition: ie.BooleanIndexValue | None = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+    ctx: isl.Context | None = None,
+) -> isl.PwAff:
     # vars_ = expr.vars_used()
     # vars_ = domain.variables
     # vars_str = ", ".join([str(v) for v in vars_])
@@ -706,7 +711,7 @@ def int_index_value_to_pw_aff(
     return pw_aff
 
 
-def union_map_to_pw_aff(map_: islt.UnionMap) -> islt.PwAff:
+def union_map_to_pw_aff(map_: isl.UnionMap) -> isl.PwAff:
     m_un_pw_aff = map_.as_multi_union_pw_aff()
 
     un_pw_aff = m_un_pw_aff.get_union_pw_aff(0)
@@ -728,9 +733,9 @@ def union_map_to_pw_aff(map_: islt.UnionMap) -> islt.PwAff:
 # isl.pw_aff("[D0] -> { [(D0)] : D0 > 0 }")
 def int_index_val_min(
     expr: ie.IntIndexValue,
-    condition: Optional[ie.BooleanIndexValue] = None,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-) -> Optional[int]:
+    condition: ie.BooleanIndexValue | None = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+) -> int | None:
     pw_aff = int_index_value_to_pw_aff(expr, condition=condition, known_symbols=known_symbols)
     min_val = pw_aff.min_val()
     if min_val.is_int():
@@ -743,9 +748,9 @@ def int_index_val_min(
 
 def int_index_val_max(
     expr: ie.IntIndexValueLike,
-    condition: Optional[ie.BooleanIndexValue] = None,
-    known_symbols: Optional[Mapping[ie.Symbol, int]] = None,
-) -> Optional[ie.IntIndexValue]:
+    condition: ie.BooleanIndexValue | None = None,
+    known_symbols: Mapping[ie.Symbol, int] | None = None,
+) -> ie.IntIndexValue | None:
     # map_ = int_index_value_to_union_map(expr, domain, condition, known_symbols)
     # print(f"MAX VAL MAP: {map_}")
     # print(f"MAX VAL MAP lexmax: {map_.lexmax()}")
@@ -812,7 +817,7 @@ def int_index_val_max(
 
 
 def pw_aff_to_index_value(
-    pw_aff: islt.PwAff,
+    pw_aff: isl.PwAff,
 ) -> ie.IntIndexValue:
     vars_ = Domain.universe().variables
     renaming = {f"i{i}": str(v) for i, v in enumerate(vars_)}
@@ -828,7 +833,7 @@ def pw_aff_to_index_value(
 def expr_eq(  # noqa: C901
     expr1: Any,
     expr2: Any,
-    ctx: Optional[islt.Context] = None,
+    ctx: isl.Context | None = None,
 ) -> bool:
     if not isinstance(expr1, ie.IndexExpr):
         expr1 = ie.lift_to_ie(expr1)
@@ -852,7 +857,7 @@ def expr_eq(  # noqa: C901
 
     all_bounds = list(set(list(expr1.bound_symbols_used()) + list(expr2.bound_symbols_used())))
 
-    def make_anon_map(expr: ie.IndexSequence) -> islt.UnionMap:
+    def make_anon_map(expr: ie.IndexSequence) -> isl.UnionMap:
         snk_vars = expr.vars_used()
         dom = Domain.from_(snk_vars)
 
@@ -895,12 +900,12 @@ def dependence_to_isl_map(  # noqa: C901
     src_dom: DomainLike,
     sink_name: str = empty_str,
     src_name: str = empty_str,
-    condition: Optional[ie.BooleanIndexValue] = None,
-    snk_dom_isl: Optional[islt.Set] = None,
-    src_dom_isl: Optional[islt.Set] = None,
-    ctx: Optional[islt.Context] = None,
-    parameters: Optional[str] = None,
-) -> islt.UnionMap:
+    condition: ie.BooleanIndexValue | None = None,
+    snk_dom_isl: isl.Set | None = None,
+    src_dom_isl: isl.Set | None = None,
+    ctx: isl.Context | None = None,
+    parameters: str | None = None,
+) -> isl.UnionMap:
     snk_dom = Domain.from_(snk_dom)
     src_dom = Domain.from_(src_dom)
 
@@ -960,45 +965,54 @@ def dependence_to_isl_map(  # noqa: C901
     return map_
 
 
-def try_join_atoms(atoms: Sequence[ie.IndexAtom]) -> Optional[ie.IndexAtom]:
-    atom_sets = [index_atom_to_isl_set(atom) for atom in atoms]
+def try_join_atoms(atoms: Sequence[ie.IndexAtom]) -> ie.IndexAtom | None:
+    try:
+        atom_sets = [index_atom_to_isl_set(atom) for atom in atoms]
 
-    unioned = functools.reduce(lambda x, y: x.union(y), atom_sets).coalesce().coalesce()
+        unioned = functools.reduce(lambda x, y: x.union(y), atom_sets).coalesce().coalesce()
 
-    unioned_domain = functools.reduce(
-        lambda x, y: Domain.union(x, y),
-        [Domain.from_(atom.vars_used()) for atom in atoms],
-    )
+        unioned_domain = functools.reduce(
+            lambda x, y: Domain.union(x, y),
+            [Domain.from_(atom.vars_used()) for atom in atoms],
+        )
 
-    if len(unioned_domain) > 1:
-        return None
+        if len(unioned_domain) > 1:
+            return None
 
-    if unioned.n_set() == 1:
-        index_seq = set_to_seq_expr(unioned.as_set(), unioned_domain)
-        return index_seq.members[0]
-    else:
+        if unioned.n_set() == 1:
+            index_seq = set_to_seq_expr(unioned.as_set(), unioned_domain)
+            return index_seq.members[0]
+        else:
+            return None
+    except Exception as e:
+        print(f"Error joining atoms: {e}")
         return None
 
 
 def index_atom_to_isl_set(
-    seq: ie.IndexAtom, name: Optional[str] = "", ctx: Optional[islt.Context] = None
-) -> islt.Set:
+    seq: ie.IndexAtom, name: str | None = "", ctx: isl.Context | None = None
+) -> isl.Set:
     bounds = seq.bound_symbols_used()
     bounds_str = ", ".join([str(b) for b in bounds])
     str_ = f"[{bounds_str}] -> {{ {name}[{seq}] }}"
-    return isl.Set(str_, context=ctx)
+    try:
+        res = isl.Set(str_, context=ctx)
+    except Exception as e:
+        print(f"Error converting atom ({seq}) to isl set. str={str_}")
+        raise e
+    return res
 
 
 def index_sequence_to_isl_union_set(
-    seq: ie.IndexSequence, name: Optional[str] = "", ctx: Optional[islt.Context] = None
-) -> islt.UnionSet:
+    seq: ie.IndexSequence, name: str | None = "", ctx: isl.Context | None = None
+) -> isl.UnionSet:
     bounds = seq.bound_symbols_used()
     bounds_str = ", ".join([str(b) for b in bounds])
     str_ = f"[{bounds_str}] -> {{ {name}[{seq}] }}"
     return isl.UnionSet(str_, context=ctx)
 
 
-def isl_domain_from_op(op: top.TensorOp, ctx: islt.Context) -> islt.Set:
+def isl_domain_from_op(op: top.TensorOp, ctx: isl.Context) -> isl.Set:
     domain = op.domain
     exec_name = op_id_to_exec_name(op.op_id)
     variable_strs = ",".join(str(v) for v in domain.variables)
@@ -1012,7 +1026,7 @@ def isl_domain_from_op(op: top.TensorOp, ctx: islt.Context) -> islt.Set:
     return isl_dom.coalesce().coalesce()
 
 
-def isl_sched_to_c(schedule: islt.Schedule) -> str:
+def isl_sched_to_c(schedule: isl.Schedule) -> str:
     astbuild = isl.AstBuild.from_context(isl.Set("{:}"))
     ast = astbuild.node_from_schedule(schedule)
     p = isl.Printer.to_str(ast.get_ctx())
@@ -1021,7 +1035,7 @@ def isl_sched_to_c(schedule: islt.Schedule) -> str:
 
 
 def isl_expr_to_tempo_int_index_value_expr(
-    e: islt.AstExpr, renaming: Optional[Mapping[str, str]] = None
+    e: isl.AstExpr, renaming: Mapping[str, str] | None = None
 ) -> ie.IntIndexValue:
     res = isl_expr_to_tempo_expr(e, renaming)
     if not isinstance(res, ie.IntIndexValue):
@@ -1030,7 +1044,7 @@ def isl_expr_to_tempo_int_index_value_expr(
 
 
 def isl_expr_to_tempo_boolean_expr(
-    e: islt.AstExpr, renaming: Optional[Mapping[str, str]] = None
+    e: isl.AstExpr, renaming: Mapping[str, str] | None = None
 ) -> ie.BooleanIndexValue:
     res = isl_expr_to_tempo_expr(e, renaming)
     if isinstance(res, ie.ConstInt) and res.const == 0:
@@ -1042,11 +1056,12 @@ def isl_expr_to_tempo_boolean_expr(
     return res
 
 
-def rename_union_set_tuples(uset: islt.UnionSet, new_name: str) -> islt.UnionSet:
+def rename_union_set_tuples(uset: isl.UnionSet, new_name: str) -> isl.UnionSet:
     renamed_union_set = isl.UnionSet.empty(uset.get_space())
 
     # Iterate over each set in the UnionSet
     set_list = uset.get_set_list()
+    # set_list = uset.to_union_set().get_set_list()
     for j in range(set_list.n_set()):
         single_set = set_list.get_at(j)
         # Rename the tuple in the set to "X"
@@ -1058,10 +1073,10 @@ def rename_union_set_tuples(uset: islt.UnionSet, new_name: str) -> islt.UnionSet
 
 
 def rename_union_map_tuples(
-    umap: islt.UnionMap,
-    new_name_in: Optional[str] = None,
-    new_name_out: Optional[str] = None,
-) -> islt.UnionMap:
+    umap: isl.UnionMap,
+    new_name_in: str | None = None,
+    new_name_out: str | None = None,
+) -> isl.UnionMap:
     renamed_union_map = isl.UnionMap.empty(umap.get_space())
 
     # Iterate over each map in the UnionMap
@@ -1080,7 +1095,7 @@ def rename_union_map_tuples(
 
 
 def isl_expr_to_tempo_expr(  # noqa: C901
-    e: islt.AstExpr, renaming: Optional[Mapping[str, str]] = None
+    e: isl.AstExpr, renaming: Mapping[str, str] | None = None
 ) -> ie.IndexValue:
     outer_expr_type = e.get_type()
 
@@ -1097,7 +1112,7 @@ def isl_expr_to_tempo_expr(  # noqa: C901
             if name.startswith("c"):
                 idx = int(name[1:]) * 2
             else:
-                idx = glob.get_active_dg().universe.find_variable_index(ie.Symbol(name.lower())) * 2
+                idx = glob.get_active_dg().universe.get_variable_by_name(name.lower()).idx
                 if name[0].isupper():
                     idx += 1
             return ie.Symbol(name, is_bound=name[0].isupper(), idx=idx)

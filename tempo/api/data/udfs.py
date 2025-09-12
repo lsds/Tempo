@@ -1,14 +1,15 @@
 import dataclasses
 import math
-from typing import Callable, Sequence, Tuple
+from collections.abc import Callable, Sequence
 
 from tempo.api.data.dataloader_desc import DataLoaderDesc
 from tempo.api.data.runtime_dataloader import RuntimeDataLoader, get_runtime_dataloader
 from tempo.core import tensor_op as top
 from tempo.core.datatypes import BackendTensorT
 from tempo.core.shape import Shape
-from tempo.core.tensor_ops import UserDefinedThunkDesc
-from tempo.core.thunk import Thunk, ThunkEmissionCtx, ThunkExecutionCtx, UDFVectorizationCtx
+from tempo.core.thunk import Thunk, ThunkExecutionCtx
+from tempo.core.thunk_emitter import ThunkEmissionCtx
+from tempo.core.thunk_udf import UDFVectorizationCtx, UserDefinedThunkDesc
 
 
 def get_next_batch_translation_for_desc(
@@ -23,8 +24,8 @@ def get_next_batch_translation_for_desc(
         dataloader: RuntimeDataLoader[BackendTensorT] = ctx.external_state_store[desc.state_id]  # type: ignore
 
         def next_batch(
-            inputs: Tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[BackendTensorT, ...]:
+            inputs: tuple[BackendTensorT, ...], exec_ctx: ThunkExecutionCtx
+        ) -> tuple[BackendTensorT, ...]:
             return dataloader.next_batch()  # type: ignore
 
         return next_batch

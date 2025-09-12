@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, List, Union
+from typing import Final, Union
 
 import psutil
 
@@ -37,7 +37,7 @@ def _get_cpu_metrics() -> tuple[int, float, float]:
     return cpu_count, memory, flops
 
 
-def _get_gpu_metrics() -> tuple[int, List[float], List[float]]:
+def _get_gpu_metrics() -> tuple[int, list[float], list[float]]:
     if not CUPY_AVAILABLE:
         return 0, [], []
 

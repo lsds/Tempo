@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import traceback
 from abc import ABC
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum, auto
-from typing import Any, ClassVar, List, Mapping, Optional, Sequence
+from typing import Any, ClassVar
 
 from tempo.core import index_expr as ie
 from tempo.core.datatypes import OpId, TensorId
+from tempo.core.debug_utils import get_creation_traceback
 
 
 class InstructionType(IntEnum):
@@ -29,9 +30,10 @@ class ScheduleItem(ABC):
     instr_type: ClassVar[InstructionType]
     _creation_traceback: Sequence[str] = field(
         init=False,
-        default_factory=lambda: traceback.format_stack()[:-1],
         repr=False,
         hash=False,
+        compare=False,
+        default_factory=lambda: get_creation_traceback(),
     )
 
     @property
@@ -60,7 +62,7 @@ class ExecInstruction(ScheduleItem):
     domain_map: Mapping[ie.Symbol, ie.IntIndexValue]
     instr_type: ClassVar[InstructionType] = InstructionType.EXEC
 
-    thunk: Optional[Any] = None
+    thunk: Any | None = None
 
     def render_str(self) -> str:
         return f"EXECUTE {self.op_id}\nDomain map:{self.domain_map}"
@@ -71,7 +73,7 @@ class MemManInstr(ScheduleItem):
     tensor_id: TensorId
     index: ie.IndexSequence
     is_point: bool = False
-    thunk: Optional[Any] = None
+    thunk: Any | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "is_point", self.index.is_point())
@@ -105,7 +107,7 @@ class FetchInstruction(MemManInstr):
 class IfGuard(ScheduleItem):
     if_cond: ie.BooleanIndexValue
     then_inner: ScheduleItem
-    else_inner: Optional[ScheduleItem]
+    else_inner: ScheduleItem | None
 
     instr_type: ClassVar[InstructionType] = InstructionType.IF_GUARD
 
@@ -153,7 +155,7 @@ class SequentialBlock(ScheduleItem):
 
     @property
     def flat_recursive_tree(self) -> Sequence[ScheduleItem]:
-        tree: List[ScheduleItem] = [self]
+        tree: list[ScheduleItem] = [self]
         for x in self.inner_block:
             tree.extend(x.flat_recursive_tree)
         return tree
@@ -176,7 +178,7 @@ class ParallelBlock(ScheduleItem):
         #    not isinstance(item, ForLoop) for item in self.flat_recursive_tree
         # )
         # object.__setattr__(self, "is_thread_safe", is_safe)
-        pass
+        ...
 
     @property
     def children(self) -> Sequence[ScheduleItem]:
@@ -184,7 +186,7 @@ class ParallelBlock(ScheduleItem):
 
     @property
     def flat_recursive_tree(self) -> Sequence[ScheduleItem]:
-        tree: List[ScheduleItem] = [self]
+        tree: list[ScheduleItem] = [self]
         for x in self.inner_block:
             tree.extend(x.flat_recursive_tree)
         return tree
@@ -222,7 +224,7 @@ class ExecutionSchedule:
         from graphviz import Digraph
 
         def add_nodes_edges(
-            item: ScheduleItem, graph: Digraph, parent_name: Optional[str] = None
+            item: ScheduleItem, graph: Digraph, parent_name: str | None = None
         ) -> None:
             if item is None:
                 return

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Mapping, Sequence
 
 import islpy as isl
 
 from tempo.core import index_expr as ie
-from tempo.core import isl_types as islt
 from tempo.core import tensor_ops as top
 from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.datatypes import OpId, OpOutId, TensorId
@@ -142,7 +140,7 @@ class IslASTToTempoScheduleWalker:
         self.visited_first_block = False
         self.quiet = quiet
 
-    def start_walk(self, root: islt.AstNode) -> ExecutionSchedule:
+    def start_walk(self, root: isl.AstNode) -> ExecutionSchedule:
         sched_inner = self._node_type_dispatcher(root)
         assert sched_inner is not None
         res = ExecutionSchedule(sched_inner)
@@ -166,7 +164,7 @@ class IslASTToTempoScheduleWalker:
 
         return res
 
-    def _node_type_dispatcher(self, node: islt.AstNode) -> Optional[ScheduleItem]:
+    def _node_type_dispatcher(self, node: isl.AstNode) -> ScheduleItem | None:
         if node.get_type() == isl.ast_node_type.error:
             return self._visit_error(node)
         if node.get_type() == isl.ast_node_type.for_:
@@ -179,7 +177,7 @@ class IslASTToTempoScheduleWalker:
             return self._visit_user(node)
         return self._visit_mark(node)
 
-    def _visit_mark(self, node: islt.AstNode) -> Optional[ScheduleItem]:
+    def _visit_mark(self, node: isl.AstNode) -> ScheduleItem | None:
         mark = node.mark_get_id().to_str()
         node_ = node.mark_get_node()
         marked = self._node_type_dispatcher(node_)
@@ -193,7 +191,7 @@ class IslASTToTempoScheduleWalker:
 
     def _promote_block_ops(
         self,
-        flat_children: List[ScheduleItem],
+        flat_children: list[ScheduleItem],
         for_loop: ForLoop,
     ) -> ScheduleItem:
         block_instrs = []
@@ -259,7 +257,7 @@ class IslASTToTempoScheduleWalker:
                 new_expr.append(member)
         return ie.IndexSequence(tuple(new_expr))
 
-    def _visit_for(self, node: islt.AstNode) -> Optional[ScheduleItem]:
+    def _visit_for(self, node: isl.AstNode) -> ScheduleItem | None:
         counter = isl_utils.isl_expr_to_tempo_expr(node.for_get_iterator())
         init = isl_utils.isl_expr_to_tempo_expr(node.for_get_init())
         cond = isl_utils.isl_expr_to_tempo_expr(node.for_get_cond())
@@ -295,7 +293,7 @@ class IslASTToTempoScheduleWalker:
 
         return for_loop
 
-    def _visit_if(self, node: islt.AstNode) -> Optional[ScheduleItem]:
+    def _visit_if(self, node: isl.AstNode) -> ScheduleItem | None:
         if_cond = isl_utils.isl_expr_to_tempo_boolean_expr(node.if_get_cond())
         then_node = self._node_type_dispatcher(node.if_get_then_node())
         else_node = None
@@ -322,10 +320,10 @@ class IslASTToTempoScheduleWalker:
         return distributable
 
     def _in_loop_redundant_swap_removals(
-        self, instrs: List[ScheduleItem]
-    ) -> Tuple[bool, List[ScheduleItem]]:
+        self, instrs: list[ScheduleItem]
+    ) -> tuple[bool, list[ScheduleItem]]:
         changes = False
-        processed_instrs: List[ScheduleItem] = []
+        processed_instrs: list[ScheduleItem] = []
         skip_next = False
         for instr, next_instr in zip(instrs[:-1], instrs[1:], strict=True):
             if skip_next:
@@ -404,8 +402,8 @@ class IslASTToTempoScheduleWalker:
         return changes, processed_instrs
 
     def _intra_block_redundant_swap_removals(  # noqa: C901
-        self, instrs: List[ScheduleItem]
-    ) -> Tuple[bool, List[ScheduleItem]]:
+        self, instrs: list[ScheduleItem]
+    ) -> tuple[bool, list[ScheduleItem]]:
         # This method removes redundant swap instructions within a block. These are:
         # 1. Offload -> ... -> Fetch pairs where the tensor and index are the same
         # 2. Offload  -> ... -> Deallocate pairs where the tensor and index are the same
@@ -416,24 +414,24 @@ class IslASTToTempoScheduleWalker:
         def exec_domain_map_to_index_seq(
             op: top.TensorOp, domain_map: Mapping[ie.Symbol, ie.IntIndexValue]
         ) -> ie.IndexSequence:
-            domain_list: List[ie.IndexValue] = []
+            domain_list: list[ie.IndexValue] = []
             for var in op.domain.variables:
                 domain_list.append(domain_map[var])  # type: ignore
             return ie.IndexSequence(tuple(domain_list))
 
-        processed_instrs: List[ScheduleItem] = []
+        processed_instrs: list[ScheduleItem] = []
 
         # Maps (tensor_id, index) to position in processed_instrs
-        offload_map: Dict[Tuple[TensorId, ie.IndexSequence], int] = {}
+        offload_map: dict[tuple[TensorId, ie.IndexSequence], int] = {}
 
         # Maps (tensor_id, index) to position in processed_instrs
-        fetch_map: Dict[Tuple[TensorId, ie.IndexSequence], int] = {}
+        fetch_map: dict[tuple[TensorId, ie.IndexSequence], int] = {}
 
         # Maps (tensor_id,) to position in processed_instrs
-        fetch_map_no_user: Dict[TensorId, Tuple[int, ie.IndexSequence]] = {}
+        fetch_map_no_user: dict[TensorId, tuple[int, ie.IndexSequence]] = {}
 
         # Maps (tensor_id, index) to position in processed_instrs
-        execute_prod_map: Dict[Tuple[TensorId, ie.IndexSequence], int] = {}
+        execute_prod_map: dict[tuple[TensorId, ie.IndexSequence], int] = {}
 
         def adjust_maps(pos: int) -> None:
             for key, idx in offload_map.items():
@@ -582,12 +580,12 @@ class IslASTToTempoScheduleWalker:
 
         return is_superset
 
-    def _flatten_side_by_side(self, instrs: List[ScheduleItem]) -> Tuple[bool, List[ScheduleItem]]:
+    def _flatten_side_by_side(self, instrs: list[ScheduleItem]) -> tuple[bool, list[ScheduleItem]]:
         # This method flattens side-by-side memory management instructions that end up covering
         # a single contiguous memory region. This is useful for reducing the number of memory
         # management instructions that are executed.
         changes = False
-        new_instrs: List[ScheduleItem] = []
+        new_instrs: list[ScheduleItem] = []
         skip_indices = set()
         i = 0
         while i < len(instrs):
@@ -633,7 +631,7 @@ class IslASTToTempoScheduleWalker:
                     for idx in range(num_index_components):
                         # Collect the idx-th index from each instruction
                         indices = [instr2.index[idx] for instr2 in same_type_instrs]
-                        if all((x.struct_eq(indices[0]) for x in indices)):
+                        if all(x.struct_eq(indices[0]) for x in indices):
                             # All indices are the same, no need to join
                             expr_list.append(indices[0])
                         else:
@@ -660,12 +658,12 @@ class IslASTToTempoScheduleWalker:
             i += 1
         return changes, new_instrs
 
-    def _flatten_side_by_side2(self, instrs: List[ScheduleItem]) -> Tuple[bool, List[ScheduleItem]]:
+    def _flatten_side_by_side2(self, instrs: list[ScheduleItem]) -> tuple[bool, list[ScheduleItem]]:
         # This method flattens side-by-side memory management instructions that end up covering
         # a single contiguous memory region. This is useful for reducing the number of memory
         # management instructions that are executed.
         changes = False
-        new_instrs: List[ScheduleItem] = []
+        new_instrs: list[ScheduleItem] = []
         i = 0
         while i < len(instrs):
             instr = instrs[i]
@@ -690,7 +688,7 @@ class IslASTToTempoScheduleWalker:
                     for idx in range(num_index_components):
                         # Collect the idx-th index from each instruction
                         indices = [instr2.index[idx] for instr2 in same_type_instrs]
-                        if all((x.struct_eq(indices[0]) for x in indices)):
+                        if all(x.struct_eq(indices[0]) for x in indices):
                             # All indices are the same, no need to join
                             expr_list.append(indices[0])
                         else:
@@ -721,7 +719,7 @@ class IslASTToTempoScheduleWalker:
                 i += 1
         return changes, new_instrs
 
-    def _visit_block(self, node: islt.AstNode) -> Optional[ScheduleItem]:
+    def _visit_block(self, node: isl.AstNode) -> ScheduleItem | None:
         is_first_block = not self.visited_first_block
 
         if not self.visited_first_block:
@@ -785,7 +783,7 @@ class IslASTToTempoScheduleWalker:
     def _flatten_side_by_side_parallel(  # noqa: C901
         self, sched_items: Sequence[ScheduleItem]
     ) -> Sequence[ScheduleItem]:
-        new_sched_items: List[ScheduleItem] = []
+        new_sched_items: list[ScheduleItem] = []
         i = 0
         while i < len(sched_items):
             item = sched_items[i]
@@ -818,9 +816,9 @@ class IslASTToTempoScheduleWalker:
         return new_sched_items
 
     def _flatten_sched_items(  # noqa: C901
-        self, sched_items: List[ScheduleItem]
-    ) -> List[ScheduleItem]:
-        new_sched_items: List[ScheduleItem] = []
+        self, sched_items: list[ScheduleItem]
+    ) -> list[ScheduleItem]:
+        new_sched_items: list[ScheduleItem] = []
         if self.next_is_parallel:
             # flatten any child parallel blocks
             for item in sched_items:
@@ -837,7 +835,7 @@ class IslASTToTempoScheduleWalker:
                     new_sched_items.append(item)
         return new_sched_items
 
-    def _visit_user(self, node: islt.AstNode) -> Optional[ScheduleItem]:  # noqa: C901
+    def _visit_user(self, node: isl.AstNode) -> ScheduleItem | None:  # noqa: C901
         expr = node.user_get_expr()
         if expr.get_op_type() == isl.ast_expr_op_type.call:
             stmt_name = str(expr.get_op_arg(0).to_C_str())
@@ -859,7 +857,7 @@ class IslASTToTempoScheduleWalker:
             domain_mapping = SymbolDict(capacity * 2)
             domain_mapping.load_keys(list(op_domain_vars))
 
-            domain_list: List[ie.IndexValue] = []
+            domain_list: list[ie.IndexValue] = []
             for i in range(num_args - 1):
                 arg = expr.get_op_arg(i + 1)  # NOTE: first arg is id
                 arg_expr = isl_utils.isl_expr_to_tempo_expr(arg)
@@ -917,28 +915,28 @@ class IslASTToTempoScheduleWalker:
             raise ValueError(f"Unsupported expression type {expr.get_op_type()}")
         # return None, None, None
 
-    def _visit_error(self, node: islt.AstNode) -> ScheduleItem:
+    def _visit_error(self, node: isl.AstNode) -> ScheduleItem:
         raise NotImplementedError
 
 
-def get_ast_builder(ctx: islt.Context) -> islt.AstBuild:
+def get_ast_builder(ctx: isl.Context) -> isl.AstBuild:
     ast_build = isl.AstBuild.alloc(ctx)
     # NOTE here, we may want to set callbacks, like before_each_for and such
     return ast_build
 
 
-def build_isl_ast_from_schedule(ast_build: islt.AstBuild, sched: islt.Schedule) -> islt.AstNode:
+def build_isl_ast_from_schedule(ast_build: isl.AstBuild, sched: isl.Schedule) -> isl.AstNode:
     root = ast_build.node_from_schedule(sched)
     return root
 
 
-def build_isl_ast_from_schedule_map(ast_build: islt.AstBuild, sched: islt.UnionMap) -> islt.AstNode:
+def build_isl_ast_from_schedule_map(ast_build: isl.AstBuild, sched: isl.UnionMap) -> isl.AstNode:
     root = ast_build.node_from_schedule_map(sched)
     return root
 
 
 def isl_ast_to_tempo_schedule(
-    comp_ctx: CompilationCtx, root: islt.AstNode, quiet: bool = False
+    comp_ctx: CompilationCtx, root: isl.AstNode, quiet: bool = False
 ) -> ExecutionSchedule:
     walker = IslASTToTempoScheduleWalker(comp_ctx, quiet)
     sched = walker.start_walk(root)

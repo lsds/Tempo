@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Optional, Tuple
+from typing import Any
 
 import fire
 import gym
@@ -15,7 +15,7 @@ from rl_games.common.vecenv import register as register_vec_env_cfg
 from rl_games.torch_runner import Runner
 
 from tempo.core.configs import get_default_path
-from tempo.utils.profile_dump import Profiler
+from tempo.utils.cprofiler import Profiler
 from tempo.utils.resource_monitor import ResourceMonitorManager
 from tempo.utils.torch_profiler import TorchProfiler
 
@@ -171,8 +171,7 @@ class EpochStatsAlgoObserver(AlgoObserver):
         self.num_envs = num_envs
         self.calls = 0
 
-    def before_init(self, base_name, config, experiment_name):
-        pass
+    def before_init(self, base_name, config, experiment_name): ...
 
     def after_init(self, algo: A2CAgent):
         self.algo = algo
@@ -182,10 +181,9 @@ class EpochStatsAlgoObserver(AlgoObserver):
         # env_done_indices = all_done_indices[::self.algo.num_agents]
 
         # self.algo.current_rewards[env_done_indices]
-        pass
+        ...
 
-    def after_steps(self):
-        pass
+    def after_steps(self): ...
 
     def after_print_stats(self, frame, epoch_num, total_time):
         """Called once per epoch"""
@@ -214,8 +212,7 @@ class EpochStatsAlgoObserver(AlgoObserver):
         # self.run.log({"l_vf": float(vf_loss), "iteration": iteration})
         # self.run.log({"l_ent": float(entropy), "iteration": iteration})
 
-    def after_clear_stats(self):
-        pass
+    def after_clear_stats(self): ...
 
 
 def get_rlgames_ppo_execute_fn(
@@ -231,10 +228,10 @@ def get_rlgames_ppo_execute_fn(
     iterations: int = 5,
     gamma: float = 0.99,
     start_lr: float = 1e-3,
-    lambda_: Optional[float] = 0.96,
+    lambda_: float | None = 0.96,
     ent_coef: float = 0.01,
     vf_coef: float = 0.01,
-    obs_shape: Tuple[int, ...] = (3, 256, 256),
+    obs_shape: tuple[int, ...] = (3, 256, 256),
     ## RL-games-specific parameters
     minibatch_size: int = 32,
     **kwargs,
@@ -457,7 +454,7 @@ def execute_rl_games_ppo(
     iterations: int = 10,
     gamma: float = 0.99,
     start_lr: float = 1e-3,
-    lambda_: Optional[float] = 0.96,
+    lambda_: float | None = 0.96,
     ent_coef: float = 0.01,
     vf_coef: float = 0.01,
     torch_profile: bool = False,

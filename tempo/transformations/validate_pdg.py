@@ -37,11 +37,10 @@ class ValidatePDG(Analysis):
         self._validate_shapes(dg, op_data)
         self._validate_dtypes(dg, op_data)
 
-        # if isinstance(op_data.op, top.MergeOp):
-        #    if len(op_data.uncommitted_branch_conds) == 1 or
-        #    len(dg.get_input_shapes_list(op_data.op)) == 1:
-        #        print(f"Found suspicious merge op with single branch condition: {op_data.op}")
-        #        print(op_data.op.creation_traceback)
+        assert len(dg.get_flat_direct_dependencies(op_data.op)) == op_data.op.num_inputs, (
+            f"{op_data.op=}: expected {op_data.op.num_inputs} inputs, "
+            f" got {len(dg.get_flat_direct_dependencies(op_data.op))}"
+        )
 
     def _validate_dtypes(self, dg: PDG, op_data: OpData) -> None:
         op: top.TensorOp = op_data.op

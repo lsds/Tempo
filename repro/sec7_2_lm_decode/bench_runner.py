@@ -5,14 +5,10 @@ from abc import ABC
 
 
 class BenchRunner(ABC):
-    def __init__(self, *args, **kwargs):
-        pass
+    def __init__(self, *args, **kwargs): ...
 
-    def compile(self, **kwargs):
-        pass
+    def compile(self, **kwargs): ...
 
-    def warmup(self, **kwargs):
-        pass
+    def warmup(self, **kwargs): ...
 
-    def run(self, **kwargs):
-        pass
+    def run(self, **kwargs): ...

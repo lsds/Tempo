@@ -3,11 +3,12 @@ import multiprocessing as mp
 import random
 import sys
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from multiprocessing.managers import DictProxy, ListProxy
 from multiprocessing.synchronize import Event
 from types import TracebackType
-from typing import Any, Callable, ContextManager, Dict, Optional, Sequence, Tuple, Type
+from typing import Any, ContextManager
 
 import numpy as np
 import psutil
@@ -69,23 +70,23 @@ class ResourceMonitorResults:
         return float(np.mean(self.cpu_mem_util))
 
     @property
-    def mean_gpu_util(self) -> Dict[int, float]:
+    def mean_gpu_util(self) -> dict[int, float]:
         return {k: float(np.mean(v)) for k, v in self.gpu_util.items()}
 
     @property
-    def peak_gpu_util(self) -> Dict[int, float]:
+    def peak_gpu_util(self) -> dict[int, float]:
         return {k: float(np.max(v)) for k, v in self.gpu_util.items()}
 
     @property
-    def mean_smact(self) -> Dict[int, float]:
+    def mean_smact(self) -> dict[int, float]:
         return {k: float(np.mean(v)) for k, v in self.smact.items()}
 
     @property
-    def mean_gpu_mem_util(self) -> Dict[int, float]:
+    def mean_gpu_mem_util(self) -> dict[int, float]:
         return {k: float(np.mean(v)) for k, v in self.gpu_mem_util.items()}
 
     @property
-    def peak_gpu_mem_util(self) -> Dict[int, float]:
+    def peak_gpu_mem_util(self) -> dict[int, float]:
         return {k: float(np.max(v)) for k, v in self.gpu_mem_util.items()}
 
     # @property
@@ -207,7 +208,7 @@ def take_reading(
     gpu_ids: Sequence[int],
     gpu_handles: Sequence[Any],
     results: ResourceMonitorResults,
-    dcgm_data: Optional[Tuple[Any, Any, Any]],
+    dcgm_data: tuple[Any, Any, Any] | None,
     # file: TextIOWrapper,
 ) -> None:
     now = time.perf_counter_ns()
@@ -283,7 +284,7 @@ def take_reading(
 
 
 class ResourceUsageMonitor:
-    def __init__(self, path: str, fps: int, gpus_to_monitor: Optional[Sequence[int]] = None):
+    def __init__(self, path: str, fps: int, gpus_to_monitor: Sequence[int] | None = None):
         self.fps = fps
         self.path = path
         self.ctx = mp.get_context("spawn")
@@ -365,7 +366,7 @@ class ResourceMonitorManager:
         self,
         path: str = "./monitor.csv",
         fps: int = 1,
-        gpu_ids: Optional[Sequence[int]] = None,
+        gpu_ids: Sequence[int] | None = None,
     ):
         self.monitor = ResourceUsageMonitor(path, fps, gpu_ids)
         self.path = path
@@ -376,10 +377,10 @@ class ResourceMonitorManager:
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> Optional[bool]:
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
         try:
             self.monitor.stop()
         except Exception as e:

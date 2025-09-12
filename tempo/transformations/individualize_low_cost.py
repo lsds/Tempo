@@ -1,5 +1,4 @@
 import dataclasses
-from typing import Tuple, Type
 
 from tempo.core import tensor_ops as top
 from tempo.core.compilation_ctx import CompilationCtx
@@ -19,7 +18,6 @@ DEFAULT_OPS_TO_INDIVIDUALIZE = (
 
 DEFAULT_EXCEPTION_OPS = (top.SplitOp,)
 
-DO_NOT_INDIVIDUALIZE_CONSTS_LARGER_THAN_X_BYTES = 250 ** (2**20)  # 2MB
 
 # def is_static_op(dg: PDG, op: top.TensorOp) -> bool:
 #    all_shapes = list(dg.get_input_shapes_list(op)) + list(dg.get_output_shapes_list(op))
@@ -31,8 +29,8 @@ class IndividualizeLowCost(Transformation):
     def __init__(
         self,
         ctx: CompilationCtx,
-        additional_ops_to_individualize: Tuple[Type[top.TensorOp], ...] = (),
-        additional_exception_ops: Tuple[Type[top.TensorOp], ...] = (),
+        additional_ops_to_individualize: tuple[type[top.TensorOp], ...] = (),
+        additional_exception_ops: tuple[type[top.TensorOp], ...] = (),
     ):
         super().__init__(ctx)
         self.ops_to_individualize = DEFAULT_OPS_TO_INDIVIDUALIZE + additional_ops_to_individualize
@@ -42,6 +40,8 @@ class IndividualizeLowCost(Transformation):
         dependents = list(dg.get_flat_direct_dependents(op))
         if len(dependents) < 2:
             return 0
+
+        # print(f"Individualizing {op} with {dependents} dependents")
 
         for dep_op, dep_data in dependents[1:]:
             new_op = dataclasses.replace(op, op_id=dg.get_next_op_id())
@@ -70,10 +70,12 @@ class IndividualizeLowCost(Transformation):
         Returns:
             bool: True if the operation should be individualized, False otherwise
         """
+        threshold = self.ctx.exec_cfg.individualize_consts_smaller_than_x_bytes
+
         # NOTE: We do not individualize constants that are too large (e.g. embedding tables)
         if isinstance(op, top.ConstOp):
             const_numpy_array = op.value
-            if const_numpy_array.nbytes > DO_NOT_INDIVIDUALIZE_CONSTS_LARGER_THAN_X_BYTES:
+            if const_numpy_array.nbytes > threshold:
                 return False
 
         return (
@@ -81,7 +83,7 @@ class IndividualizeLowCost(Transformation):
             # and is_static_op(new_dg, op)  # Commented out as in original code
         )
 
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         new_dg = self.ctx.dg
         count = 0
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Optional
 
 from tempo.api import RecurrentTensor, nn
 from tempo.api.llm.tokenizer.tokenizer import RuntimeTokenizer
@@ -102,16 +101,16 @@ class LlamaArgs:
     dim: int = 4096
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     n_heads: int = 32
-    n_kv_heads: Optional[int] = None  # For GQA
+    n_kv_heads: int | None = None  # For GQA
     n_layers: int = 32
     norm_eps: float = 1e-5
-    ffn_dim_multiplier: Optional[float] = None
+    ffn_dim_multiplier: float | None = None
     rope_theta: float = 10_000.0  # default for llama2
     # NOTE: the official llama3.2 code doenst use this, so we do not either.
     use_scaled_rope: bool = False  # default for llama2
     vocab_size: int = -1  # defined later by tokenizer
     tie_embeddings_and_output: bool = True
-    rope_scaling_params: Optional[RopeScalingParams] = None
+    rope_scaling_params: RopeScalingParams | None = None
 
 
 class FeedForward(nn.Module):
@@ -120,10 +119,10 @@ class FeedForward(nn.Module):
         dim: int,
         hidden_dim: int,
         multiple_of: int,
-        ffn_dim_multiplier: Optional[float] = None,
+        ffn_dim_multiplier: float | None = None,
         domain: DomainLike = None,
         independent_domain: DomainLike = None,
-        state_loader: Optional[StateDictLoader] = None,
+        state_loader: StateDictLoader | None = None,
     ) -> None:
         super().__init__(domain, independent_domain)
         hidden_dim = int(2 * hidden_dim / 3)
@@ -160,7 +159,7 @@ class FeedForward(nn.Module):
         )
 
     def forward(self, x: RecurrentTensor) -> RecurrentTensor:
-        return self.w2(self.w1(x).swish() * self.w3(x))  # type:ignore
+        return self.w2(self.w1(x).silu() * self.w3(x))  # type:ignore
 
 
 class TransformerBlock(nn.Module):
@@ -171,7 +170,7 @@ class TransformerBlock(nn.Module):
         layer_idx: Symbol,
         domain: DomainLike = None,
         independent_domain: DomainLike = None,
-        state_loader: Optional[StateDictLoader] = None,
+        state_loader: StateDictLoader | None = None,
     ) -> None:
         super().__init__(domain, independent_domain)
 
@@ -197,11 +196,13 @@ class TransformerBlock(nn.Module):
             rope_theta=params.rope_theta,
             rope_scaling_params=params.rope_scaling_params,
             num_kv_heads=params.n_kv_heads,
+            bias=False,
         )
 
         self.attention_norm = nn.RMSNorm(
             params.dim,
             domain=domain,
+            eps=params.norm_eps,
             independent_domain=independent_domain,
             w_init_fun=block_loader.load_tensor("attention_norm.weight"),
         )
@@ -219,11 +220,12 @@ class TransformerBlock(nn.Module):
         self.ffn_norm = nn.RMSNorm(
             params.dim,
             domain=domain,
+            eps=params.norm_eps,
             independent_domain=independent_domain,
             w_init_fun=block_loader.load_tensor("ffn_norm.weight"),
         )
 
-    def forward(self, x: RecurrentTensor, pattern: Optional[IndexAtom] = None) -> RecurrentTensor:
+    def forward(self, x: RecurrentTensor, pattern: IndexAtom | None = None) -> RecurrentTensor:
         h = x + self.attention(self.attention_norm(x), pattern)
         out: RecurrentTensor = h + self.ffn(self.ffn_norm(h))
 
@@ -237,7 +239,7 @@ class Llama(nn.Module):
         temporal_dim: Symbol,
         domain: DomainLike = None,
         independent_domain: DomainLike = None,
-        state_loader: Optional[StateDictLoader] = None,
+        state_loader: StateDictLoader | None = None,
     ) -> None:
         super().__init__(domain, independent_domain)
         self.params = params
@@ -295,78 +297,77 @@ class Llama(nn.Module):
         )
 
     @staticmethod
-    def sp_tokenizer_from_checkpoint(checkpoint_dir: str) -> RuntimeTokenizer:
+    def sp_tokenizer_from_checkpoint(checkpoint_dir: str | Path) -> RuntimeTokenizer:
         from tempo.api.llm.tokenizer.sp_tokenizer import SPTokenizer
 
-        path = Path(checkpoint_dir) / "tokenizer.model"
+        checkpoint_dir = Path(checkpoint_dir).expanduser()
+        path = checkpoint_dir / "tokenizer.model"
         log.info("Loading tokenizer from %s", path)
         return SPTokenizer(path=path)
 
     @staticmethod
-    def tiktoken_tokenizer_from_checkpoint(checkpoint_dir: str) -> RuntimeTokenizer:
+    def tiktoken_tokenizer_from_checkpoint(checkpoint_dir: str | Path) -> RuntimeTokenizer:
         from pathlib import Path
 
-        from tempo.api.llm.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
+        checkpoint_dir = Path(checkpoint_dir).expanduser()
 
-        path_tiktoken = Path(checkpoint_dir) / "tokenizer.tiktoken"
-        if path_tiktoken.is_file():
-            path = path_tiktoken
-        elif (Path(checkpoint_dir) / "original" / "tokenizer.tiktoken").is_file():
-            path = Path(checkpoint_dir) / "original" / "tokenizer.tiktoken"
-        elif (Path(checkpoint_dir) / "original" / "tokenizer.model").is_file():
-            path = Path(checkpoint_dir) / "original" / "tokenizer.model"
-        else:
-            raise FileNotFoundError(f"No tiktoken tokenizer file found in {checkpoint_dir}")
+        from tempo.api.llm.tokenizer.llama_tiktoken_tokenizer import LlamaTiktokenTokenizer
 
-        tokenizer_json_path = Path(checkpoint_dir) / "tokenizer.json"
+        def find_tokenizer_path(checkpoint_dir: Path) -> Path:
+            possible_paths = [
+                checkpoint_dir / "tokenizer.tiktoken",
+                checkpoint_dir / "original" / "tokenizer.tiktoken",
+                checkpoint_dir / "original" / "tokenizer.model",
+            ]
+
+            for path in possible_paths:
+                log.info("Checking for tokenizer at %s", path)
+                if path.is_file():
+                    return path
+
+            log.error("No tokenizer file found in %s", checkpoint_dir)
+            raise FileNotFoundError(f"No tiktoken tokenizer file found in {checkpoint_dir}.")
+
+        path = find_tokenizer_path(checkpoint_dir)
+
+        tokenizer_json_path = checkpoint_dir / "tokenizer.json"
         if not tokenizer_json_path.is_file():
-            tokenizer_json_path = Path(checkpoint_dir) / "original" / "tokenizer.json"
+            tokenizer_json_path = checkpoint_dir / "original" / "tokenizer.json"
 
         log.info("Loading tiktoken tokenizer from %s", path)
-        return TiktokenTokenizer(path)
+        return LlamaTiktokenTokenizer(path)
 
     @staticmethod
-    def auto_tokenizer_from_checkpoint(checkpoint_dir: str) -> RuntimeTokenizer:
-        if "Llama3.2" in checkpoint_dir:
+    def auto_tokenizer_from_checkpoint(checkpoint_dir: str | Path) -> RuntimeTokenizer:
+        checkpoint_dir = Path(checkpoint_dir).expanduser()
+        if "Llama3.2" in str(checkpoint_dir):
             return Llama.tiktoken_tokenizer_from_checkpoint(checkpoint_dir)
-        elif "Llama-2" in checkpoint_dir:
+        elif "Llama-2" in str(checkpoint_dir):
             return Llama.sp_tokenizer_from_checkpoint(checkpoint_dir)
         else:
             raise ValueError(f"Unknown model type in {checkpoint_dir}")
 
     @staticmethod
     def from_checkpoint(
-        checkpoint_dir: str,
+        checkpoint_dir: str | Path,
         temporal_dim: Symbol,
         n_words: int,
         dtype: DataType,
         exec_cfg: ExecutionConfig,
         domain: DomainLike = None,
         independent_domain: DomainLike = None,
+        enable_rope_scaling: bool = True,
+        force_rope_base: int | None = None,
     ) -> Llama:
-        import json
+        checkpoint_dir = Path(checkpoint_dir).expanduser()
 
-        params_path = Path(checkpoint_dir) / "params.json"
-        if not params_path.exists():
-            params_path = Path(checkpoint_dir) / "original" / "params.json"
+        params_dataclass = Llama.get_args_from_checkpoint(
+            checkpoint_dir, n_words, enable_rope_scaling, force_rope_base
+        )
 
-        log.info("Loading params from %s", params_path)
-        params = dict(json.load(open(params_path)))
-        params_dataclass = LlamaArgs(**params)
-        params_dataclass.vocab_size = n_words
-        log.info("Llama params: %s", params_dataclass)
-        if params_dataclass.use_scaled_rope:
-            log.info("Loading rope scaling params from config.json")
-            config_path = Path(checkpoint_dir) / "config.json"
-            config = json.load(open(config_path))
-            rope_params = RopeScalingParams(**config["rope_scaling"])
-            params_dataclass.rope_scaling_params = rope_params
-        else:
-            raise ValueError("Llama3.2 requires scaled rope")
-
-        checkpoint_path = Path(checkpoint_dir) / "consolidated.00.pth"
+        checkpoint_path = checkpoint_dir / "consolidated.00.pth"
         if not checkpoint_path.exists():
-            checkpoint_path = Path(checkpoint_dir) / "original" / "consolidated.00.pth"
+            checkpoint_path = checkpoint_dir / "original" / "consolidated.00.pth"
 
         state_loader = StateDictLoader.from_torch_checkpoint(
             checkpoint_path,
@@ -382,16 +383,45 @@ class Llama(nn.Module):
             state_loader=state_loader,
         )
 
+    @staticmethod
+    def get_args_from_checkpoint(
+        checkpoint_dir: str | Path,
+        n_words: int,
+        enable_rope_scaling: bool = True,
+        force_rope_base: int | None = None,
+    ) -> LlamaArgs:
+        import json
+
+        checkpoint_dir = Path(checkpoint_dir).expanduser()
+
+        params_path = checkpoint_dir / "params.json"
+        if not params_path.exists():
+            params_path = checkpoint_dir / "original" / "params.json"
+
+        log.info("Loading params from %s", params_path)
+        params = dict(json.load(open(params_path)))
+        params_dataclass = LlamaArgs(**params)
+        params_dataclass.vocab_size = n_words
+        if enable_rope_scaling and params_dataclass.use_scaled_rope:
+            log.info("Loading rope scaling params from config.json")
+            config_path = Path(checkpoint_dir) / "config.json"
+            config = json.load(open(config_path))
+            rope_params = RopeScalingParams(**config["rope_scaling"])
+            params_dataclass.rope_scaling_params = rope_params
+
+        if force_rope_base is not None:
+            params_dataclass.rope_theta = force_rope_base
+
+        log.info("Llama params: %s", params_dataclass)
+        return params_dataclass
+
     def forward(
-        self, x: RecurrentTensor, attention_pattern: Optional[IndexAtom] = None
+        self, x: RecurrentTensor, attention_pattern: IndexAtom | None = None
     ) -> RecurrentTensor:
         l, L = self.l, self.l_ub
 
-        # assert x.dtype == dtypes.int16, "x.dtype is not int16"
-
         x_emb = self.tok_embeddings(x)
-
-        # assert x.dtype == dtypes.float16, "x.dtype is not float16"
+        assert x_emb.dtype == dtypes.float16, "x_emb.dtype is not float16"
 
         dom_ = x_emb.domain.append_dim(l, L)
 
@@ -402,18 +432,18 @@ class Llama(nn.Module):
             requires_grad=False,
         )
 
-        # assert residual_stream.dtype == dtypes.float16, "residual_stream.dtype is not float16"
-
         l_idx = dom_.find_variable_index(l)
         dom_basis = dom_.basis_expr
 
         residual_stream[dom_basis.replace_idx(l_idx, 0)] = x_emb
-        block_out = self.transformer_block(residual_stream, attention_pattern).cast(x_emb.dtype)
-        # assert block_out.dtype == dtypes.float16, "block_out.dtype is not float16"
+        block_out = self.transformer_block(residual_stream, attention_pattern)
+        assert block_out.dtype == dtypes.float16, "block_out.dtype is not float16"
         residual_stream[True] = block_out[dom_basis.replace_idx(l_idx, l - 1)]
 
         normalized_out = self.norm(block_out[dom_basis.replace_idx(l_idx, L - 1)])
+        assert normalized_out.dtype == dtypes.float16, "normalized_out.dtype is not float16"
         result: RecurrentTensor = self.output(normalized_out)
+        assert result.dtype == dtypes.float16, "result.dtype is not float16"
 
         # assert result.dtype == dtypes.float16, "result.dtype is not float16"
         return result
@@ -425,31 +455,17 @@ class Llama(nn.Module):
         top_p: float = 0.9,
         greedy: bool = False,
     ) -> RecurrentTensor:
-        # Apply temperature scaling
-
-        # TODO: scalable Sample top-p (nucleus sampling):
-        # We have the function, but compiling it is horrible as it generates enormous sdgs.
-        # We need to either make compilation considerably more scalable, or
-        # encode it using symbolic dimensions.
-        # One more alternative, is to make sorting a primitive op. Tbh, this is probably the best
-        # option.
-        # https://github.com/meta-llama/llama3/blob/main/llama/generation.py#L343
-
-        # assert logits.dtype == dtypes.float16, "logits.dtype is not float16"
+        # assert temperature == 0.6 and greedy is False
 
         if greedy:
-            sampled = logits.argmax(dim=-1).cast(dtypes.default_int)
+            sampled = logits.argmax(dim=-1)
         else:
             # TODO: allow temperature to be a recurrent tensor?
-            assert temperature >= 0.0, "Temperature must be positive"
-            assert temperature <= 1.0, "Temperature must be less than 1.0"
-            logits = logits / temperature
-            probs = logits.cast(dtypes.float32).softmax(dim=-1)  # .cast(logits.dtype)
-            sampled = probs.multinomial(num_samples=1).squeeze(-1).cast(dtypes.default_int)
+            if isinstance(temperature, (int, float)):
+                assert temperature >= 0.0, "Temperature must be positive"
 
-            # probs = RecurrentTensor.softmax(logits / temperature, dim=-1)
-            ## return probs.sample_top_p(top_p).squeeze(-1)
-            # sampled = probs.sample_likely(above=0.05).squeeze(-1)
+            probs = RecurrentTensor.softmax(logits / temperature, dim=-1)
+            return probs.sample_top_p(top_p).squeeze(-1)
 
         # sampled[0 : b.as_bound()].sink_udf(lambda x_: print(f"Sampled tokens: {x_}"))
         return sampled

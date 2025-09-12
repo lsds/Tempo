@@ -1,5 +1,3 @@
-from typing import Union
-
 from tempo.api.distributions.distribution import Distribution
 from tempo.api.recurrent_tensor import MaybeRecurrentTensor, RecurrentTensor, lift
 from tempo.core.domain import DomainLike
@@ -28,8 +26,8 @@ def probs_to_logits(probs: RecurrentTensor, is_binary: bool = False) -> Recurren
 class Categorical(Distribution):
     def __init__(
         self,
-        probs: Union[MaybeRecurrentTensor, None] = None,
-        logits: Union[MaybeRecurrentTensor, None] = None,
+        probs: MaybeRecurrentTensor | None = None,
+        logits: MaybeRecurrentTensor | None = None,
         domain: DomainLike = None,
     ) -> None:
         if (probs is None) == (logits is None):
@@ -68,7 +66,6 @@ class Categorical(Distribution):
 
     def log_prob(self, sample: MaybeRecurrentTensor) -> RecurrentTensor:
         sample = lift(sample)
-        # sample = sample.cast(dtypes.int64).unsqueeze(-1)
         sample = sample.unsqueeze(-1)
         gathered = self.logits.gather(-1, sample)
         return gathered.squeeze(-1)

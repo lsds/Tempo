@@ -1,15 +1,9 @@
 import base64
+from collections.abc import Collection, Iterator, Sequence
 from pathlib import Path
 from typing import (
     AbstractSet,
-    Collection,
-    Dict,
-    Iterator,
-    List,
     Literal,
-    Optional,
-    Sequence,
-    Union,
     cast,
 )
 
@@ -62,23 +56,23 @@ MAX_NO_WHITESPACES_CHARS = 25_000
 _INSTANCE = None
 
 
-class TiktokenTokenizer(RuntimeTokenizer):
+class LlamaTiktokenTokenizer(RuntimeTokenizer):
     """
     Tokenizing and encoding/decoding text using the Tiktoken tokenizer.
     """
 
-    special_tokens: Dict[str, int]
+    special_tokens: dict[str, int]
 
     num_reserved_special_tokens = 256
 
     pat_str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"  # noqa: E501
 
     @classmethod
-    def get_instance(cls) -> "TiktokenTokenizer":
+    def get_instance(cls) -> "LlamaTiktokenTokenizer":
         global _INSTANCE
 
         if _INSTANCE is None:
-            _INSTANCE = TiktokenTokenizer(Path(__file__).parent / "tokenizer.model")
+            _INSTANCE = LlamaTiktokenTokenizer(Path(__file__).parent / "tokenizer.model")
         return _INSTANCE
 
     def __init__(self, model_path: Path) -> None:
@@ -98,21 +92,16 @@ class TiktokenTokenizer(RuntimeTokenizer):
             "<|end_of_text|>",
             "<|reserved_special_token_0|>",
             "<|reserved_special_token_1|>",
-            "<|finetune_right_pad_id|>",
-            "<|step_id|>",
+            "<|reserved_special_token_2|>",
+            "<|reserved_special_token_3|>",
             "<|start_header_id|>",
             "<|end_header_id|>",
-            "<|eom_id|>",  # end of message
+            "<|reserved_special_token_4|>",
             "<|eot_id|>",  # end of turn
-            "<|python_tag|>",
-            "<|image|>",
+        ] + [
+            f"<|reserved_special_token_{i}|>"
+            for i in range(5, self.num_reserved_special_tokens - 5)
         ]
-        reserved_tokens = [
-            f"<|reserved_special_token_{2 + i}|>"
-            for i in range(self.num_reserved_special_tokens - len(special_tokens))
-        ]
-        special_tokens = special_tokens + reserved_tokens
-
         self.special_tokens = {token: num_base_tokens + i for i, token in enumerate(special_tokens)}
         self.model = tiktoken.Encoding(
             name=model_path.name,
@@ -126,32 +115,29 @@ class TiktokenTokenizer(RuntimeTokenizer):
         # BOS / EOS token IDs
         self._bos_id: int = self.special_tokens["<|begin_of_text|>"]
         self._eos_id: int = self.special_tokens["<|end_of_text|>"]
-        self._eot_id: int = self.special_tokens["<|eot_id|>"]
-        self._eom_id: int = self.special_tokens["<|eom_id|>"]
-        self._python_tag_id = self.special_tokens["<|python_tag|>"]
-        self._pad_id: int = self.special_tokens["<|finetune_right_pad_id|>"]
+        self._eot_id: int = self.special_tokens["<|eot_id|>"]  # end of turn
+        # self._eom_id: int = self.special_tokens["<|eom_id|>"]  # end of message
+        # self._python_tag_id = self.special_tokens["<|python_tag|>"]
         self._stop_tokens = [
             self._eos_id,
-            self.special_tokens["<|eom_id|>"],
-            self.special_tokens["<|eot_id|>"],
-        ]
-        log.info(
-            "TOKENIZER Initialized: #base_tokens: %d - #words: %d - BOS ID: %d - EOS ID: %d - EOT ID: %d - EOM ID: %d - Python Tag ID: %d - Pad ID: %d - Stop Tokens: %s",  # noqa: E501
-            self._num_base_tokens,
-            self._n_words,
-            self._bos_id,
-            self._eos_id,
+            # self._eom_id,
             self._eot_id,
-            self._eom_id,
-            self._python_tag_id,
-            self._pad_id,
-            self._stop_tokens,
-        )
+        ]
+
+        # NOTE: It seems that for Llama3.2, the pad token is actually <|reserved_special_token_2|>
+        self._pad_id: int = self.special_tokens["<|reserved_special_token_2|>"]
+
+    @property
+    def pad_id(self) -> int:
+        return self._pad_id
+
+    @property
+    def stop_tokens(self) -> list[int]:
+        return self._stop_tokens
 
     @property
     def n_words(self) -> int:
         return self._n_words
-        # return self._num_base_tokens
 
     @property
     def bos_id(self) -> int:
@@ -161,22 +147,14 @@ class TiktokenTokenizer(RuntimeTokenizer):
     def eos_id(self) -> int:
         return self._eos_id
 
-    @property
-    def pad_id(self) -> int:
-        return self._pad_id
-
-    @property
-    def stop_tokens(self) -> List[int]:
-        return self._stop_tokens
-
     def encode(
         self,
         s: str,
         bos: bool = False,
         eos: bool = False,
-        allowed_special: Optional[Union[Literal["all"], AbstractSet[str]]] = None,
-        disallowed_special: Union[Literal["all"], Collection[str]] = (),
-    ) -> List[int]:
+        allowed_special: Literal["all"] | AbstractSet[str] | None = None,
+        disallowed_special: Literal["all"] | Collection[str] = (),
+    ) -> list[int]:
         """
         Encodes a string into a list of token IDs.
 
@@ -209,7 +187,7 @@ class TiktokenTokenizer(RuntimeTokenizer):
                 s[i : i + TIKTOKEN_MAX_ENCODE_CHARS], MAX_NO_WHITESPACES_CHARS
             )
         )
-        t: List[int] = []
+        t: list[int] = []
         for substr in substrs:
             t.extend(
                 self.model.encode(
@@ -235,7 +213,7 @@ class TiktokenTokenizer(RuntimeTokenizer):
             str: The decoded string.
         """
         # Typecast is safe here. Tiktoken doesn't do anything list-related with the sequence.
-        return self.model.decode(cast(List[int], t))  # type: ignore
+        return self.model.decode(cast(list[int], t))  # type: ignore
 
     @staticmethod
     def _split_whitespaces_or_nonwhitespaces(

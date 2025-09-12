@@ -1,10 +1,10 @@
-from typing import Callable, Dict, Tuple
+from collections.abc import Callable
 
 import islpy as isl
 
 from tempo.core import index_expr as ie
-from tempo.core import isl_types as islt
 from tempo.core import tensor_ops as top
+from tempo.core.analysis_ctx import ScheduleConstraints
 from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.datatypes import TensorId
 from tempo.core.dependence_graph import PDG, DependencyData
@@ -33,7 +33,7 @@ def get_affine_expr(
     src_domain: Domain,
     edge_data: DependencyData,
     dg: PDG,
-    isl_ctx: islt.Context,
+    isl_ctx: isl.Context,
 ) -> ie.IndexSequence:
     expr = edge_data.isl_expr
     new_expr = expr.drop_modulos()
@@ -53,19 +53,34 @@ def get_affine_expr(
     return new_expr
 
 
+def get_fetch_offload_exprs(
+    isl_expr: ie.IndexSequence, simplify: bool
+) -> tuple[ie.IndexSequence, ie.IndexSequence]:
+    fetch_expr = isl_expr
+    offload_expr = isl_expr
+    if simplify:
+        fetch_expr = fetch_expr.as_upper_bound_access().simplify_mins_and_maxes(aggressive=True)
+        offload_expr = offload_expr.as_lower_bound_access().simplify_mins_and_maxes(aggressive=True)
+    return fetch_expr, offload_expr
+
+
 class IslScheduleConstraintsBuilder:
-    """To compute the schedule, we need to provide validity/proximity/coincidence constraints.
+    """To find a schedule for an SDG, we need to setup a polyhedral scheduling problem.
 
-    Tempo defines its computations as:
-    1. Sink[basis] = f(Source[IndexExprSequence])
+    This involves:
+    1. Setting up domains for each operation as isl UnionSets
+    2. Setting up validity constraints (based on dependence expressions) as isl UnionMaps
+    3. Proximity constraints then guide good schedule locality.
 
-    But ISL requires constraints of the form:
-    2. Source[basis] -> Sink[IndexExprSequence]
+    ISL requires constraints of the form:
+    Source[basis] -> Sink[IndexExprSequence]
+
+    But Tempo defines its computations as:
+    Sink[basis] = f(Source[IndexExprSequence])
 
     Where = is assignment and -> is "happens-before".
-
-    So instead we build the mapping thinking of the arrows as "depends-on" relationships.
-    Later, we reverse the map, turning the arrows into "happens-before" relationships.
+    So instead we build the UnionMaps thinking of the arrows as "depends-on" relationships.
+    Before scheduling, we reverse the map, turning the arrows into "happens-before" relationships.
     """
 
     def __init__(self, ctx: CompilationCtx) -> None:
@@ -75,19 +90,9 @@ class IslScheduleConstraintsBuilder:
         self._isl_ctx = ctx.analysis_ctx.isl_ctx
         self.analysis_ctx = ctx.analysis_ctx
 
-        self._all_edges = dg.get_all_edges(include_control=True)
-        self._data_edges = []
-        self._control_edges = []
-
         self._tids_to_swap: isl.Set[TensorId] = set()
 
         self.any_window_access_in_dg = self.analysis_ctx._is_incremental_algo
-
-        for snk, src, d in self._all_edges:
-            if d.is_control_edge:
-                self._control_edges.append((snk, src, d))
-            else:
-                self._data_edges.append((snk, src, d))
 
         self._universe_bounds_str = ",".join(
             [
@@ -97,10 +102,7 @@ class IslScheduleConstraintsBuilder:
             ]
         )
 
-        self._mem_man_ops: Dict[str, islt.UnionSet] = {}
-
-        self.additional_proximity_constraints: islt.UnionMap = self._make_map(" ")
-        self.additional_coincidence_constraints: islt.UnionMap = self._make_map(" ")
+        self._mem_man_ops: dict[str, isl.UnionSet] = {}
 
         self.mem_est = MemoryEstimator(ctx)
 
@@ -226,9 +228,13 @@ class IslScheduleConstraintsBuilder:
             if isinstance(stor, EvalSymbolStore):
                 return False
 
+            # TODO: Think about this: We do not want to GC tensors that are in circular buffers?
+            # if isinstance(stor, CircularBufferStore):
+            #    return False
+
         return True
 
-    def _make_map(self, constraints: str) -> islt.UnionMap:
+    def _make_map(self, constraints: str) -> isl.UnionMap:
         map_with_bounds = f"[{self._universe_bounds_str}] -> {{ {constraints} }}"
         try:
             map_ = isl.UnionMap.read_from_str(self.analysis_ctx.isl_ctx, map_with_bounds)
@@ -239,10 +245,10 @@ class IslScheduleConstraintsBuilder:
 
     def _build_gc_constraints(  # noqa: C901
         self, simplify_exprs: bool = False, validity: bool = False
-    ) -> islt.UnionMap:
-        union_map = self._make_map(" ")
+    ) -> isl.UnionMap:
+        happens_before_map = self._make_map(" ")
         if not self._cfg.enable_gc:
-            return union_map
+            return happens_before_map
 
         # NOTE: The idea here, is that for each tensor, we create a GC statement that happens after
         # each of the dependents. Each of the dependents reads the tensor using some expr e.
@@ -268,8 +274,8 @@ class IslScheduleConstraintsBuilder:
                     # snk_dom_isl=prod_isl_dom,
                     # src_dom_isl=prod_isl_dom,
                     ctx=self._isl_ctx,
-                )
-                union_map = union_map.union(cg_after_prod)
+                ).reverse()
+                happens_before_map = happens_before_map.union(cg_after_prod)
 
                 ## NOTE: This is a good idea but needs work. It will often pick the iteration
                 ## dimension, because tensors often have no other dimension.
@@ -313,7 +319,7 @@ class IslScheduleConstraintsBuilder:
                 #                   gc_name,
                 #                   gc_name,
                 #                   ctx=self._isl_ctx,
-                #               )
+                #               ).reverse()
                 #               union_map = union_map.union(cg_close_to_prev_gc)
 
                 # NOTE: motivate/force deletion right after last consumer
@@ -343,9 +349,9 @@ class IslScheduleConstraintsBuilder:
                         # snk_dom_isl=cons_isl_dom,
                         # src_dom_isl=prod_isl_dom,
                         ctx=self._isl_ctx,
-                    ).reverse()
+                    )
 
-                    union_map = union_map.union(gc_after_consumer)
+                    happens_before_map = happens_before_map.union(gc_after_consumer)
 
                     # NOTE: these should only be added for the last accessor only
                     # NOTE: One way to do that is to check if there is a single accessor.
@@ -378,10 +384,10 @@ class IslScheduleConstraintsBuilder:
                             gc_name,
                             dep_data.cond,
                             ctx=self._isl_ctx,
-                        )
-                        union_map = union_map.union(next_cons_only_after_prev_gc)
+                        ).reverse()
+                        happens_before_map = happens_before_map.union(next_cons_only_after_prev_gc)
 
-        return union_map.reverse()
+        return happens_before_map
 
     def _is_donated_to_consumer(
         self, tensor_id: TensorId, cons: top.TensorOp, dep_data: DependencyData
@@ -398,45 +404,31 @@ class IslScheduleConstraintsBuilder:
 
     def _build_swap_constraints_single_exec(
         self, simplify: bool = False, proximity: bool = False, coincidence: bool = False
-    ) -> islt.UnionMap:
+    ) -> isl.UnionMap:
         validity = (not proximity) and (not coincidence)
-        union_map = self._make_map(" ")
+        happens_before_map = self._make_map(" ")
 
         if not self._cfg.enable_swap:
-            return union_map
+            return happens_before_map
 
         for t_id, _, _, prod_dom in self._dg.get_all_tensor_descriptions():
             op_with_id = self._dg.ops_by_id[t_id.op_id].op
             if self._requires_swap(self._dg, t_id):
-                union_map = self._build_tid_swap_constraints(
-                    simplify, validity, union_map, t_id, prod_dom, op_with_id
+                happens_before_map = self._build_tid_swap_constraints(
+                    simplify, validity, happens_before_map, t_id, prod_dom, op_with_id
                 )
 
-        return union_map.reverse()
-
-    def _get_fetch_offload_exprs(
-        self, isl_expr: ie.IndexSequence, simplify: bool
-    ) -> Tuple[ie.IndexSequence, ie.IndexSequence]:
-        fetch_expr = isl_expr
-        offload_expr = isl_expr
-        if simplify:
-            fetch_expr = fetch_expr.as_upper_bound_access().simplify_mins_and_maxes(aggressive=True)
-            offload_expr = offload_expr.as_lower_bound_access().simplify_mins_and_maxes(
-                aggressive=True
-            )
-        return fetch_expr, offload_expr
+        return happens_before_map
 
     def _build_tid_swap_constraints(
         self,
         simplify: bool,
         validity: bool,
-        union_map: islt.UnionMap,
+        happens_before_map: isl.UnionMap,
         t_id: TensorId,
-        prod_dom: islt.UnionSet,
+        prod_dom: isl.UnionSet,
         op_with_id: top.TensorOp,
-    ) -> islt.UnionMap:
-        # TODO: Remember the domain condition we commented out.
-
+    ) -> isl.UnionMap:
         prod_isl_dom = self.analysis_ctx.get_or_make_domain(op_with_id)
 
         # NOTE: Initial swap out must happen after the computation of the tensor
@@ -462,8 +454,8 @@ class IslScheduleConstraintsBuilder:
             init_offload_name,
             prod_exec_name,
             ctx=self._isl_ctx,
-        )
-        union_map = union_map.union(init_offload_after_exec)
+        ).reverse()
+        happens_before_map = happens_before_map.union(init_offload_after_exec)
 
         deps = self._dg.get_tensor_flat_direct_dependents(t_id)
         basis_consumers = [
@@ -489,17 +481,15 @@ class IslScheduleConstraintsBuilder:
                         gc_name,
                         swap_op_name,
                         ctx=self._isl_ctx,
-                    )
-                    union_map = union_map.union(gc_after_swaps)
+                    ).reverse()
+                    happens_before_map = happens_before_map.union(gc_after_swaps)
 
         # NOTE: We want to schedule the initial offload after the basis consumers
         # so that the basis consumers can use the tensor before it is swapped out.
         # NOTE: We also want it to be close, the consumers, so no validity check.
         for cons_op, cons_dep_data in basis_consumers:
             cons_name = op_id_to_exec_name(cons_op.op_id)
-            fetch_expr, offload_expr = self._get_fetch_offload_exprs(
-                cons_dep_data.isl_expr, simplify
-            )
+            fetch_expr, offload_expr = get_fetch_offload_exprs(cons_dep_data.isl_expr, simplify)
             # initial offload should be after basis deps
             init_offload_after_basis_consumer = dependence_to_isl_map(
                 offload_expr,
@@ -509,8 +499,8 @@ class IslScheduleConstraintsBuilder:
                 init_offload_name,
                 cons_dep_data.cond,
                 ctx=self._isl_ctx,
-            ).reverse()
-            union_map = union_map.union(init_offload_after_basis_consumer)
+            )
+            happens_before_map = happens_before_map.union(init_offload_after_basis_consumer)
 
         if validity:
             # NOTE: The fetch must happen after the initial offload,
@@ -522,8 +512,8 @@ class IslScheduleConstraintsBuilder:
                 fetch_name,
                 init_offload_name,
                 ctx=self._isl_ctx,
-            )
-            union_map = union_map.union(fetch_after_init_offload)
+            ).reverse()
+            happens_before_map = happens_before_map.union(fetch_after_init_offload)
 
             # TODO: DO we want proximity between the fetch and the offload
             # Just tab to change
@@ -534,15 +524,13 @@ class IslScheduleConstraintsBuilder:
                 offload_name,
                 fetch_name,
                 ctx=self._isl_ctx,
-            )
-            union_map = union_map.union(offload_after_fetch)
+            ).reverse()
+            happens_before_map = happens_before_map.union(offload_after_fetch)
 
         # NOW, for the non-basis consumers, which we hope is just one,
         # we want to schedule the fetch before the consumer and the offload after the consumer.
         for cons_op, cons_dep_data in nonbasis_consumers:
-            fetch_expr, offload_expr = self._get_fetch_offload_exprs(
-                cons_dep_data.isl_expr, simplify
-            )
+            fetch_expr, offload_expr = get_fetch_offload_exprs(cons_dep_data.isl_expr, simplify)
             consumer_name = op_id_to_exec_name(cons_op.op_id)
             # NOTE: Swap in must happen before the computation that uses the value
             # Goal: Fetch[p] -> Cons[phi-1(p)]
@@ -555,8 +543,8 @@ class IslScheduleConstraintsBuilder:
                 fetch_name,
                 cons_dep_data.cond,
                 ctx=self._isl_ctx,
-            )
-            union_map = union_map.union(consumer_after_fetch)
+            ).reverse()
+            happens_before_map = happens_before_map.union(consumer_after_fetch)
 
             # NOTE: Swap out must happen after the computation that uses the value
             # Goal: Off[p] -> Cons[phi-1(p)].
@@ -569,31 +557,24 @@ class IslScheduleConstraintsBuilder:
                 offload_name,
                 cons_dep_data.cond,
                 ctx=self._isl_ctx,
-            ).reverse()
-            # NOTE: Need to revert cause it's phi-1
-            union_map = union_map.union(offload_after_consumer)
-        return union_map
+            )
+            happens_before_map = happens_before_map.union(offload_after_consumer)
+        return happens_before_map
 
     def _build_edge_constraints(  # noqa: C901
         self,
         filter_fun: Callable[[top.TensorOp, top.TensorOp, ie.IndexSequence], bool],
-        # simplify_exprs: bool = False,
         is_validity: bool,
-    ) -> islt.UnionMap:
-        union_map = self._make_map(" ")
+    ) -> isl.UnionMap:
+        depends_on_map = self._make_map(" ")
         simplify_exprs = not is_validity
 
-        edges_to_use = self._data_edges + (self._control_edges if is_validity else [])
+        edges_to_use = self._dg.get_all_edges(include_control=is_validity)
 
         for sink, src, dep_data in edges_to_use:
             sink_name = op_id_to_exec_name(sink.op_id)
             src_name = op_id_to_exec_name(src.op_id)
             read_expr = dep_data.isl_expr
-
-            # read_expr = get_affine_expr(read_expr)
-
-            # snk_isl_dom = self._dg.analysis_ctx.get_or_make_domain(sink)
-            # src_isl_dom = self._dg.analysis_ctx.get_or_make_domain(src)
 
             if filter_fun(sink, src, read_expr):
                 if simplify_exprs:
@@ -610,22 +591,14 @@ class IslScheduleConstraintsBuilder:
                     sink_name,
                     src_name,
                     dep_data.cond,
-                    # snk_dom_isl=snk_isl_dom,
-                    # src_dom_isl=src_isl_dom,
                     ctx=self._isl_ctx,
                 )
 
-                # snk_isl_dom = self._dg.analysis_ctx.get_or_make_domain(sink)
-                # src_isl_dom = self._dg.analysis_ctx.get_or_make_domain(src)
-                # constraint_map = constraint_map.intersect_domain(
-                #    snk_isl_dom
-                # ).intersect_range(src_isl_dom)
+                depends_on_map = depends_on_map.union(constraint_map)
+        happens_before_map = depends_on_map.reverse()
+        return happens_before_map
 
-                union_map = union_map.union(constraint_map)
-        result = union_map.reverse()
-        return result
-
-    def _get_validity_constraints(self) -> islt.UnionMap:
+    def _get_validity_constraints(self) -> isl.UnionMap:
         edge_constraints = self._build_edge_constraints(
             lambda sink, src, expr: True, is_validity=True
         )
@@ -633,20 +606,11 @@ class IslScheduleConstraintsBuilder:
         constraints = edge_constraints
         gc_constraints = self._build_gc_constraints(validity=True)
         constraints = edge_constraints.union(gc_constraints)
-        if self.analysis_ctx._isl_execution_schedule is not None:
-            swap_constraints = self._build_swap_constraints_single_exec()
-            constraints = constraints.union(swap_constraints)
-
-        if self.analysis_ctx._additional_val_constraints is not None:
-            # print(f"Additional constraints: {self._dg.analysis_ctx._additional_val_constraints}")
-            constraints = constraints.union(
-                self.analysis_ctx._additional_val_constraints,
-            )
 
         log.debug("Validity constraints: %s", str(constraints))
         return constraints
 
-    def _get_proximity_constraints(self) -> islt.UnionMap:
+    def _get_proximity_constraints(self) -> isl.UnionMap:
         edge_constraints = self._build_edge_constraints(
             lambda sink, src, expr: True,
             is_validity=False,
@@ -654,73 +618,42 @@ class IslScheduleConstraintsBuilder:
 
         gc_constraints = self._build_gc_constraints(True)
         constraints = edge_constraints.union(gc_constraints)
-        if self.analysis_ctx._isl_execution_schedule is not None:
-            # NOTE: was False on simplify...
-            swap_constraints = self._build_swap_constraints_single_exec(True, proximity=True)
-            constraints = constraints.union(swap_constraints).union(
-                self.additional_proximity_constraints
-            )
         log.debug("Proximity constraints: %s", str(constraints))
         return constraints
 
-    def _get_coincidence_constraints(self) -> islt.UnionMap:
-        """We generate coincidence constraints only for guaranteeing that sources co-execute
-        with their users. This will be a problem if a source is shared. So we shouldn't share
-        sources or otherwise we ought to remove this.
+    def _union_mem_man_domains(self, domains: isl.UnionSet) -> isl.UnionSet:
+        for name, isl_domain in self._mem_man_ops.items():
+            if not isl_domain.is_empty():
+                isl_domain = rename_union_set_tuples(isl_domain, name)
+                domains = domains.union(isl_domain)
+        return domains
 
-        Returns:
-            isl.UnionMap: representing the coincidence constraints.
-
-        """
-
-        edge_constraints = self._build_edge_constraints(
-            lambda sink, src, expr: True,
-            is_validity=False,
-        )
-
-        constraints = edge_constraints
-        gc_constraints = self._build_gc_constraints(True)
-        constraints = gc_constraints  # edge_constraints.union(gc_constraints)
-        if self.analysis_ctx._isl_execution_schedule is not None:
-            swap_constraints = self._build_swap_constraints_single_exec(True, coincidence=True)
-            constraints = constraints.union(swap_constraints).union(
-                self.additional_coincidence_constraints
-            )
-        log.debug("Coincidence constraints: %s", str(constraints))
-        return constraints
-
-    def _get_domain(self) -> islt.UnionSet:  # noqa: C901
+    def _get_domain(self) -> isl.UnionSet:  # noqa: C901
         """For each variable return the domain from 0 to N where N is a parameter
 
         Returns:
             isl.UnionSet: a union set that represents the domain of each statement
 
         """
-        # domains = isl.UnionSet("[" + self._universe_bounds_str + "] -> { }")
-
         domains = isl.UnionSet("[] -> { }", context=self._isl_ctx)
         for node in self._dg.nodes:
-            # exec_stmt_name = op_id_to_exec_name(node.op_id)
             dom = self.analysis_ctx.get_or_make_domain(node)
             if not dom.is_empty():
-                # isl_domain = dom.as_set().set_tuple_name(
-                #   exec_stmt_name
-                # )
                 domains = domains.union(dom)
             else:
                 log.warning("Node %s has empty domain", node.op_id)
 
-        for name, isl_domain in self._mem_man_ops.items():
-            if not isl_domain.is_empty():
-                isl_domain = rename_union_set_tuples(isl_domain, name)
-                domains = domains.union(isl_domain)
+        domains = self._union_mem_man_domains(domains)
 
         return domains
 
     def _try_simplify(
-        self, constraints: islt.UnionMap, domain: islt.UnionSet, params: islt.Set
-    ) -> islt.UnionMap:
+        self, constraints: isl.UnionMap, domain: isl.UnionSet, params: isl.Set
+    ) -> isl.UnionMap:
         try:
+            constraints = (
+                constraints.intersect_domain(domain).intersect_range(domain).coalesce().coalesce()
+            )
             constraints = constraints.gist_domain(domain)
             constraints = constraints.gist_range(domain)
             constraints = constraints.gist_params(params)
@@ -729,66 +662,64 @@ class IslScheduleConstraintsBuilder:
             log.error("Error when simplifying constraints: %s", e)
         return constraints
 
-    def build_schedule_constraints(self) -> islt.ScheduleConstraints:
-        log.info(
-            "Building schedule constraints with gc: %s and swap: %s",
-            self._cfg.enable_gc,
-            self._cfg.enable_swap,
-        )
-
+    def build_schedule_constraints(self) -> isl.ScheduleConstraints:
         # TODO use isl utils method
         params = isl.Set(f"[{self._universe_bounds_str}] -> {{ : }}", context=self._isl_ctx)
-        val = isl.UnionMap.read_from_str(self._isl_ctx, str(self._get_validity_constraints()))
 
-        prox = isl.UnionMap.read_from_str(self._isl_ctx, str(self._get_proximity_constraints()))
-        coin = isl.UnionMap.read_from_str(self._isl_ctx, str(self._get_coincidence_constraints()))
+        # Check if we have cached constraints from the first run
+        if self.analysis_ctx._cached_schedule_constraints is not None:
+            log.info("Using cached schedule constraints from first run")
+            # Convert our custom ScheduleConstraints to ISL ScheduleConstraints
+            cached = self.analysis_ctx._cached_schedule_constraints
 
-        # NOTE: domain has to be last so we generate the mem_man ops first
-        domain = (
-            isl.UnionSet.read_from_str(self._isl_ctx, str(self._get_domain()))
-            .gist_params(params)
-            .coalesce()
-            .coalesce()
-        )
-        # print(f"Domain: {domain}")
-        # print(f"Gisted domain: {domain.gist_params(params)}")
-        # print(f"Intersected domain: {domain.intersect_params(params)}")
-        # print(f"Gisted then intersected domain:
-        # {domain.gist_params(params).intersect_params(params)}")
-        # print(f"Intersected then gisted domain:
-        # {domain.intersect_params(params).gist_params(params)}")
+            val = cached.validity
+            prox = cached.proximity
 
-        val = val.intersect_domain(domain).intersect_range(domain).coalesce().coalesce()
-        prox = prox.intersect_domain(domain).intersect_range(domain).coalesce().coalesce()
-        coin = coin.intersect_domain(domain).intersect_range(domain).coalesce().coalesce()
+            if self._cfg.enable_swap:
+                swap_val = self._build_swap_constraints_single_exec()
+                val = val.union(swap_val)
+                swap_prox = self._build_swap_constraints_single_exec(True, proximity=True)
+                prox = prox.union(swap_prox)
+
+            domain = cached.domain
+            domain = self._union_mem_man_domains(domain)
+
+        else:
+            log.info(
+                "Building schedule constraints with gc: %s and swap: %s",
+                self._cfg.enable_gc,
+                self._cfg.enable_swap,
+            )
+
+            val = self._get_validity_constraints()
+            prox = self._get_proximity_constraints()
+
+            # NOTE: domain has to be last so we generate the mem_man ops first
+            domain = (
+                # isl.UnionSet.read_from_str(self._isl_ctx, str(self._get_domain()))
+                self._get_domain().gist_params(params).coalesce().coalesce()
+            )
 
         ## NOTE: this is important to ensure that lex_prevs do not go out of bounds
-
         val = self._try_simplify(val, domain, params)
         prox = self._try_simplify(prox, domain, params)
-        coin = self._try_simplify(coin, domain, params)
+        # coin = self._try_simplify(coin, domain, params)
 
-        # print("Domains:")
-        # print(str(domain).replace("; ", ";\n"))
-        # print()
-        # print("Validity:")
-        # print(str(val).replace("; ", ";\n"))
-        # print()
-        # print(f"Proximity:")
-        # print(str(prox).replace("; ", ";\n"))
-        # print()
-        # print(f"Coincidence:")
-        # print(str(coin).replace("; ", ";\n"))
+        # Cache the constraints
+        self.analysis_ctx._cached_schedule_constraints = ScheduleConstraints(
+            domain=domain,
+            validity=val,
+            proximity=prox,
+            # coincidence=coin,
+            coincidence=None,
+        )
 
-        # log.info("Domain: %s", str(domain))
-        # log.info("Validity: %s", str(val))
-        # log.info("Prox: %s", str(prox))
+        log.debug("Domain: %s", domain)
+        log.debug("Validity: %s", val)
+        log.debug("Prox: %s", prox)
 
         sc = isl.ScheduleConstraints.on_domain(domain)
         assert sc.get_ctx() == self._isl_ctx
-        # sc_str = str(sc)
-        # sc = isl.ScheduleConstraints(sc_str, ctx=self._isl_ctx)
-        # sc = sc.set_domain(domain)
         sc = sc.set_context(params)
         sc = sc.set_validity(val)
         sc = sc.set_proximity(prox)

@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, ClassVar, Optional, Tuple
+from typing import ClassVar, Optional
 
 import gymnasium as gym
 
@@ -14,10 +15,10 @@ RuntimeEnvBuilder = Callable[[Optional[int]], RuntimeEnv]
 @dataclass(frozen=True)
 class EnvDesc:
     _id_counter: ClassVar[int] = 0
-    num_vector_envs: Optional[int]
+    num_vector_envs: int | None
     single_observation_space: gym.spaces.Space
     single_action_space: gym.spaces.Space
-    reward_range: Tuple[float, float]
+    reward_range: tuple[float, float]
     builder: RuntimeEnvBuilder
     unique_id: int = field(default=0, init=False)
 

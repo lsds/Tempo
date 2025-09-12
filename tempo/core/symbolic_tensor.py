@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple, Type, Union
+from typing import Any, Union
 
 import numpy as np
 
@@ -11,18 +12,21 @@ from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
 from tempo.core.datatypes import DIM_TYPE, NestedList, OpInId, OpOutId, TensorId
 from tempo.core.dependence_graph import PDG, DependencyData, OpData
-from tempo.core.dim_utils import normalize_negative_dim
+from tempo.core.dim_utils import normalize_neg_1s_in_shape_expand, normalize_negative_dim
 from tempo.core.domain import Domain, DomainLike
 from tempo.core.dtype import DataType, DataTypeLike, dtypes
 from tempo.core.global_objects import get_active_exec_cfg
 from tempo.core.shape import Shape, ShapeLike
+from tempo.core.thunk import ThunkExecutionCtx
+from tempo.core.thunk_emitter import ThunkEmissionCtx
+from tempo.core.thunk_udf import UserDefinedThunkDesc
 from tempo.utils import logger
 from tempo.utils.common import as_seq
 
 _logger = logger.get_logger(__name__)
 
 
-def _get_symbolic_tensor_for_op_output(
+def get_symbolic_tensor_for_op_output(
     dg: PDG,
     op: top.TensorOp,
     out_idx: OpOutId,
@@ -172,9 +176,9 @@ def lift_to_symbolic_tensors(
     return list(map(lift_to_symbolic_tensor, inps))
 
 
-def _register_zero_out(
-    op_builder: Type[top.TensorOp],
-    inputs: Optional[OneOrManyMaybeSymbolicTensors],
+def _register_sink(
+    op_builder: type[top.TensorOp],
+    inputs: OneOrManyMaybeSymbolicTensors | None,
     *op_args: Any,
     **op_kwargs: Any,
 ) -> None:
@@ -182,7 +186,7 @@ def _register_zero_out(
 
 
 def _register_source(
-    op_builder: Type[top.TensorOp],
+    op_builder: type[top.TensorOp],
     domain: DomainLike,
     *op_args: Any,
     **op_kwargs: Any,
@@ -192,12 +196,12 @@ def _register_source(
 
 
 def _register_one_out(
-    op_builder: Type[top.TensorOp],
-    inputs: Optional[OneOrManyMaybeSymbolicTensors],
+    op_builder: type[top.TensorOp],
+    inputs: OneOrManyMaybeSymbolicTensors | None,
     *op_args: Any,
     **op_kwargs: Any,
 ) -> SymbolicTensor:
-    domain: Optional[Domain] = None
+    domain: Domain | None = None
     if "domain" in op_kwargs:
         domain = op_kwargs["domain"]
         del op_kwargs["domain"]
@@ -205,12 +209,12 @@ def _register_one_out(
 
 
 def _register_two_outs(
-    op_builder: Type[top.TensorOp],
-    inputs: Optional[OneOrManyMaybeSymbolicTensors],
+    op_builder: type[top.TensorOp],
+    inputs: OneOrManyMaybeSymbolicTensors | None,
     *op_args: Any,
     **op_kwargs: Any,
-) -> Tuple[SymbolicTensor, SymbolicTensor]:
-    domain: Optional[Domain] = None
+) -> tuple[SymbolicTensor, SymbolicTensor]:
+    domain: Domain | None = None
     if "domain" in op_kwargs:
         domain = op_kwargs["domain"]
         del op_kwargs["domain"]
@@ -219,8 +223,8 @@ def _register_two_outs(
 
 
 def _register_n_outs(
-    op_builder: Type[top.TensorOp],
-    inputs: Optional[OneOrManyMaybeSymbolicTensors],
+    op_builder: type[top.TensorOp],
+    inputs: OneOrManyMaybeSymbolicTensors | None,
     domain: DomainLike,
     n_outs: int,
     *op_args: Any,
@@ -263,13 +267,13 @@ def _register_n_outs(
 
 
 def _insert_op_in_dg(
-    op_builder: Type[top.TensorOp],
+    op_builder: type[top.TensorOp],
     inputs: Sequence[SymbolicTensor],
     domain: DomainLike,
     n_outs: int,
     *op_args: Any,
     **op_kwargs: Any,
-) -> Tuple[top.TensorOp, Sequence[Shape], Sequence[DataType]]:
+) -> tuple[top.TensorOp, Sequence[Shape], Sequence[DataType]]:
     from tempo.core.global_objects import get_active_dg, get_active_tags
 
     dg = get_active_dg()
@@ -294,12 +298,12 @@ def _insert_op_in_dg(
 
     input_shapes = tuple(inp.shape.try_resolve(sbounds) for inp in inputs)
 
-    # if isinstance(op, top.ElementWiseOp) and not all(
-    #    is_ == input_shapes[0] for is_ in input_shapes
-    # ):
-    #    raise ValueError(
-    #        f"Expected all input shapes to be equal, got {input_shapes}, when registering {op}"
-    #    )
+    if isinstance(op, top.ElementWiseOp) and not all(
+        is_ == input_shapes[0] for is_ in input_shapes
+    ):
+        raise ValueError(
+            f"Expected all input shapes to be equal, got {input_shapes}, when registering {op}"
+        )
 
     out_shapes = op.infer_output_shapes(input_shapes)
     assert len(out_shapes) == n_outs, f"Expected {n_outs} output shapes, got {len(out_shapes)}"
@@ -316,14 +320,28 @@ def _insert_op_in_dg(
     return op, out_shapes, out_dtypes
 
 
-def marker(marker_name: Optional[str] = None) -> top.TensorOp:
+def sort(
+    tensor: MaybeSymbolicTensor,
+    dim: int,
+    stable: bool = False,
+    descending: bool = False,
+) -> tuple[SymbolicTensor, SymbolicTensor]:
+    tensor_ = lift_to_symbolic_tensor(tensor)
+    dim = normalize_negative_dim(dim, tensor_.shape)
+    # Chore check if dim is valid
+    assert dim >= 0 and dim < len(tensor_.shape), f"Invalid sort dim: {dim}"
+
+    return _register_two_outs(top.SortOp, [tensor_], dim, stable, descending)
+
+
+def marker(marker_name: str | None = None) -> top.TensorOp:
     if marker_name is None:
         marker_name = "anonymous marker"
     op, _, _ = _insert_op_in_dg(top.MarkerOp, (), Domain.empty(), 0, marker_name=marker_name)
     return op
 
 
-def barrier(marker_name: Optional[str] = None) -> None:
+def barrier(marker_name: str | None = None) -> None:
     from tempo.core.global_objects import get_active_dg
 
     dg = get_active_dg()
@@ -358,11 +376,36 @@ def barrier(marker_name: Optional[str] = None) -> None:
 
 
 def udf(
-    udf_desc: top.UserDefinedThunkDesc,
+    udf_desc: UserDefinedThunkDesc,
     inputs: Sequence[MaybeSymbolicTensor],
     domain: DomainLike = None,
 ) -> Sequence[SymbolicTensor]:
     return _register_n_outs(top.UDFOp, inputs, domain, udf_desc.num_outputs, udf_desc)
+
+
+def sink_udf(
+    fun: Callable[[Any], None],
+    input_: MaybeSymbolicTensor,
+) -> SymbolicTensor:
+    def translation_fn(op: top.TensorOp, ctx: ThunkEmissionCtx):  # type: ignore
+        def thunk(  # type: ignore
+            inputs: tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
+        ) -> tuple[Any, ...]:
+            fun(inputs[0])  # type: ignore
+            return ()
+
+        return thunk  # type: ignore
+
+    desc = UserDefinedThunkDesc(
+        thunk_translation=translation_fn,
+        num_inputs=1,
+        num_outputs=0,
+        infer_output_shapes=lambda input_shapes: (),  # type:ignore
+        infer_output_dtypes=lambda input_dtypes: (),  # type:ignore
+    )
+    input_ = lift_to_symbolic_tensor(input_)
+
+    return _register_sink(top.UDFOp, [input_], desc)  # type: ignore
 
 
 # def reset_env(env: EnvDesc, seed: Optional[int] = None) -> SymbolicTensor:
@@ -401,12 +444,14 @@ def rand(
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
     if shape.vars_used():
-        domain = Domain.from_(shape.vars_used())
+        domain = Domain.union(
+            Domain.from_(domain, none_is_empty=True), Domain.from_(shape.vars_used())
+        )
     return _register_source(top.RandOp, domain, shape, dtype)
 
 
 def full(
-    val: Union[float, int, bool, np.ndarray, NestedList],
+    val: float | int | bool | np.ndarray | NestedList | ie.IntIndexValue,
     shape: ShapeLike = None,
     dtype: DataTypeLike = None,
 ) -> SymbolicTensor:
@@ -429,13 +474,16 @@ def full(
         static_shape = Shape.from_(val.shape)
         if shape is None:
             shape = static_shape
-        first_val = val.flat[0]
+        first_val = val.flat[0].item()
 
-        is_small_numpy_array = val.size < 1000
+        is_small_numpy_array = val.size < 10_000  # TODO: make this configurable
         if is_small_numpy_array:
-            is_uniform = np.all(val == first_val)
+            is_uniform = bool(np.all(val == first_val))
         else:
             is_uniform = False  # NOTE: assume not uniform if large array
+
+        if is_uniform:
+            val = np.asarray(first_val, dtype=dtypes.to_np(dtype))
 
         x = _register_source(top.ConstOp, domain, static_shape, dtype, val, is_uniform)
 
@@ -453,7 +501,7 @@ def full(
 
 
 def full_like_self(
-    self: SymbolicTensor, value: Union[float, int, bool, np.ndarray, NestedList]
+    self: SymbolicTensor, value: float | int | bool | np.ndarray | NestedList
 ) -> SymbolicTensor:
     return full(value, self.shape, self.dtype)
 
@@ -532,7 +580,7 @@ def arange(
 def eval_symbol(
     symbol: ie.Symbol,
 ) -> SymbolicTensor:
-    domain: Tuple[ie.Symbol, ...] = () if symbol.is_bound else (symbol,)
+    domain: tuple[ie.Symbol, ...] = () if symbol.is_bound else (symbol,)
     from tempo.core.global_objects import get_dynamic_bounds_or_empty
 
     dyn_bounds = get_dynamic_bounds_or_empty()
@@ -557,12 +605,12 @@ def split(
 def index_slice(
     tensor: MaybeSymbolicTensor,
     dim: int,
-    start: Union[ie.IntIndexValueLike, MaybeSymbolicTensor],
+    start: ie.IntIndexValueLike | MaybeSymbolicTensor,
     length: ie.IntIndexValueLike,
 ) -> SymbolicTensor:
     tensor = lift_to_symbolic_tensor(tensor)
 
-    start_t = lift_to_symbolic_tensor(start)
+    start_t = lift_to_symbolic_tensor(start).to_dtype(dtypes.default_int)
 
     dom = Domain.union(tensor.domain, start_t.domain)
     if isinstance(length, ie.IntIndexValue):
@@ -578,6 +626,11 @@ def index_select(
     keepdim: bool = False,
 ) -> SymbolicTensor:
     tensor = lift_to_symbolic_tensor(tensor)
+    index = lift_to_symbolic_tensor(index).to_dtype(dtypes.default_int)
+
+    # assert index.dtype == dtypes.default_int, (
+    #    f"Index must be backend int type, got {index.dtype}, expected {dtypes.default_int}"
+    # )
 
     if get_active_exec_cfg().enable_index_ops:
         res = _index_based_index_select(tensor, dim, index)
@@ -643,6 +696,14 @@ def index_add(
     src: MaybeSymbolicTensor,
     alpha: float = 1.0,
 ) -> SymbolicTensor:
+    sink = lift_to_symbolic_tensor(sink)
+    index = lift_to_symbolic_tensor(index).to_dtype(dtypes.default_int)
+    src = lift_to_symbolic_tensor(src)
+
+    # assert index.dtype == dtypes.default_int, (
+    #    f"Index must be backend int type, got {index.dtype}, expected {dtypes.default_int}"
+    # )
+
     if get_active_exec_cfg().enable_index_ops:
         return _index_add_based_index_add(sink, dim, index, src, alpha)
     else:
@@ -733,6 +794,12 @@ def expand(inp: MaybeSymbolicTensor, sizes: Shape) -> SymbolicTensor:
 
     from tempo.core.global_objects import get_active_dg
 
+    if len(inp_.shape) < len(sizes):
+        diff = len(sizes) - len(inp_.shape)
+        for _ in range(diff):
+            inp_ = inp_.unsqueeze(0)
+
+    sizes = normalize_neg_1s_in_shape_expand(inp_.shape, sizes)
     sizes = sizes.try_resolve(get_active_dg().static_bounds)
     comparison = sizes == inp_.shape.try_resolve(get_active_dg().static_bounds)
     if comparison:
@@ -820,7 +887,7 @@ def cumsum(inp: MaybeSymbolicTensor, dim: int = 0) -> SymbolicTensor:
 
 def sum(  # noqa: A001
     inp: MaybeSymbolicTensor,
-    dims: Union[int, Sequence[int]],
+    dims: int | Sequence[int],
     keepdim: bool = False,
 ) -> SymbolicTensor:
     if isinstance(dims, int):
@@ -994,7 +1061,7 @@ def greater_than_or_equal(left: MaybeSymbolicTensor, right: MaybeSymbolicTensor)
 
 def max_single_tensor(
     x: MaybeSymbolicTensor, dim: int = 0, keepdim: bool = False
-) -> Tuple[SymbolicTensor, SymbolicTensor]:
+) -> tuple[SymbolicTensor, SymbolicTensor]:
     assert isinstance(dim, int)
     return _register_two_outs(top.MaxOp, [x], (dim,), keepdim)
 
@@ -1046,10 +1113,14 @@ def gather(
     index: MaybeSymbolicTensor,
 ) -> SymbolicTensor:
     src = lift_to_symbolic_tensor(src)
-    index = lift_to_symbolic_tensor(index)
+    index = lift_to_symbolic_tensor(index).to_dtype(dtypes.default_int)
+
     assert len(src.shape) == len(index.shape), (
         f"src/idx shape mismatch. {src.shape=}, {index.shape=}"
     )
+    # assert index.dtype == dtypes.default_int, (
+    #    f"Index must be backend int type, got {index.dtype}, expected {dtypes.default_int}"
+    # )
     return _register_one_out(top.GatherOp, [src, index], dim)
 
 
@@ -1115,7 +1186,7 @@ def ceil(x: MaybeSymbolicTensor) -> SymbolicTensor:
 def floor_divide(x: MaybeSymbolicTensor, y: MaybeSymbolicTensor) -> SymbolicTensor:
     x = lift_to_symbolic_tensor(x)
     y = lift_to_symbolic_tensor(y)
-    return SymbolicTensor.floor((x / y))
+    return SymbolicTensor.floor(x / y)
 
 
 def remainder(x: MaybeSymbolicTensor, y: MaybeSymbolicTensor) -> SymbolicTensor:
@@ -1126,9 +1197,9 @@ def remainder(x: MaybeSymbolicTensor, y: MaybeSymbolicTensor) -> SymbolicTensor:
 
 def pad(
     inp: MaybeSymbolicTensor,
-    padding: Sequence[Tuple[ie.IntIndexValueLike, ie.IntIndexValueLike]],
+    padding: Sequence[tuple[ie.IntIndexValueLike, ie.IntIndexValueLike]],
     mode: str = "constant",
-    value: Optional[float] = None,
+    value: float | None = None,
 ) -> SymbolicTensor:
     """Pads the input tensor with a constant value."""
     inp = lift_to_symbolic_tensor(inp)
@@ -1139,10 +1210,10 @@ def pad(
 
 def pad_dim(
     inp: MaybeSymbolicTensor,
-    padding: Tuple[ie.IntIndexValueLike, ie.IntIndexValueLike],
+    padding: tuple[ie.IntIndexValueLike, ie.IntIndexValueLike],
     dim: int,
     mode: str = "constant",
-    value: Optional[float] = None,
+    value: float | None = None,
 ) -> SymbolicTensor:
     """Pads the input tensor with a constant value.
 
@@ -1204,7 +1275,7 @@ class SymbolicTensor:
 
     spatial_shape: Shape
     dtype: DataType
-    _index_expr: Optional[ie.IndexSequence]
+    _index_expr: ie.IndexSequence | None
 
     def __str__(self) -> str:
         return f"SymbolicTensor({self.op.__class__}(id={self.tensor_id}, domain={self.op.domain}), \
@@ -1262,7 +1333,7 @@ class SymbolicTensor:
 
     def size(
         self, dim: DIM_TYPE = None
-    ) -> Union[Union[int, ie.IntIndexValue], Sequence[Union[int, ie.IntIndexValue]]]:
+    ) -> int | ie.IntIndexValue | Sequence[int | ie.IntIndexValue]:
         if dim is None:
             return self.shape._shape  # type: ignore
         elif isinstance(dim, int):
@@ -1348,6 +1419,7 @@ class SymbolicTensor:
     merge_like = staticmethod(merge_like)
     add_merge_branch = add_merge_branch
     udf = staticmethod(udf)
+    sink_udf = staticmethod(sink_udf)
 
     to_dtype = to_dtype
     gather = gather
@@ -1374,6 +1446,7 @@ class SymbolicTensor:
     floor = floor
     # index_add = index_add
 
+    sort = sort
     barrier = barrier
 
     lift = staticmethod(lift_to_symbolic_tensor)

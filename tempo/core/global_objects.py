@@ -1,19 +1,38 @@
 import threading
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import Any
 
-from tempo.core import index_expr as ie
 from tempo.core.configs import ExecutionConfig
-from tempo.core.dependence_graph import PDG
-from tempo.core.domain import Domain, DomainLike
 from tempo.core.op_tags import GROUP_TAG, NO_DEDUP_TAG, REGION_TAG
 
 active_domain = threading.local()
 active_dg_loc_storage = threading.local()
 active_exec_config_storage = threading.local()
-active_tags: List[Tuple[str, Any]] = []
+active_tags: list[tuple[str, Any]] = []
 
 
-def set_active_domain(domain: DomainLike) -> None:
+# Import traceback functionality from debug_utils to avoid circular imports
+
+
+from tempo.core import index_expr as ie  # noqa: E402
+
+
+def get_static_bounds_or_empty() -> Mapping[ie.Symbol, int]:
+    if not has_active_dg():
+        return {}
+    return get_active_dg().static_bounds
+
+
+def get_dynamic_bounds_or_empty() -> Mapping[ie.Symbol, ie.IntIndexValue]:
+    if not has_active_dg():
+        return {}
+    return get_active_dg().dynamic_bounds
+
+
+from tempo.core.domain import Domain, DomainLike  # noqa: E402
+
+
+def set_active_domain(domain: Any) -> None:
     global active_domain
     dom = Domain.from_(domain, none_is_empty=True)
 
@@ -36,7 +55,10 @@ def get_active_domain_or_empty() -> Domain:
         return Domain.empty()
 
 
-def set_active_dg(dg: Optional[PDG]) -> None:
+from tempo.core.dependence_graph import PDG  # noqa: E402
+
+
+def set_active_dg(dg: PDG | None) -> None:
     global active_dg_loc_storage
     active_dg_loc_storage.dg = dg
 
@@ -46,18 +68,6 @@ def has_active_dg() -> bool:
     return hasattr(active_dg_loc_storage, "dg") and active_dg_loc_storage.dg is not None
 
 
-def get_static_bounds_or_empty() -> Mapping[ie.Symbol, int]:
-    if not has_active_dg():
-        return {}
-    return get_active_dg().static_bounds
-
-
-def get_dynamic_bounds_or_empty() -> Mapping[ie.Symbol, ie.IntIndexValue]:
-    if not has_active_dg():
-        return {}
-    return get_active_dg().dynamic_bounds
-
-
 def get_active_dg() -> PDG:
     global active_dg_loc_storage
     if active_dg_loc_storage.dg is None:
@@ -65,9 +75,26 @@ def get_active_dg() -> PDG:
     return active_dg_loc_storage.dg  # type: ignore
 
 
-def set_active_config(config: Optional[ExecutionConfig]) -> None:
+# Context manager for temporary active dg
+class TemporaryActiveDgCtxManager:
+    def __init__(self, dg: PDG) -> None:
+        self.dg = dg
+        self.prev_dg = get_active_dg()
+
+    def __enter__(self) -> None:
+        set_active_dg(self.dg)
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+        set_active_dg(self.prev_dg)
+
+
+def set_active_config(config: ExecutionConfig | None) -> None:
     global active_exec_config_storage
     active_exec_config_storage.config = config
+    if config is not None:
+        from tempo.core.dtype import set_default_int_dtype_for_backend
+
+        set_default_int_dtype_for_backend(config.get_canonical_backend_name())
 
 
 def get_active_exec_cfg() -> ExecutionConfig:
@@ -81,7 +108,7 @@ def get_active_exec_cfg() -> ExecutionConfig:
 
 
 def get_active_tags() -> Mapping[str, Any]:
-    dict_tags: Dict[str, Any] = {}
+    dict_tags: dict[str, Any] = {}
 
     for tag_type, tag in active_tags:
         existing_tags = ()
@@ -91,8 +118,8 @@ def get_active_tags() -> Mapping[str, Any]:
     return dict_tags
 
 
-class TagCtxManager(object):
-    def __init__(self, tag_type: str, tag: Optional[str] = None) -> None:
+class TagCtxManager:
+    def __init__(self, tag_type: str, tag: str | None = None) -> None:
         self.tag_type = tag_type
         self.tag = tag
 
@@ -118,7 +145,7 @@ class GroupTagCtxManager(TagCtxManager):
         super().__init__(GROUP_TAG, tag)
 
 
-class DomainCtxManager(object):
+class DomainCtxManager:
     def __init__(self, domain: DomainLike) -> None:
         self.domain = domain
 
@@ -127,3 +154,10 @@ class DomainCtxManager(object):
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         set_active_domain(None)
+
+
+from tempo.core.datatypes import OpId, PDGId, TempoTensorProtocol  # noqa: E402
+from tempo.core.dl_backends import DLBackendName  # noqa: E402
+from tempo.core.thunk import Thunk  # noqa: E402
+
+jit_kernel_cache: dict[tuple[DLBackendName, PDGId, OpId], Thunk[TempoTensorProtocol]] = {}

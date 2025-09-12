@@ -58,7 +58,7 @@ def organize_data(raw_data, metric=METRIC):
                 try:
                     seq_len = int(p[3:])
                 except Exception:
-                    pass
+                    ...
         # Find batch size
         bs = None
         for p in parts:
@@ -66,7 +66,7 @@ def organize_data(raw_data, metric=METRIC):
                 try:
                     bs = int(p[2:])
                 except Exception:
-                    pass
+                    ...
         if bs != BATCH_SIZE or seq_len is None:
             continue
         frameworks_found.add(framework)

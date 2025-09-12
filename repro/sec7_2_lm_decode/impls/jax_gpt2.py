@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import jax
 import jax.numpy as jnp
 from jax import lax
@@ -40,8 +38,8 @@ def get_block_fn(
             return (indices >= start) & (indices <= step)
 
     def block_fn(
-        carry: Tuple[jnp.ndarray, int],
-        params: Tuple[
+        carry: tuple[jnp.ndarray, int],
+        params: tuple[
             jnp.ndarray,
             jnp.ndarray,
             jnp.ndarray,
@@ -51,7 +49,7 @@ def get_block_fn(
             jnp.ndarray,
             jnp.ndarray,
         ],
-    ) -> Tuple[jnp.ndarray, int]:
+    ) -> tuple[jnp.ndarray, int]:
         x, step = carry
         W_Q, W_K, W_V, W_O, W_FF1, W_FF2, K, V = params
 
@@ -118,9 +116,9 @@ def get_model_fn(
     ]
 
     def model_fn(
-        carry: Tuple[jnp.ndarray, int],
-        params: Tuple[
-            Tuple[
+        carry: tuple[jnp.ndarray, int],
+        params: tuple[
+            tuple[
                 jnp.ndarray,
                 jnp.ndarray,
                 jnp.ndarray,
@@ -132,7 +130,7 @@ def get_model_fn(
             ],
             ...,
         ],
-    ) -> Tuple[jnp.ndarray, int]:
+    ) -> tuple[jnp.ndarray, int]:
         x, step = carry
 
         for i, block_fn in enumerate(block_fns):
@@ -158,9 +156,9 @@ def get_autoregressive_decode_fn(
     )
 
     def decode_fn(
-        carry: Tuple[jnp.ndarray, int],
-        params: Tuple[
-            Tuple[
+        carry: tuple[jnp.ndarray, int],
+        params: tuple[
+            tuple[
                 jnp.ndarray,
                 jnp.ndarray,
                 jnp.ndarray,
@@ -172,7 +170,7 @@ def get_autoregressive_decode_fn(
             ],
             ...,
         ],
-    ) -> Tuple[jnp.ndarray, int]:
+    ) -> tuple[jnp.ndarray, int]:
         output, step = carry
 
         # Get current token using dynamic slice

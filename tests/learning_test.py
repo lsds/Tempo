@@ -15,7 +15,7 @@ from tempo.api.tempo_context_manager import TempoContext
 from tempo.core.configs import ExecutionConfig
 from tempo.core.dtype import dtypes
 from tempo.core.shape import StaticShape
-from tempo.runtime.backends.backend import DLBackend
+from tempo.core.dl_backend import DLBackend
 
 # Skip this entire file for now.
 #pytest.skip("Skipping this entire file for now.", allow_module_level=True)
@@ -71,7 +71,7 @@ class TorchModel(nn.Module):
     #itertools.product([(4, 4), (4, 4, 4)], ["torch", "jax"]),
 )
 @pytest.mark.skip
-def test_model_bwd(in_shape: Tuple[int, ...], exec_cfg: ExecutionConfig, backend: str):
+def test_model_bwd(in_shape: tuple[int, ...], exec_cfg: ExecutionConfig, backend: str):
 
     model = TorchModel(
         num_in_feat=prod(in_shape),
@@ -183,7 +183,7 @@ def test_model_bwd(in_shape: Tuple[int, ...], exec_cfg: ExecutionConfig, backend
     ),
 )
 def test_model_bwd_optim(
-    in_shape: Tuple[int, ...],
+    in_shape: tuple[int, ...],
     exec_cfg: ExecutionConfig,
     backend: str,
     optim_name: str,

@@ -2,9 +2,9 @@ import heapq
 
 from tempo.core import tensor_ops as top
 from tempo.core.compilation_ctx import CompilationCtx
+from tempo.core.dl_backend import DLBackend
 from tempo.core.external_state_store import ExternalStateStore
 from tempo.core.utils import bytes_to_human_readable
-from tempo.runtime.backends.backend import DLBackend
 from tempo.runtime.executor.executor import Executor, ExecutorCtx
 from tempo.runtime.executor.nongen_executor import NonGenInterpreterExecutor
 from tempo.runtime.tensor_store.hybrid_tensor_store import HybridTensorStore
@@ -19,7 +19,7 @@ log = logger.get_logger(__name__)
 def compile_backend(
     ctx: CompilationCtx,
     silent: bool = False,
-) -> Executor:
+) -> tuple[Executor, CompilationCtx]:
     """Compiles the backend portion of the program.
 
     Args:
@@ -29,11 +29,12 @@ def compile_backend(
         silent: Whether to suppress logging output
 
     Returns:
-        An executor for running the compiled program
+        An executor for running the compiled program and the compilation context
     """
     cfg = ctx.exec_cfg
-    backend: DLBackend = DLBackend.get_backend(cfg.backend)()
-    backend.configure(cfg)
+    with Timer() as backend_config_timer:
+        backend: DLBackend = DLBackend.get_backend(cfg.backend)()
+        backend.configure(cfg)
 
     if not silent:
         log.info("Starting backend (%s) compilation...", cfg.backend)
@@ -47,7 +48,7 @@ def compile_backend(
             ", ".join(list(top_10_human)),
         )
 
-    with Timer() as timer:
+    with Timer() as ts_timer:
         if cfg.enable_hybrid_tensorstore:
             ts_class = HybridTensorStore
         else:
@@ -55,7 +56,7 @@ def compile_backend(
         ts = ts_class(ctx)
         if cfg.executor_debug_mode:
             # ts.wrap_all_tensors_with_debug_checker()
-            pass
+            ...
 
         clean_up_dict = {}
         for udf in ctx.dg.stateful_udf_nodes:
@@ -63,16 +64,27 @@ def compile_backend(
             clean_up_dict.update(udf.desc.clean_up_state or {})
         external_state_store = ExternalStateStore(clean_up_dict)
 
-        executor_ctx = ExecutorCtx(ctx.dg, external_state_store, ts, cfg, ctx.analysis_ctx, backend)
+    # NOTE: Setup a timer for all loading times.
+    ctx.analysis_ctx._loading_time_timer = Timer()
+
+    with Timer() as codegen_timer:
+        executor_ctx = ExecutorCtx(external_state_store, ts, ctx, backend)
         executor = NonGenInterpreterExecutor(executor_ctx)
 
-    ctx.analysis_ctx.compilation_time_breakdown["backend_compilation"] = timer.elapsed_ms
+    total_ms = backend_config_timer.elapsed_ms + ts_timer.elapsed_ms + codegen_timer.elapsed_ms
+
+    ctx.analysis_ctx.compilation_profile_ms["Backend"] = {
+        "Total": total_ms,
+        "DLBackendConfig": backend_config_timer.elapsed_ms,
+        "TensorStore": ts_timer.elapsed_ms,
+        "Codegen": codegen_timer.elapsed_ms + ctx.analysis_ctx.load_timer.elapsed_ms,
+    }
 
     if not silent:
         log.info(
             "Backend (%s) compilation took %s seconds.",
             cfg.backend,
-            timer.elapsed_s,
+            round(total_ms / 1000, 2),
         )
 
-    return executor
+    return executor, ctx

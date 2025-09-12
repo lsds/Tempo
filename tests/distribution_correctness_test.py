@@ -1,7 +1,6 @@
 import itertools
 import math
 from dataclasses import replace
-from typing import List, Tuple
 
 import pytest
 import torch
@@ -22,7 +21,7 @@ NUM_TRIALS = 2500
 
 
 def histograms_allclose(
-    histogram1: List[int], histogram2: List[int], num_trials: int, epsilon: float
+    histogram1: list[int], histogram2: list[int], num_trials: int, epsilon: float
 ) -> bool:
     """
     Compare two histograms with the same buckets to determine if they are close.
@@ -71,7 +70,7 @@ def test_categorical_log_prob_and_entropy(
                 0
             )
             tpo_cat = tpo_dist.Categorical(probs=w)
-            sample = RecurrentTensor.ones((), dtype=dtype.dtypes.int64) * i
+            sample = RecurrentTensor.ones((), dtype=dtype.dtypes.default_int) * i
             log_probs = tpo_cat.log_prob(sample)
             entropy = tpo_cat.entropy()
 
@@ -106,19 +105,22 @@ def test_categorical_sampling_correctness(
     (t,) = ctx.variables
     (T,) = ctx.upper_bounds
     with ctx:
-        w = RecurrentTensor.arange(num_events, dtype=dtype.dtypes.float32).softmax(0)
+        w_arr = RecurrentTensor.arange(num_events, dtype=dtype.dtypes.float32)
+        w_arr.sink_with_ts_udf(lambda x, ts: print(f"w_arr: {x}, ts: {ts}", flush=True))
+        w = w_arr.softmax()
+        w.sink_with_ts_udf(lambda x, ts: print(f"w: {x}, ts: {ts}", flush=True))
         tpo_cat = tpo_dist.Categorical(probs=w, domain=(t,))
         sample = tpo_cat.sample()
         exec = ctx.compile({T: NUM_TRIALS})
-        exec.execute()
+    exec.execute()
 
-        samples = exec.get_spatial_tensor_torch(
-            sample.tensor_id, (slice(0, NUM_TRIALS),)
-        )
-        for s in samples.unbind(0):
-            tpo_hist[int(s)] += 1
+    samples = exec.get_spatial_tensor_torch(
+        sample.tensor_id, (slice(0, NUM_TRIALS),)
+    )
+    for s in samples.unbind(0):
+        tpo_hist[int(s)] += 1
 
-        assert histograms_allclose(torch_hist, tpo_hist, NUM_TRIALS, ERROR_ALLOWED)
+    assert histograms_allclose(torch_hist, tpo_hist, NUM_TRIALS, ERROR_ALLOWED)
 
 
 @pytest.mark.parametrize("backend", ["torch", "jax"])
@@ -188,7 +190,7 @@ def test_uniform_sampling_correctness(exec_cfg: ExecutionConfig, backend: str) -
 
 def define_normal_distribution_buckets(
     mu: float, sigma: float, num_buckets: int
-) -> List[Tuple[float, float]]:
+) -> list[tuple[float, float]]:
     num_central_buckets = num_buckets - 2
     bucket_bounds = []
 
@@ -214,7 +216,7 @@ def define_normal_distribution_buckets(
     return bucket_bounds
 
 
-def get_bucket_idx(sample: float, bucket_bounds: List[Tuple[float, float]]) -> int:
+def get_bucket_idx(sample: float, bucket_bounds: list[tuple[float, float]]) -> int:
     for i, (lower, upper) in enumerate(bucket_bounds):
         if lower <= sample < upper:
             return i

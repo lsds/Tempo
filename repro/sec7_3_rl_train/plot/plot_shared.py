@@ -1,7 +1,13 @@
-from typing import Any, Dict, List
+from typing import Any
 
+import matplotlib
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
 
 SWEEP_RENAMINGS = {
     "ep_len": "Episode Length",
@@ -13,11 +19,11 @@ SWEEP_RENAMINGS = {
 }
 
 COLORS = {
+    "rllib": "slateblue",
+    "samplefactory": "orchid",
     "cleanrl": "olivedrab",
-    "cleanrlcache": "green",
+    "cleanrlcache": "lightslategray",
     "rlgames": "darkorange",
-    "rllib": "royalblue",
-    "samplefactory": "darkorchid",
     "tempo-jax": "cadetblue",
     "tempo-torch": "indianred",
 }
@@ -62,18 +68,27 @@ METRIC_PRETTY_NAMES = {
     "cpu_mem": "CPU Mem. (%)",
 }
 
+# Bar border styling constant
+BAR_BORDER_THICKNESS = 1
+
+PAD_BARS = 0.75
+
 
 def make_iter_time_subplot(
     ax: plt.Axes,
     df: pd.DataFrame,
-    frameworks_ordered: List[str],
-    sweep_values_ordered: List[str],
-    x_positions: Dict[Any, float],
+    frameworks_ordered: list[str],
+    sweep_values_ordered: list[str],
+    sweep_key_display: dict[Any, str] | None,
+    x_positions: dict[Any, float],
     show_x_labels: bool = False,
     show_y_label: bool = False,
     y_label: str = "Iter. Time (s)",
+    sweep_key_renamed: str = "",
     y_lim: tuple = (pow(10, -1), pow(10, 1.6)),
-) -> Dict[str, plt.Rectangle]:
+    draw_oom: bool = False,
+    text_size: int = 22,
+) -> dict[str, plt.Rectangle]:
     """
     Create an iteration time subplot.
 
@@ -93,55 +108,101 @@ def make_iter_time_subplot(
     """
     framework_labels = {}
 
-    def get_x(rv: Any, fw: Any, x_pos: Dict[Any, float]) -> float:
+    def get_x(rv: Any, fw: Any, x_pos: dict[Any, float]) -> float:
         base = x_pos[rv]
         fw_idx = frameworks_ordered.index(fw)
         return base + fw_idx
 
     for _, row in df.iterrows():
         x = get_x(row["sweep_value"], row["framework"], x_positions)
-        if row["error"]:
+        if row["error"] and draw_oom:
             error_text = row["error_type"]
             # Use fixed position with proper alignment for rotated text
             # NOTE: 0.1 is like the 0 in log scale plotting.
-            ax.text(x, 0.1, error_text, color="red", ha="center", va="bottom", rotation=90)
+            ax.text(
+                x,
+                0.1,
+                error_text,
+                color="black",
+                ha="center",
+                va="bottom",
+                rotation=90,
+                zorder=10,
+                fontsize=text_size - 2,
+                fontweight="normal",
+            )
         else:
             framework_name = row["framework"]
             framework_color_ = COLORS[framework_name]
             framework_hatch_ = HATCHES[framework_name]
+            # Flatten alpha to concrete color
+            concrete_color = flatten_alpha_to_color(framework_color_, 0.99)
             bar = ax.bar(
                 x,
                 row["iter_mean"],
-                color=framework_color_,
+                width=1,
+                color=concrete_color,
                 hatch=framework_hatch_,
                 zorder=3,
                 label=PRETTY_NAMES[framework_name],
-                alpha=0.99,
+                edgecolor="black",
+                linewidth=BAR_BORDER_THICKNESS,
             )
             framework_labels[PRETTY_NAMES[framework_name]] = bar
 
-            ratio_str = f"{row['iter_mean_ratio']:.1f}x"
-            if ratio_str != "1.0x":
-                y_pos = row["iter_mean"] * 1.25
+            # ratio_str = f"{round(row['iter_mean_ratio'],1)}x"
+            ratio_str = f"{round(row['iter_mean_ratio'])}x"
+            # if ratio_str != "1.0x":
+            if ratio_str != "1x":
+                y_pos = row["iter_mean"] * 1.1
                 y_pos = max(y_pos, 0.12)
-                ax.text(x, y_pos, ratio_str, ha="center", va="bottom", rotation=90, fontsize=18)
+                ax.text(
+                    x + 0.2,
+                    y_pos,
+                    ratio_str,
+                    ha="center",
+                    va="bottom",
+                    rotation=90,
+                    fontsize=text_size,
+                    zorder=10,
+                )
 
     # Remove x-axis tick labels if not showing
     if not show_x_labels:
         ax.set_xticks([])
         ax.set_xlabel("")  # no x label on top row
+    else:
+        ax.set_xticks(
+            [x_positions[rv] + (len(frameworks_ordered) - 1) / 2 for rv in sweep_values_ordered]
+        )
+        if sweep_key_display is not None:
+            xlab = [sweep_key_display[v] for v in sweep_values_ordered]
+        else:
+            xlab = sweep_values_ordered
+        ax.set_xticklabels(xlab, fontsize=text_size)
+        assert sweep_key_renamed != ""
+        ax.set_xlabel(sweep_key_renamed, fontsize=text_size)
 
     ax.set_yscale("log")
 
     # Only put ylabel if requested
     if show_y_label:
-        ax.set_ylabel(y_label)
+        ax.set_ylabel(y_label, fontsize=text_size)
     else:
         ax.set_ylabel("")
 
     # use thick lines for grid
-    ax.grid(axis="y", which="major", zorder=0, linewidth=2)
+    ax.grid(axis="y", which="major", zorder=0, linewidth=1)
     ax.set_ylim(y_lim)
+    # ax.set_ylim(0, 1.3)
+    # ax.set_yticks([0, 0.5, 1.0])
+    # ax.set_yticklabels([0, 0.5, 1.0], fontsize=text_size)
+
+    # Set x-axis limits to remove whitespace around first and last bars
+    if sweep_values_ordered:
+        first_bar_x = x_positions[sweep_values_ordered[0]]
+        last_bar_x = x_positions[sweep_values_ordered[-1]] + len(frameworks_ordered) - 1
+        ax.set_xlim(first_bar_x - PAD_BARS, last_bar_x + PAD_BARS)
 
     yticklabels = ax.get_yticklabels()
     if yticklabels:
@@ -154,9 +215,10 @@ def make_iter_time_subplot(
 def make_percentage_plot(
     ax: plt.Axes,
     df: pd.DataFrame,
-    frameworks_ordered: List[str],
-    sweep_values_ordered: List[str],
-    x_positions: Dict[Any, float],
+    frameworks_ordered: list[str],
+    sweep_values_ordered: list[str],
+    sweep_key_display: dict[Any, str] | None,
+    x_positions: dict[Any, float],
     metric_name: str,
     show_mean_peak_legend: bool = False,
     show_y_label: bool = False,
@@ -164,6 +226,8 @@ def make_percentage_plot(
     y_lim: tuple = (0, 100),
     y_ticks: tuple = (0, 25, 50, 75, 100),
     sweep_key_renamed: str = "",
+    draw_oom: bool = False,
+    text_size: int = 22,
 ) -> None:
     """
     Create a percentage-based subplot (e.g., GPU utilization, memory utilization).
@@ -183,65 +247,112 @@ def make_percentage_plot(
         sweep_key_renamed: Renamed sweep key for x-axis label
     """
 
-    def get_x(rv: Any, fw: Any, x_pos: Dict[Any, float]) -> float:
+    def get_x(rv: Any, fw: Any, x_pos: dict[Any, float]) -> float:
         base = x_pos[rv]
         fw_idx = frameworks_ordered.index(fw)
         return base + fw_idx
 
     for _, row in df.iterrows():
         x = get_x(row["sweep_value"], row["framework"], x_positions)
-        if row["error"]:
+        if row["error"] and draw_oom:
             error_text = row["error_type"]
             # Use fixed position with proper alignment for rotated text
-            ax.text(x, 0, error_text, color="red", ha="center", va="bottom", rotation=90)
+            ax.text(
+                x,
+                0,
+                error_text,
+                color="red",
+                ha="center",
+                va="bottom",
+                rotation=90,
+                zorder=10,
+                fontsize=text_size - 2,
+                fontweight="bold",
+            )
         else:
             framework_name = row["framework"]
             framework_color_ = COLORS[framework_name]
             framework_hatch_ = HATCHES[framework_name]
             mean_val = row[f"{metric_name}_mean"]
             peak_val = row[f"{metric_name}_peak"]
+            # Flatten alpha to concrete color for mean bars
+            concrete_color = flatten_alpha_to_color(framework_color_, 0.99)
             ax.bar(
-                x, mean_val, color=framework_color_, hatch=framework_hatch_, zorder=3, alpha=0.99
+                x,
+                mean_val,
+                width=1.0,
+                color=concrete_color,
+                hatch=framework_hatch_,
+                zorder=3,
+                edgecolor="black",
+                linewidth=BAR_BORDER_THICKNESS,
             )
+            # Draw the peak bar with flattened alpha to concrete color
+            peak_color = flatten_alpha_to_color(framework_color_, 0.5)
+            peak_bar = ax.bar(
+                x,
+                peak_val - mean_val,
+                width=1.0,
+                bottom=mean_val,
+                color=peak_color,
+                hatch=framework_hatch_,
+                edgecolor="black",
+                zorder=3,
+            )
+            # Draw the border separately with full opacity
             ax.bar(
                 x,
                 peak_val - mean_val,
+                width=1.0,
                 bottom=mean_val,
-                alpha=0.5,
-                color=framework_color_,
-                hatch=framework_hatch_,
-                zorder=3,
+                color="none",
+                edgecolor="black",
+                linewidth=BAR_BORDER_THICKNESS,
+                zorder=4,
             )
 
     # Y-label only if requested
     if show_y_label:
-        ax.set_ylabel(y_label)
+        ax.set_ylabel(y_label, fontsize=text_size)
     else:
         ax.set_ylabel("")
     # Add Peak/Mean legend if requested
     if show_mean_peak_legend:
-        mean_patch = plt.Rectangle((0, 0), 1, 1, fc="black", edgecolor="k", alpha=1, label="Mean")
-        peak_patch = plt.Rectangle((0, 0), 1, 1, fc="black", edgecolor="k", alpha=0.4, label="Peak")
+        # Use concrete colors for legend patches
+        mean_patch = plt.Rectangle((0, 0), 1, 1, fc="black", edgecolor="k", label="Mean")
+        peak_patch = plt.Rectangle(
+            (0, 0), 1, 1, fc=flatten_alpha_to_color("black", 0.4), edgecolor="k", label="Peak"
+        )
         ax.legend([mean_patch, peak_patch], ["Mean", "Peak"], loc="upper left")
 
-    ax.grid(axis="y", which="both", zorder=0, linewidth=2)
+    ax.grid(axis="y", which="both", zorder=0, linewidth=1)
     ax.set_ylim(y_lim)
     ax.set_yticks(y_ticks)
+
+    # Set x-axis limits to remove whitespace around first and last bars
+    if sweep_values_ordered:
+        first_bar_x = x_positions[sweep_values_ordered[0]]
+        last_bar_x = x_positions[sweep_values_ordered[-1]] + len(frameworks_ordered) - 1
+        ax.set_xlim(first_bar_x - PAD_BARS, last_bar_x + PAD_BARS)
 
     # Set x-axis tick labels
     ax.set_xticks(
         [x_positions[rv] + (len(frameworks_ordered) - 1) / 2 for rv in sweep_values_ordered]
     )
-    ax.set_xticklabels(sweep_values_ordered)
+    if sweep_key_display is not None:
+        ax.set_xticklabels([sweep_key_display[rv] for rv in sweep_values_ordered])
+    else:
+        ax.set_xticklabels(sweep_values_ordered)
     ax.set_xlabel(sweep_key_renamed)
 
 
 def create_generic_metrics_panel(
-    sweep_dfs: List[pd.DataFrame],
-    frameworks_ordered: List[str],
-    metrics: List[str],
-    sweep_keys: List[str],
-    sweep_values_ordered: List[List[str]] = None,
+    sweep_dfs: list[pd.DataFrame],
+    frameworks_ordered: list[str],
+    metrics: list[str],
+    sweep_keys: list[str],
+    sweep_key_display: list[dict[Any, str]] | None = None,
+    sweep_values_ordered: list[list[str]] = None,
     figsize: tuple = None,
     share_y: str = "row",
     share_x: str = "col",
@@ -250,6 +361,7 @@ def create_generic_metrics_panel(
     show_mean_peak_legend_on_percent_plot_number: int = 0,
     y_lim_iter_time: tuple = (pow(10, -1), pow(10, 1.6)),
     text_size: int = 22,
+    add_legend: bool = True,
 ) -> plt.Figure:
     """
     Create a generic metrics panel that can work with different metric combinations.
@@ -306,10 +418,12 @@ def create_generic_metrics_panel(
     )
 
     # Handle single row/column case
-    if num_metrics == 1:
-        axes = axes.reshape(1, -1)
+    if num_metrics == 1 and num_sweeps == 1:
+        axes = np.array([[axes]])
+    elif num_metrics == 1:
+        axes = axes[np.newaxis, :]
     elif num_sweeps == 1:
-        axes = axes.reshape(-1, 1)
+        axes = axes[:, np.newaxis]
 
     framework_labels = {}
 
@@ -317,6 +431,10 @@ def create_generic_metrics_panel(
         zip(sweep_dfs, sweep_values_ordered, sweep_keys, strict=False)
     ):
         sweep_key_renamed = SWEEP_RENAMINGS[rk]
+        if sweep_key_display is not None:
+            sweep_display = sweep_key_display[sweep_idx]
+        else:
+            sweep_display = None
 
         # Ensure frameworks in known order
         df["framework"] = pd.Categorical(
@@ -345,6 +463,7 @@ def create_generic_metrics_panel(
             is_leftmost = sweep_idx == 0
             # Determine if this is the bottom row (for x-labels)
             is_bottom = metric_idx == num_metrics - 1
+            is_top = metric_idx == 0
 
             if metric == "iter_mean":
                 subplot_framework_labels = make_iter_time_subplot(
@@ -352,10 +471,14 @@ def create_generic_metrics_panel(
                     df=df,
                     frameworks_ordered=frameworks_ordered,
                     sweep_values_ordered=rv_order,
+                    sweep_key_display=sweep_display,
                     x_positions=x_positions,
                     show_x_labels=is_bottom,
                     show_y_label=is_leftmost,
                     y_lim=y_lim_iter_time,
+                    sweep_key_renamed=sweep_key_renamed if is_bottom else "",
+                    draw_oom=is_top,
+                    text_size=text_size,
                 )
                 framework_labels.update(subplot_framework_labels)
             elif metric in ["gpu_util", "cpu_util", "gpu_mem", "cpu_mem"]:
@@ -366,6 +489,7 @@ def create_generic_metrics_panel(
                     df=df,
                     frameworks_ordered=frameworks_ordered,
                     sweep_values_ordered=rv_order,
+                    sweep_key_display=sweep_display,
                     x_positions=x_positions,
                     metric_name=metric,
                     y_label=y_label,
@@ -373,6 +497,8 @@ def create_generic_metrics_panel(
                     and percentage_plot_count == show_mean_peak_legend_on_percent_plot_number,
                     show_y_label=is_leftmost,
                     sweep_key_renamed=sweep_key_renamed if is_bottom else "",
+                    draw_oom=is_top,
+                    text_size=text_size,
                 )
                 percentage_plot_count += 1
             else:
@@ -380,16 +506,48 @@ def create_generic_metrics_panel(
                     f"Unknown metric: {metric}. Supported metrics: {METRIC_PRETTY_NAMES.keys()}"
                 )
 
-    # Add a single framework legend for all panels, centered above all plots
-    unique_handles = list(framework_labels.values())
-    unique_labels = list(framework_labels.keys())
-    fig.legend(
-        unique_handles,
-        unique_labels,
-        loc="upper center",
-        ncol=len(frameworks_ordered),
-        frameon=True,
-        bbox_to_anchor=bbox_to_anchor,
-    )
+    if add_legend:
+        # Add a single framework legend for all panels, centered above all plots
+        unique_handles = list(framework_labels.values())
+        unique_labels = list(framework_labels.keys())
+        fig.legend(
+            unique_handles,
+            unique_labels,
+            loc="upper center",
+            ncol=len(frameworks_ordered),
+            frameon=True,
+            bbox_to_anchor=bbox_to_anchor,
+        )
 
     return fig
+
+
+def flatten_alpha_to_color(color, alpha, background_color="white"):
+    """
+    Convert a color with alpha transparency to a concrete color by blending with background.
+
+    Args:
+        color: The original color (can be name, hex, rgb tuple, etc.)
+        alpha: Alpha value (0-1)
+        background_color: Background color to blend with (default: white)
+
+    Returns:
+        A concrete color with no transparency
+    """
+    # Convert colors to RGBA
+    if isinstance(color, str):
+        rgba = mcolors.to_rgba(color)
+    else:
+        rgba = color
+
+    if isinstance(background_color, str):
+        bg_rgba = mcolors.to_rgba(background_color)
+    else:
+        bg_rgba = background_color
+
+    # Blend colors: result = alpha * foreground + (1 - alpha) * background
+    blended_rgb = tuple(
+        alpha * fg + (1 - alpha) * bg for fg, bg in zip(rgba[:3], bg_rgba[:3], strict=False)
+    )
+
+    return blended_rgb

@@ -2,19 +2,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import (
     Any,
-    Callable,
-    Dict,
     Generic,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Tuple,
-    Type,
-    Union,
 )
 
 from tempo.core import index_expr as ie
@@ -25,14 +17,16 @@ from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT, OpInId, OpOutId, TensorId
 from tempo.core.dependence_graph import PDG
 from tempo.core.device import DeviceGroup, device
+from tempo.core.dl_backend import DLBackend
+from tempo.core.dl_backends import DLBackendName
 from tempo.core.dtype import DataType, dtypes
 from tempo.core.external_state_store import ExternalStateStore
 from tempo.core.schedule.execution_schedule import ExecInstruction
 from tempo.core.shape import Shape
 from tempo.core.symbol_dict import SymbolDict
 from tempo.core.tensor_op import TensorOp
-from tempo.core.thunk import Thunk, ThunkEmissionCtx, ThunkExecutionCtx
-from tempo.runtime.backends.backend import DLBackend, DLBackendName
+from tempo.core.thunk import Thunk, ThunkExecutionCtx
+from tempo.core.thunk_emitter import ThunkEmissionCtx, ThunkEmitter
 from tempo.runtime.inplace_buffer_thunk_wrapper import has_buffer_stored_outputs
 from tempo.runtime.tensor_store.block_runtime_tensor import BlockRuntimeTensor
 from tempo.runtime.tensor_store.tensor_store import (
@@ -40,19 +34,16 @@ from tempo.runtime.tensor_store.tensor_store import (
     RuntimeTensor,
     TensorStore,
 )
-from tempo.runtime.thunk_emitter import ThunkEmitter
 from tempo.utils import logger
 from tempo.utils.dg_utils import is_initialization_merge
 
 log = logger.get_logger(__name__)
 
-EVAL_SYMBOL_LAUNCHER_ENABLED = True
-
 
 def dump_debug_info(
     launcher: BaseThunkLauncher,
     e: Exception,
-    merge_branch: Optional[int] = None,
+    merge_branch: int | None = None,
     cond: bool = False,
 ) -> None:
     if merge_branch is not None:
@@ -86,47 +77,54 @@ def dump_debug_info(
 
 @dataclass(frozen=True, slots=True)
 class ThunkLauncherFactoryCtx(Generic[BackendTensorT]):
-    dg: PDG
     thunk_emitter: ThunkEmitter[BackendTensorT]
-    external_state_store: Optional[ExternalStateStore]
+    external_state_store: ExternalStateStore | None
     tensor_store: TensorStore[BackendTensorT]
-    exec_cfg: ExecutionConfig
     backend: DLBackend
     loop_counters_and_bounds: Mapping[ie.Symbol, int]
-    analysis_ctx: AnalysisCtx
+    compilation_ctx: CompilationCtx
+
+    @property
+    def dg(self) -> PDG:
+        return self.compilation_ctx.dg
+
+    @property
+    def exec_cfg(self) -> ExecutionConfig:
+        return self.compilation_ctx.exec_cfg
+
+    @property
+    def analysis_ctx(self) -> AnalysisCtx:
+        return self.compilation_ctx.analysis_ctx
 
 
 @dataclass(frozen=True, slots=True)
 class ThunkLauncher(Generic[BackendTensorT], ABC):
     @abstractmethod
-    def launch(self) -> None:
-        pass
+    def launch(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
 class BaseThunkLauncher(ThunkLauncher[BackendTensorT]):
     op: TensorOp
     thunk: Thunk[BackendTensorT]
-    expected_input_shapes: List[Shape]
-    expected_input_dtypes: List[DataType]
-    expected_input_devices: List[DeviceGroup]
-    input_tensors: List[
-        Tuple[RuntimeTensor[BackendTensorT], Callable[[], Tuple[Union[int, slice], ...]]]
-    ]
-    input_index_exprs: List[ie.IndexSequence]
-    input_conds: List[Union[ie.BooleanIndexValue, None]]
-    requires_copy: List[bool]
-    out_expr_eval: Callable[[], Tuple[int, ...]]
-    expected_output_shapes: List[Shape]
-    expected_output_dtypes: List[DataType]
-    output_tensors: List[RuntimeTensor[BackendTensorT]]
-    buffer_out_positions: Tuple[int, ...]
+    expected_input_shapes: list[Shape]
+    expected_input_dtypes: list[DataType]
+    expected_input_devices: list[DeviceGroup]
+    input_tensors: list[tuple[RuntimeTensor[BackendTensorT], Callable[[], tuple[int | slice, ...]]]]
+    input_index_exprs: list[ie.IndexSequence]
+    input_conds: list[ie.BooleanIndexValue | None]
+    requires_copy: list[bool]
+    out_expr_eval: Callable[[], tuple[int, ...]]
+    expected_output_shapes: list[Shape]
+    expected_output_dtypes: list[DataType]
+    output_tensors: list[RuntimeTensor[BackendTensorT]]
+    buffer_out_positions: tuple[int, ...]
     device: DeviceGroup
     backend: DLBackend[BackendTensorT]
     thunk_exec_ctx: ThunkExecutionCtx
     domain_map: Mapping[ie.Symbol, ie.IntIndexValue]
     loop_counters_and_bounds: Mapping[ie.Symbol, int]
-    arg_fns: List[Any] = field(default_factory=list, init=False)
+    arg_fns: list[Any] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         # ordinary input tensors – use all-int fast path
@@ -143,7 +141,7 @@ class BaseThunkLauncher(ThunkLauncher[BackendTensorT]):
 
     def _debug_checks(
         self,
-        tensors: Tuple[BackendTensorT, ...],
+        tensors: tuple[BackendTensorT, ...],
         input_: bool = True,
     ) -> None:
         # if input_:
@@ -259,7 +257,7 @@ class AllIntFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
 
 @dataclass(frozen=True, slots=True)
 class SingleInputAllIntFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor: RuntimeTensor[BackendTensorT] = None  # type: ignore
 
     def __post_init__(self) -> None:
@@ -280,9 +278,9 @@ class SingleInputAllIntFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
 
 @dataclass(frozen=True, slots=True)
 class TwoInputAllIntFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn0: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn0: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor0: RuntimeTensor[BackendTensorT] = None  # type: ignore
-    eval_fn1: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn1: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor1: RuntimeTensor[BackendTensorT] = None  # type: ignore
 
     def __post_init__(self) -> None:
@@ -308,11 +306,11 @@ class TwoInputAllIntFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
 
 @dataclass(frozen=True, slots=True)
 class ThreeInputAllIntFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn0: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn0: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor0: RuntimeTensor[BackendTensorT] = None  # type: ignore
-    eval_fn1: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn1: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor1: RuntimeTensor[BackendTensorT] = None  # type: ignore
-    eval_fn2: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn2: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor2: RuntimeTensor[BackendTensorT] = None  # type: ignore
 
     def __post_init__(self) -> None:
@@ -338,13 +336,13 @@ class ThreeInputAllIntFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
 
 @dataclass(frozen=True, slots=True)
 class FourInputAllIntFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn0: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn0: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor0: RuntimeTensor[BackendTensorT] = None  # type: ignore
-    eval_fn1: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn1: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor1: RuntimeTensor[BackendTensorT] = None  # type: ignore
-    eval_fn2: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn2: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor2: RuntimeTensor[BackendTensorT] = None  # type: ignore
-    eval_fn3: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn3: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor3: RuntimeTensor[BackendTensorT] = None  # type: ignore
 
     def __post_init__(self) -> None:
@@ -415,7 +413,7 @@ class NoOutputsThunkLauncher(BaseThunkLauncher[BackendTensorT]):
 
 @dataclass(frozen=True, slots=True)
 class EvalOnceAndFastPathSingleInputNoOutputsThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor: RuntimeTensor[BackendTensorT] = None  # type: ignore
 
     def __post_init__(self) -> None:
@@ -441,7 +439,7 @@ class EvalOnceAndFastPathSingleInputNoOutputsThunkLauncher(BaseThunkLauncher[Bac
 
 @dataclass(frozen=True, slots=True)
 class EvalOnceAndFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn: Callable[[], tuple[int | slice]] = lambda: (0,)
 
     def __post_init__(self) -> None:
         assert isinstance(self.op, top.TensorOp)
@@ -462,7 +460,7 @@ class EvalOnceAndFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
 
 @dataclass(frozen=True, slots=True)
 class SingleInputEvalOnceAndFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor: RuntimeTensor[BackendTensorT] = None  # type: ignore
 
     def __post_init__(self) -> None:
@@ -486,7 +484,7 @@ class SingleInputEvalOnceAndFastPathThunkLauncher(BaseThunkLauncher[BackendTenso
 
 @dataclass(frozen=True, slots=True)
 class TwoInputEvalOnceAndFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn0: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn0: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor0: RuntimeTensor[BackendTensorT] = None  # type: ignore
     input_tensor1: RuntimeTensor[BackendTensorT] = None  # type: ignore
 
@@ -515,7 +513,7 @@ class TwoInputEvalOnceAndFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]
 
 @dataclass(frozen=True, slots=True)
 class ThreeInputEvalOnceAndFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn0: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn0: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor0: RuntimeTensor[BackendTensorT] = None  # type: ignore
     input_tensor1: RuntimeTensor[BackendTensorT] = None  # type: ignore
     input_tensor2: RuntimeTensor[BackendTensorT] = None  # type: ignore
@@ -547,7 +545,7 @@ class ThreeInputEvalOnceAndFastPathThunkLauncher(BaseThunkLauncher[BackendTensor
 
 @dataclass(frozen=True, slots=True)
 class FourInputEvalOnceAndFastPathThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    eval_fn0: Callable[[], Tuple[Union[int, slice]]] = lambda: (0,)
+    eval_fn0: Callable[[], tuple[int | slice]] = lambda: (0,)
     input_tensor0: RuntimeTensor[BackendTensorT] = None  # type: ignore
     input_tensor1: RuntimeTensor[BackendTensorT] = None  # type: ignore
     input_tensor2: RuntimeTensor[BackendTensorT] = None  # type: ignore
@@ -587,9 +585,9 @@ class MergeThunkLauncher(BaseThunkLauncher[BackendTensorT]):
     loop_counters_and_bounds: Mapping[ie.Symbol, int]
 
     zipped_conds_and_exprs: Sequence[
-        Tuple[
+        tuple[
             Callable[[], bool],
-            Callable[[], Tuple[Union[int, slice], ...]],
+            Callable[[], tuple[int | slice, ...]],
         ]
     ] = ()
     out_tt: RuntimeTensor[BackendTensorT] = None  # type: ignore
@@ -706,7 +704,7 @@ class SetSymbolValuesThunkLauncherWrapper(ThunkLauncher[BackendTensorT]):
     loop_counters_and_bounds: Mapping[ie.Symbol, int]
     domain_map: Mapping[ie.Symbol, ie.IndexValue]
     inner: ThunkLauncher[BackendTensorT]
-    _domain_map_keys: List[ie.Symbol] = field(default_factory=lambda: [], init=False)
+    _domain_map_keys: list[ie.Symbol] = field(default_factory=lambda: [], init=False)
 
     def __post_init__(self) -> None:
         for v in self.domain_map.values():
@@ -723,12 +721,12 @@ class SetSymbolValuesThunkLauncherWrapper(ThunkLauncher[BackendTensorT]):
 
 @dataclass(frozen=True, slots=True)
 class BufferStoredTensorThunkLauncher(BaseThunkLauncher[BackendTensorT]):
-    update_fns: List[Any] = field(default_factory=list, init=False)  # type: ignore
+    update_fns: list[Any] = field(default_factory=list, init=False)  # type: ignore
     example_brt: BlockRuntimeTensor = None  # type: ignore
 
     def __post_init__(self) -> None:
         dev_ = self.backend.to_backend_device_obj(self.device)
-        bend_int64 = self.backend.to_backend_datatype(dtypes.int64)
+        bend_int = self.backend.to_backend_datatype(dtypes.default_int)
 
         arg_fns = []
         for i, ((t, fn), _) in enumerate(
@@ -765,35 +763,35 @@ class BufferStoredTensorThunkLauncher(BaseThunkLauncher[BackendTensorT]):
 
                 # (a) extra kernel inputs – backing buffer & slice index
                 def _buf_fn(
-                    out_ts: Tuple[int, ...],
+                    out_ts: tuple[int, ...],
                     rt: PreallocRuntimeTensor = rt,
                 ) -> BackendTensorT:
                     key, _ = rt.extract_write_key_and_indexes(out_ts)
                     return rt.get_backing_buffer(key)  # type: ignore
 
                 # NOTE: JAX supports integers as traced inputs
-                lift_idx = lambda x, bend_int32=bend_int64, dev=dev_: self.backend.fast_int_lift(
+                lift_idx = lambda x, bend_int=bend_int, dev=dev_: self.backend.fast_int_lift(
                     x,
-                    dtype=bend_int32,
+                    dtype=bend_int,
                     device=dev,
                 )
                 if self.backend.get_backend_name() == DLBackendName.TORCH:
 
                     def _idx_fn(
-                        out_ts: Tuple[int, ...],
+                        out_ts: tuple[int, ...],
                         lift: Callable[[int], BackendTensorT] = lift_idx,
                         rt: PreallocRuntimeTensor = rt,
-                    ) -> Tuple[Tuple[BackendTensorT, ...], ...]:
+                    ) -> tuple[tuple[BackendTensorT, ...], ...]:
                         _, idxs = rt.extract_write_key_and_indexes(out_ts)
 
                         return tuple((lift(idx[0]),) for idx in idxs)
                 else:
 
                     def _idx_fn(
-                        out_ts: Tuple[int, ...],
+                        out_ts: tuple[int, ...],
                         lift: Callable[[int], BackendTensorT] = lift_idx,  # Not used
                         rt: PreallocRuntimeTensor = rt,
-                    ) -> Tuple[Tuple[BackendTensorT, ...], ...]:
+                    ) -> tuple[tuple[BackendTensorT, ...], ...]:
                         _, idxs = rt.extract_write_key_and_indexes(out_ts)
                         return tuple((idx[0],) for idx in idxs)  # type: ignore
 
@@ -803,7 +801,7 @@ class BufferStoredTensorThunkLauncher(BaseThunkLauncher[BackendTensorT]):
                 idx_arg_fns.append(_idx_fn)
 
                 def _upd(
-                    out_ts: Tuple[int, ...],
+                    out_ts: tuple[int, ...],
                     val: BackendTensorT,
                     rt: BlockRuntimeTensor = rt,
                 ) -> None:
@@ -815,7 +813,7 @@ class BufferStoredTensorThunkLauncher(BaseThunkLauncher[BackendTensorT]):
             else:
 
                 def _upd(
-                    out_ts: Tuple[int, ...],
+                    out_ts: tuple[int, ...],
                     val: BackendTensorT,
                     rt: PreallocRuntimeTensor = rt,
                 ) -> None:
@@ -847,9 +845,9 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
     def __init__(self, prep_ctx: ThunkLauncherFactoryCtx[BackendTensorT]) -> None:
         self.prep_ctx = prep_ctx
 
-        self.counter_per_launcher_class: Counter[Type[ThunkLauncher[BackendTensorT]]] = Counter()
+        self.counter_per_launcher_class: Counter[type[ThunkLauncher[BackendTensorT]]] = Counter()
 
-    def get_launcher_percentages(self) -> Dict[str, str]:
+    def get_launcher_percentages(self) -> dict[str, str]:
         total = sum(self.counter_per_launcher_class.values())
         return {
             k.__name__: f"{round(v / total * 100, 1)}%"
@@ -861,7 +859,6 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
     ) -> ThunkLauncher[BackendTensorT]:
         prep_ctx = self.prep_ctx
         dg = prep_ctx.dg
-        backend = prep_ctx.backend
 
         op_id = exec_sched_item.op_id
         op = dg.ops_by_id[op_id].op
@@ -872,11 +869,10 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
                 exec_sched_item.domain_map,
                 prep_ctx.loop_counters_and_bounds,
                 prep_ctx.analysis_ctx.get_op_device(op),
-                dg,
                 dg.static_bounds,
-                self.prep_ctx.external_state_store,
-                self.prep_ctx.exec_cfg,
-                self.prep_ctx.analysis_ctx,
+                prep_ctx.external_state_store,
+                prep_ctx.backend,
+                prep_ctx.compilation_ctx,
             ),
         )
 
@@ -902,7 +898,7 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
 
         # TODO this sort of is coupled to the merge copy analysis.
         # We shouldn't need to know about this format here.
-        requires_copy: List[bool] = [False] * len(input_tensors)
+        requires_copy: list[bool] = [False] * len(input_tensors)
         if merge_copy_analysis is not None and op_id in merge_copy_analysis:
             requires_copy = list(merge_copy_analysis[op_id])
 
@@ -948,7 +944,7 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
             output_tensors,
             buffer_out_positions,
             device.from_(prep_ctx.analysis_ctx.get_op_device(op)),
-            backend,
+            prep_ctx.backend,
             thunk_exec_ctx,
             exec_sched_item.domain_map,
             prep_ctx.loop_counters_and_bounds,
@@ -971,7 +967,10 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
         if isinstance(op, top.UDFOp):
             return op.desc.needs_symbol_setter
 
-        if isinstance(op, top.EvalSymbolOp) and not EVAL_SYMBOL_LAUNCHER_ENABLED:
+        if (
+            isinstance(op, top.EvalSymbolOp)
+            and not self.prep_ctx.exec_cfg.enable_eval_symbol_launcher
+        ):
             return True
 
         if isinstance(op, top.ExecDataflowOp):
@@ -981,15 +980,15 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
 
     def _prepare_input_tensors(
         self, op: top.TensorOp, domain_map: Mapping[ie.Symbol, ie.IntIndexValue]
-    ) -> List[Tuple[RuntimeTensor[BackendTensorT], Callable[[], Tuple[Union[int, slice], ...]]]]:
+    ) -> list[tuple[RuntimeTensor[BackendTensorT], Callable[[], tuple[int | slice, ...]]]]:
         all_dependencies = self.prep_ctx.dg.get_flat_direct_dependencies(op)
         log.debug("Preparing thunk for op %s with dependencies %s", op, all_dependencies)
 
-        input_tensors_dict: Dict[
+        input_tensors_dict: dict[
             OpInId,
-            Tuple[
+            tuple[
                 RuntimeTensor[BackendTensorT],
-                Callable[[], Tuple[Union[int, slice], ...]],
+                Callable[[], tuple[int | slice, ...]],
             ],
         ] = {}
         for dep_op, dep in all_dependencies:
@@ -1003,7 +1002,7 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
         log.debug("Input tensors for op %s: %s", op, input_tensors_dict)
         return [input_tensors_dict[OpInId(i)] for i in range(len(input_tensors_dict.keys()))]
 
-    def _prepare_output_tensors(self, op: top.TensorOp) -> List[RuntimeTensor[BackendTensorT]]:
+    def _prepare_output_tensors(self, op: top.TensorOp) -> list[RuntimeTensor[BackendTensorT]]:
         return [
             self.prep_ctx.tensor_store[TensorId(op.op_id, OpOutId(output))]
             for output in range(self.prep_ctx.dg.ops_by_id[op.op_id].num_outputs)
@@ -1011,10 +1010,10 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
 
     def _get_expected_shapes_dtypes(
         self, op: top.TensorOp, is_input: bool
-    ) -> Tuple[List[Shape], List[DataType], List[DeviceGroup]]:
-        shapes_dict: Dict[Any, Shape]
-        dtypes_dict: Dict[Any, DataType]
-        id_cls: Type
+    ) -> tuple[list[Shape], list[DataType], list[DeviceGroup]]:
+        shapes_dict: dict[Any, Shape]
+        dtypes_dict: dict[Any, DataType]
+        id_cls: type
 
         if is_input:
             shapes_dict = self.prep_ctx.dg.get_input_shapes(op)
@@ -1037,23 +1036,14 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
 
     def _determine_thunk_launcher_class(  # noqa: C901
         self, op: top.TensorOp, sched_item: ExecInstruction, thunk: Thunk[BackendTensorT]
-    ) -> Type[BaseThunkLauncher]:
-        # if isinstance(op, top.MergeOp):
-        #     return MergeThunkLauncher
-        # else:
-        #     return BaseThunkLauncher
+    ) -> type[BaseThunkLauncher]:
+        allow_custom_launchers = self.prep_ctx.exec_cfg.enable_custom_thunk_launchers
+
         all_dependencies = self.prep_ctx.dg.get_flat_direct_dependencies(op)
         num_inputs = len(all_dependencies)
         num_outputs = self.prep_ctx.dg.ops_by_id[op.op_id].num_outputs
 
-        all_inputs_point = all(dep[1].expr.is_point() for dep in all_dependencies)
         # all_inputs_basis = all(dep[1].expr.is_basis() for dep in all_dependencies)
-        all_exprs_equal = all(
-            dep[1].expr.struct_eq(all_dependencies[0][1].expr) for dep in all_dependencies
-        )
-        no_const_in_domain_map = all(
-            not isinstance(v, ie.ConstInt) for v in sched_item.domain_map.values()
-        )
 
         if self.prep_ctx.exec_cfg.executor_debug_mode:
             if isinstance(op, top.MergeOp):
@@ -1061,10 +1051,15 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
             return DebugThunkLauncher
 
         if isinstance(op, top.MergeOp):
-            if is_initialization_merge(self.prep_ctx.dg, op):
+            if allow_custom_launchers and is_initialization_merge(self.prep_ctx.dg, op):
                 # NOTE: We can only leverage the fast path if the domain map does not have consts.
                 # In that case, that schedule item will likely represent the initialization
                 # of the merge op.
+
+                no_const_in_domain_map = all(
+                    not isinstance(v, ie.ConstInt) for v in sched_item.domain_map.values()
+                )
+                all_inputs_point = all(dep[1].expr.is_point() for dep in all_dependencies)
                 if (
                     all_inputs_point
                     and no_const_in_domain_map
@@ -1079,10 +1074,18 @@ class ThunkLauncherFactory(Generic[BackendTensorT]):
         elif (
             isinstance(op, top.EvalSymbolOp)
             and (not op.symbol.is_bound)
-            and EVAL_SYMBOL_LAUNCHER_ENABLED
+            and self.prep_ctx.exec_cfg.enable_eval_symbol_launcher
         ):
             return EvalSymbolThunkLauncher
-        elif num_inputs == 0:
+
+        if not allow_custom_launchers:
+            return BaseThunkLauncher
+
+        all_exprs_equal = all(
+            dep[1].expr.struct_eq(all_dependencies[0][1].expr) for dep in all_dependencies
+        )
+        all_inputs_point = all(dep[1].expr.is_point() for dep in all_dependencies)
+        if num_inputs == 0:
             return NoInputsThunkLauncher
         elif num_outputs == 0:
             if num_inputs == 1 and all_inputs_point:

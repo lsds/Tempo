@@ -1,5 +1,5 @@
 import functools
-from typing import Mapping
+from collections.abc import Mapping
 
 from tempo.api.recurrent_tensor import RecurrentTensor
 from tempo.core import index_expr as ie

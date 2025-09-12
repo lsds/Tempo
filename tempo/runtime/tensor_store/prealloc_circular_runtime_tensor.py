@@ -10,7 +10,7 @@
 # from tempo.core.shape import Shape
 # from tempo.core.storage_methods import PreallocCircularBufferStore
 # from tempo.core.utils import enum_block_points
-# from tempo.runtime.backends.backend import DLBackend
+# from tempo.core.dl_backend import DLBackend
 # from tempo.runtime.tensor_store.tensor_store import RuntimeTensor
 # from tempo.utils import logger
 #

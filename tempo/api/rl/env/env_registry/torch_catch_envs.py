@@ -1,7 +1,7 @@
 # type: ignore
 from tempo.api.rl.env.env_registry.env_registry import EnvBuildCtx, EnvRegistry
 from tempo.api.rl.env.wrappers import ToBackendTensorTWrapper
-from tempo.runtime.backends.backend import DLBackendName
+from tempo.core.dl_backends import DLBackendName
 from tempo.utils import logger
 
 log = logger.get_logger(__name__)
@@ -28,7 +28,7 @@ try:
 
         env = TorchCatchEnv(**torchcatch_kwargs)
 
-        if DLBackendName.str_to_enum(ctx.exec_cfg.backend) != DLBackendName.TORCH:
+        if ctx.exec_cfg.get_canonical_backend_name() != DLBackendName.TORCH:
             to_backend = lambda x: ctx.backend.to_device(
                 ctx.backend.from_dlpack(x), ctx.exec_cfg.dev
             )

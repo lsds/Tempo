@@ -1,5 +1,4 @@
 import functools
-from typing import List, Tuple
 
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
@@ -42,7 +41,7 @@ def remove_unconditional_merges(ctx: CompilationCtx) -> bool:  # noqa: C901
     return modified
 
 
-def get_first_non_false_branch(dg: PDG, merge_op: top.MergeOp) -> Tuple[bool, int]:
+def get_first_non_false_branch(dg: PDG, merge_op: top.MergeOp) -> tuple[bool, int]:
     is_suitable = True
     idx = -1
     # NOTE: If the first non-false branch is true, then we can remove the merge
@@ -58,7 +57,7 @@ def get_first_non_false_branch(dg: PDG, merge_op: top.MergeOp) -> Tuple[bool, in
             break
         elif cond.struct_eq(ie.ConstBool(False)):
             # We can skip False branches because they never evaluate to true
-            pass
+            ...
         else:
             is_suitable = False
             break
@@ -66,7 +65,7 @@ def get_first_non_false_branch(dg: PDG, merge_op: top.MergeOp) -> Tuple[bool, in
 
 
 class InsertMergeDataDependencies(Transformation):
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         new_dg = self.ctx.dg
 
         modified = False
@@ -95,7 +94,7 @@ class InsertMergeDataDependencies(Transformation):
         branch_conds.clear()
 
     def _compute_cond(
-        self, orig_conds: List[ie.BooleanIndexValue], i: int, cond: ie.BooleanIndexValue
+        self, orig_conds: list[ie.BooleanIndexValue], i: int, cond: ie.BooleanIndexValue
     ) -> ie.BooleanIndexValue:
         if i == 0:
             new_cond = cond

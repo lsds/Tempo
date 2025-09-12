@@ -1,6 +1,5 @@
 from os import PathLike
 from pathlib import Path
-from typing import List
 
 from sentencepiece import SentencePieceProcessor
 
@@ -40,6 +39,10 @@ class SPTokenizer(RuntimeTokenizer):
         assert self.sp_model.vocab_size() == self.sp_model.get_piece_size()
 
     @property
+    def stop_tokens(self) -> list[int]:
+        return [self._eos_id]
+
+    @property
     def n_words(self) -> int:
         """Return the vocabulary size."""
         return self._n_words
@@ -59,7 +62,7 @@ class SPTokenizer(RuntimeTokenizer):
         """Return the padding token ID."""
         return self._pad_id
 
-    def encode(self, s: str, bos: bool = False, eos: bool = False) -> List[int]:
+    def encode(self, s: str, bos: bool = False, eos: bool = False) -> list[int]:
         """
         Encodes a string into a list of token IDs.
 
@@ -79,7 +82,7 @@ class SPTokenizer(RuntimeTokenizer):
             t = t + [self._eos_id]
         return t  # type: ignore
 
-    def decode(self, t: List[int]) -> str:
+    def decode(self, t: list[int]) -> str:
         """
         Decodes a list of token IDs into a string.
 

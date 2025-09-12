@@ -60,9 +60,9 @@ repro                                        # Package containing all reproducib
 │  
 ├── expected_results/                        # PNG examples of the expected plots and speedup analysis
 │  
-├── sec7_2_lm_decode/                        # Scripts for running and plotting Section 7.2's experiments
+├── sec7_2_[lm/llama32]_decode/              # Scripts for running and plotting Section 7.2's experiments
 │   │  
-│   ├── impls/                               # Implementations of GPT2's architecture in JAX/Torch/Tempo
+│   ├── impls/                               # Implementations of [GPT2/Llamas]'s architecture in JAX/Torch/Tempo
 │   ├── plot/                                # Plotting scripts for Section 7.2
 │   │   ├── plot_gpt2_time_per_token.py      # Script to plot Figure 9 and 10
 │   │   ├── plot_block_size.py               # Script to plot Figure 11
@@ -138,12 +138,12 @@ We have aimed to make this process as simple as possible:
 
 git clone https://github.com/lsds/Tempo/ tempo
 cd tempo
-chmod +x repro/build_run_container.sh
+chmod +x repro/build_run_container.sh [--llama32]
 
 ./repro/build_run_container.sh
 
 # Now in container
-chmod +x repro/run_all_exprs_and_plot.sh
+chmod +x repro/run_all_exprs_and_plot.sh [--llama32]
 ./repro/run_all_exprs_and_plot.sh
 
 # Before exiting the container, in another shell, copy results out of container
@@ -155,6 +155,13 @@ ssh -4 <HOST> "tar -c -C /home/<USER> /path/to/results | xz -c" | xz -d | tar -x
 ssh -4 <HOST> "tar -c -C /home/<USER> /path/to/plots | xz -c" | xz -d | tar -x
 
 ```
+
+## Llama-3.2 Experiments
+
+The reproducer must first obtain a copy of the model by:
+1. Requesting model access from [huggingface](https://huggingface.co/meta-llama/Llama-3.2-3B)
+2. Running 'llama model download --source huggingface --model-id meta-llama/Llama-3.2-3B' to download a checkpoint into ~/.llama/checkpoints
+3. Then follow the previous section, passing --llama32 to the bash scripts invoked.
 
 ## Working with LaunchLib
 
@@ -249,6 +256,7 @@ changed, and thus, some results have changed, often for the better.
 We have attempted to disable certain optimizations, where needed, in order to more closely
 match the original results.
 
+
 ### Section 7.2 - GPT-2 Decoding
 
 **Figure 9 - Mean Time per Token with Causal Attention**
@@ -288,6 +296,40 @@ the best tile size for batch size of 64 has shifted to 1024 (instead of 512).
 ![Memory Use GPT-2](expected_results/plots/gpt2_decode/mem_usage/memory_usage_lines_gpt2_decode.png)
 
 Results match up exactly with original submission. Tempo's circular tensor store uses a single static allocation for windowed attention. Causal attention is decomposed into blocks which are allocated as needed at runtime, causing the step-like behaviour observed.
+
+### Section 7.2 - Llama3.2-3B Decoding
+
+These experiments were not present in the original submission, but have been added to the final version of the paper.
+
+
+**Figure 17a - Causal attention at batch size 16**
+
+![Mean time between tokens with causal attention with batch size 16](expected_results/plots/llama32/tpt/causal_16.png)
+
+
+**Figure 17b - Causal attention at batch size 4**
+
+![Mean time between tokens with causal attention with batch size 4](expected_results/plots/llama32/tpt/causal_4.png)
+
+**Figure 17c - Window attention at batch size 16**
+
+![Mean time between tokens with window attention with batch size 16](expected_results/plots/llama32/tpt/window_16.png)
+
+**For completeness - Window attention at batch size 4**
+
+![Mean time between tokens with window attention with batch size 4](expected_results/plots/llama32/tpt/window_4.png)
+
+**Figure 18 - Block size microbenchmark**
+
+![Block-size microbenchmark](expected_results/plots/llama32/block_size/block.png)
+
+**Figure 19 - Runtime Memory consumption**
+
+![Runtime memory](expected_results/plots/llama32/mem/runtime_mem.png)
+
+**Figure 24 - Compilation time scaling**
+
+![Runtime memory](expected_results/plots/llama32/compilation/compilation_breakdown_multiple.png)
 
 ### Section 7.3 - RL Training (PPO)
 

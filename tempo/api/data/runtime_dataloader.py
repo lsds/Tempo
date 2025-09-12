@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Generic, Sequence
+from collections.abc import Sequence
+from typing import Generic
 
 import optree
 import torch
@@ -9,7 +10,8 @@ from tempo.api.data.dataloader_desc import DataLoaderDesc
 from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT
 from tempo.core.device import DeviceLike
-from tempo.runtime.backends.backend import DLBackend, DLBackendName
+from tempo.core.dl_backend import DLBackend
+from tempo.core.dl_backends import DLBackendName
 
 
 class RuntimeDataLoader(ABC, Generic[BackendTensorT]):
@@ -18,12 +20,10 @@ class RuntimeDataLoader(ABC, Generic[BackendTensorT]):
     #    pass
 
     @abstractmethod
-    def next_batch(self) -> Sequence[BackendTensorT]:
-        pass
+    def next_batch(self) -> Sequence[BackendTensorT]: ...
 
     @abstractmethod
-    def close(self) -> None:
-        pass
+    def close(self) -> None: ...
 
 
 class TorchRuntimeDataLoader(RuntimeDataLoader[torch.Tensor]):
@@ -77,7 +77,7 @@ class ToDeviceDataLoaderWrapper(RuntimeDataLoader[BackendTensorT]):
     def __init__(
         self,
         dataloader: RuntimeDataLoader,
-        backend: DLBackend,
+        backend: type[DLBackend],
         desired_device: DeviceLike,
     ):
         self.dataloader = dataloader
@@ -107,7 +107,7 @@ def get_runtime_dataloader(desc: DataLoaderDesc, exec_cfg: ExecutionConfig) -> R
     backend = DLBackend.get_backend(exec_cfg.backend)
     backend.configure(exec_cfg)
 
-    if DLBackendName.str_to_enum(exec_cfg.backend) != DLBackendName.TORCH:
+    if exec_cfg.get_canonical_backend_name() != DLBackendName.TORCH:
         loader = ToDeviceDataLoaderWrapper(loader, backend, exec_cfg.dev)
 
     return loader

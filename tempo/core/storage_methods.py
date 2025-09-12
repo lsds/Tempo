@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Tuple
+from typing import Any
 
 from tempo.core import index_expr as ie
 
@@ -11,20 +11,18 @@ DEFAULT_PREALLOC_VALUE = float("nan")
 
 @dataclass(frozen=True)
 class StorageMethod:
-    pass
+    ...
 
     def is_full_prealloc(self) -> bool:
         return False
 
 
 @dataclass(frozen=True)
-class DontStore(StorageMethod):
-    pass
+class DontStore(StorageMethod): ...
 
 
 @dataclass(frozen=True)
-class PointStore(StorageMethod):
-    pass
+class PointStore(StorageMethod): ...
 
 
 @dataclass(frozen=True)
@@ -35,20 +33,22 @@ class EvalSymbolStore(StorageMethod):
 @dataclass(frozen=True)
 class PreallocBufferStore(StorageMethod):
     prealloc_value: Any = field(default=DEFAULT_PREALLOC_VALUE)
-    dims_and_base_buffer_sizes: Tuple[Tuple[ie.Symbol, int], ...] = field(default_factory=tuple)
+    dims_and_base_buffer_sizes: tuple[tuple[ie.Symbol, int], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         assert len(self.dims_and_base_buffer_sizes) == 1, "Only one buffer dimension is supported"
 
     @property
-    @abstractmethod
-    def buffer_size(self) -> int:
-        pass
+    def temporal_dim_stored(self) -> ie.Symbol:
+        return self.dims_and_base_buffer_sizes[0][0]
 
     @property
     @abstractmethod
-    def num_buffer_writes_needed(self) -> int:
-        pass
+    def buffer_size(self) -> int: ...
+
+    @property
+    @abstractmethod
+    def num_buffer_writes_needed(self) -> int: ...
 
 
 @dataclass(frozen=True)

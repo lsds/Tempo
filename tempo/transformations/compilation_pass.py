@@ -1,6 +1,6 @@
 import copy
 from abc import ABC, abstractmethod
-from typing import Any, Tuple
+from typing import Any
 
 from tempo.core.analysis_ctx import AnalysisCtx
 from tempo.core.compilation_ctx import CompilationCtx
@@ -28,7 +28,7 @@ class AbstractCompilationPass(ABC):
     def copy_ctx(self) -> CompilationCtx:
         return copy.deepcopy(self.ctx)
 
-    def run(self) -> Tuple[CompilationCtx, bool, float]:
+    def run(self) -> tuple[CompilationCtx, bool, float]:
         """Runs the pass on the input context and returns the new context,
         whether it was modified, and the runtime of the transformation.
 
@@ -55,10 +55,10 @@ class AbstractCompilationPass(ABC):
         Must return either a new PDG and a boolean indicating modification
         or a new AnalysisCtx depending on the pass type.
         """
-        pass
+        ...
 
     @abstractmethod
-    def _create_new_context(self, result: Any) -> Tuple[CompilationCtx, bool]:
+    def _create_new_context(self, result: Any) -> tuple[CompilationCtx, bool]:
         """Creates a new CompilationCtx from the result of `_run`.
 
         Args:
@@ -67,7 +67,7 @@ class AbstractCompilationPass(ABC):
         Returns:
             Tuple[CompilationCtx, bool]: The new CompilationCtx and a boolean modification.
         """
-        pass
+        ...
 
 
 class CompilationPass(AbstractCompilationPass):
@@ -77,17 +77,17 @@ class CompilationPass(AbstractCompilationPass):
         super().__init__(ctx)
 
     @abstractmethod
-    def _run(self) -> Tuple[CompilationCtx, bool]:
+    def _run(self) -> tuple[CompilationCtx, bool]:
         """Performs the transformation on the given context by returning a new modified context.
 
         Returns:
             Tuple[CompilationCtx, bool]: A pair of the new CompilationCtx and a boolean modified.
         """
-        pass
+        ...
 
     def _create_new_context(
-        self, result: Tuple[CompilationCtx, bool]
-    ) -> Tuple[CompilationCtx, bool]:
+        self, result: tuple[CompilationCtx, bool]
+    ) -> tuple[CompilationCtx, bool]:
         new_ctx, modified = result
         return new_ctx, modified
 
@@ -99,15 +99,15 @@ class Transformation(AbstractCompilationPass):
         super().__init__(ctx)
 
     @abstractmethod
-    def _run(self) -> Tuple[PDG, bool]:
+    def _run(self) -> tuple[PDG, bool]:
         """Performs the transformation on the given context by returning a new modified context.
 
         Returns:
             Tuple[PDG, bool]: A pair of the new PDG and a boolean was modified.
         """
-        pass
+        ...
 
-    def _create_new_context(self, result: Tuple[PDG, bool]) -> Tuple[CompilationCtx, bool]:
+    def _create_new_context(self, result: tuple[PDG, bool]) -> tuple[CompilationCtx, bool]:
         new_dg, modified = result
         new_ctx = CompilationCtx(new_dg, self.ctx.analysis_ctx, self.ctx.exec_cfg)
         return new_ctx, modified
@@ -126,9 +126,9 @@ class Analysis(AbstractCompilationPass):
         Returns:
             AnalysisCtx: The updated AnalysisCtx after analysis.
         """
-        pass
+        ...
 
-    def _create_new_context(self, result: AnalysisCtx) -> Tuple[CompilationCtx, bool]:
+    def _create_new_context(self, result: AnalysisCtx) -> tuple[CompilationCtx, bool]:
         new_analysis_ctx = result
         new_ctx = CompilationCtx(self.ctx.dg, new_analysis_ctx, self.ctx.exec_cfg)
         return new_ctx, True

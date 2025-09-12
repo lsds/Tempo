@@ -1,5 +1,3 @@
-from typing import Optional, Tuple, Union
-
 from tempo.api.distributions.categorical import Categorical
 from tempo.api.nn.activation import ActivationFunctionLike
 from tempo.api.nn.turnkey import FullyConnected, FullyConnectedActorCritic
@@ -18,7 +16,7 @@ class DiscreteFFActor(Network):
     def __init__(
         self,
         input_shape: StaticShapeLike,
-        hidden_sizes: Tuple[int, ...],
+        hidden_sizes: tuple[int, ...],
         output_shape: StaticShapeLike,
         act_fun: ActivationFunctionLike = "leakyrelu",
         domain: DomainLike = None,
@@ -30,12 +28,12 @@ class DiscreteFFActor(Network):
             input_shape, hidden_sizes, output_shape, act_fun, domain, independent_domain
         )
 
-        self.dist: Optional[Categorical] = None
+        self.dist: Categorical | None = None
 
     def forward(
         self,
-        obs: Union[ObservationsRecurrentTensor, RecurrentTensor],
-    ) -> Tuple[ActionsRecurrentTensor, Optional[ValueRecurrentTensor]]:
+        obs: ObservationsRecurrentTensor | RecurrentTensor,
+    ) -> tuple[ActionsRecurrentTensor, ValueRecurrentTensor | None]:
         logits = self.network(obs)
         logits = logits.softmax()
 
@@ -43,7 +41,7 @@ class DiscreteFFActor(Network):
 
         return ActionsRecurrentTensor(self.dist.sample()), None
 
-    def log_prob(self, actions: Union[ActionsRecurrentTensor, RecurrentTensor]) -> RecurrentTensor:
+    def log_prob(self, actions: ActionsRecurrentTensor | RecurrentTensor) -> RecurrentTensor:
         if self.dist is None:
             raise ValueError("No distribution has been computed yet. Please call forward first.")
         ret = self.dist.log_prob(actions)  # type: ignore
@@ -59,7 +57,7 @@ class DiscreteFFActorCritic(Network):
     def __init__(
         self,
         input_shape: StaticShapeLike,
-        hidden_sizes: Tuple[int, ...],
+        hidden_sizes: tuple[int, ...],
         output_shape: StaticShapeLike,
         act_fun: ActivationFunctionLike = "leakyrelu",
         domain: DomainLike = None,
@@ -71,12 +69,12 @@ class DiscreteFFActorCritic(Network):
             input_shape, hidden_sizes, output_shape, act_fun, domain, independent_domain
         )
 
-        self.dist: Optional[Categorical] = None
+        self.dist: Categorical | None = None
 
     def forward(
         self,
-        obs: Union[ObservationsRecurrentTensor, RecurrentTensor],
-    ) -> Tuple[ActionsRecurrentTensor, Optional[ValueRecurrentTensor]]:
+        obs: ObservationsRecurrentTensor | RecurrentTensor,
+    ) -> tuple[ActionsRecurrentTensor, ValueRecurrentTensor | None]:
         logits, value = self.network(obs)
         logits = logits.softmax()
 
@@ -84,7 +82,7 @@ class DiscreteFFActorCritic(Network):
 
         return ActionsRecurrentTensor(self.dist.sample()), ValueRecurrentTensor(value)
 
-    def log_prob(self, actions: Union[ActionsRecurrentTensor, RecurrentTensor]) -> RecurrentTensor:
+    def log_prob(self, actions: ActionsRecurrentTensor | RecurrentTensor) -> RecurrentTensor:
         if self.dist is None:
             raise ValueError("No distribution has been computed yet. Please call forward first.")
         return self.dist.log_prob(actions)  # type: ignore

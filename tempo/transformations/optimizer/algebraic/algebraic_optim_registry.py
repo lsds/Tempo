@@ -1,9 +1,9 @@
-from typing import Any, Type
+from typing import Any
 
 from tempo.core import tensor_ops as top
 from tempo.core.configs import ExecutionConfig
-from tempo.core.subclass_utils import get_all_subclasses
 from tempo.core.tensor_op import TensorOp
+from tempo.core.utils import get_all_subclasses
 from tempo.transformations.optimizer.algebraic.implementations import (
     BinEWMovPushdownOptimization,
     ExpandSelectOptimization,
@@ -29,6 +29,7 @@ from tempo.transformations.optimizer.algebraic.implementations import (
     SumExpandToMulOptimization,
     SumPermuteOptimization,
     UnaryPushdownOptimization,
+    UnifConstAlgebraOptimization,
     ZeroAddOptimization,
     ZeroDivOptimization,
     ZeroMulOptimization,
@@ -59,7 +60,7 @@ def build_algebraic_optim_registry(
         for n in getattr(exec_cfg, "algebraic_optims_to_disable", [])
     }
 
-    def is_disabled(opt_class: Type[MatchReplacer]) -> bool:
+    def is_disabled(opt_class: type[MatchReplacer]) -> bool:
         # Use transform_name if present, else class name
         name = opt_class.transform_name()
 
@@ -71,7 +72,7 @@ def build_algebraic_optim_registry(
         return name in disabled
 
     def register_if_not_disabled(
-        op: Type[TensorOp], opt_class: Type[MatchReplacer], *args: Any, **kwargs: Any
+        op: type[TensorOp], opt_class: type[MatchReplacer], *args: Any, **kwargs: Any
     ) -> None:
         if not is_disabled(opt_class):
             registry.register(op, opt_class(*args, **kwargs))
@@ -109,6 +110,21 @@ def build_algebraic_optim_registry(
     register_if_not_disabled(top.MatMulOp, MatMulReassocOptimization)
     register_if_not_disabled(top.MatMulOp, MatMulPermuteOptimization)
     register_if_not_disabled(top.MatMulOp, MatMulConstOptimization)
+
+    for type_ in get_all_subclasses(top.ElementWiseOp):
+        register_if_not_disabled(type_, UnifConstAlgebraOptimization)
+    for type_ in get_all_subclasses(top.ReduceOp):
+        register_if_not_disabled(type_, UnifConstAlgebraOptimization)
+    for type_ in (
+        top.SqueezeOp,
+        top.UnsqueezeOp,
+        top.ReshapeOp,
+        top.ExpandOp,
+        top.PadOp,
+        top.FlipOp,
+        top.PermuteOp,
+    ):
+        register_if_not_disabled(type_, UnifConstAlgebraOptimization)
 
     # Elementwise optimizations
     for type_ in get_all_subclasses(top.UnaryElementWiseOp):

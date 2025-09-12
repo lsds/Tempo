@@ -1,5 +1,24 @@
 #! /bin/bash
 
+# Default to GPT2 experiments
+RUN_LLAMA32=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --llama32)
+            RUN_LLAMA32=true
+            shift
+            ;;
+        *)
+            echo "Unknown option $1"
+            echo "Usage: $0 [--llama32]"
+            echo "  --llama32: Run llama32 experiments instead of GPT2 experiments"
+            exit 1
+            ;;
+    esac
+done
+
 # Function to print messages with decorative borders
 print_section() {
     local message="$1"
@@ -56,15 +75,44 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
 start_time_ms=$(date +%s%3N)
 
-print_section "Will now run the LM decode experiments with GPUs: $gpus and PHB GPU: $phb_gpu..."
+# NOTE: Ablations. Not clean enough yet.
+#python repro/sec7_3_rl_train/run_ablation.py --gpus $gpus --phbgpu $phb_gpu
+#cleanup
+#python repro/sec7_2_llama32_decode/run_ablation.py --gpus $gpus --phbgpu $phb_gpu
+#cleanup
 
-# Run all experiments, ensuring cleanup is called after each one
-python repro/sec7_2_lm_decode/run_measure_tpt.py --gpus $gpus --phbgpu $phb_gpu
-cleanup
-python repro/sec7_2_lm_decode/run_mem_usage.py --gpus $gpus --phbgpu $phb_gpu
-cleanup
-python repro/sec7_2_lm_decode/run_block_size_microbenchmark.py --gpus $gpus --phbgpu $phb_gpu
-cleanup
+# Run LM decode experiments based on the flag
+if [ "$RUN_LLAMA32" = true ]; then
+    print_section "Will now run the llama32 LM decode experiments with GPUs: $gpus and PHB GPU: $phb_gpu..."
+
+    # check for checkpoint
+    if [ ! -d ~/.llama/checkpoints/Llama3.2-3B ]; then
+        echo "Llama3.2-3B checkpoint not found. Please download it from https://huggingface.co/meta-llama/Llama-3.2-3B"
+        echo "Use command after obtaining permission: 'llama model download --source huggingface --model-id meta-llama/Llama-3.2-3B'"
+        exit 1
+    fi
+
+    python repro/sec7_2_llama32_decode/run_block_size_microbenchmark.py --gpus $gpus --phbgpu $phb_gpu
+    cleanup
+    python repro/sec7_2_llama32_decode/run_measure_tpt.py --gpus $gpus --phbgpu $phb_gpu
+    cleanup
+    python repro/sec7_2_llama32_decode/run_compile_time_scaling.py --gpus $gpus --phbgpu $phb_gpu
+    cleanup
+    python repro/sec7_2_llama32_decode/run_mem_usage.py --gpus $gpus --phbgpu $phb_gpu
+    cleanup
+else
+    print_section "Will now run the gpt2 LM decode experiments with GPUs: $gpus and PHB GPU: $phb_gpu..."
+
+    python repro/sec7_2_lm_decode/run_block_size_microbenchmark.py --gpus $gpus --phbgpu $phb_gpu
+    cleanup
+    python repro/sec7_2_lm_decode/run_measure_tpt.py --gpus $gpus --phbgpu $phb_gpu
+    cleanup
+    python repro/sec7_2_lm_decode/run_compile_time_scaling.py --gpus $gpus --phbgpu $phb_gpu
+    cleanup
+    python repro/sec7_2_lm_decode/run_mem_usage.py --gpus $gpus --phbgpu $phb_gpu
+    cleanup
+fi
+
 
 print_section "Will now run the RL experiments with GPUs: $gpus..."
 python repro/sec7_3_rl_train/run_small_to_med_scale.py --gpus $gpus --phbgpu $phb_gpu
@@ -82,9 +130,15 @@ print_section "Experiments finished! Will now plot the results..."
 # Plot the results
 print_section "Will now plot the LM decode results..."
 
-python repro/sec7_2_lm_decode/plot/plot_mem_usage.py --mode "paper"
-python repro/sec7_2_lm_decode/plot/plot_block_size.py
-python repro/sec7_2_lm_decode/plot/plot_gpt2_time_per_token.py
+if [ "$RUN_LLAMA32" = true ]; then
+    python repro/sec7_2_llama32_decode/plot/plot_mem_usage.py --mode "paper"
+    python repro/sec7_2_llama32_decode/plot/plot_block_size.py
+    python repro/sec7_2_llama32_decode/plot/plot_llama32_time_per_token.py
+else
+    python repro/sec7_2_lm_decode/plot/plot_mem_usage.py --mode "paper"
+    python repro/sec7_2_lm_decode/plot/plot_block_size.py
+    python repro/sec7_2_lm_decode/plot/plot_gpt2_time_per_token.py
+fi
 
 print_section "Will now plot the RL results..."
 
@@ -98,6 +152,7 @@ print_section "Will now run the speedup analysis from Section 7.3. Expect Tempo-
 python repro/sec7_3_rl_train/plot/speedup_analysis.py
 
 python repro/sec7_3_rl_train/plot/speedup_analysis.py --base_framework cleanrl
+
 
 echo "=========================================="
 

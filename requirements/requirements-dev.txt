@@ -2,6 +2,7 @@ nvidia-ml-py
 pre-commit
 pytest
 python-semantic-release
+pyupgrade
 torchao
 torchtune
 

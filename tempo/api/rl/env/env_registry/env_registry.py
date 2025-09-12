@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, Dict, Optional, Sequence, Type
+from typing import Any, ClassVar
 
 import gymnasium as gym
 
@@ -10,7 +11,7 @@ from tempo.api.rl.env.env import EnvDesc
 from tempo.api.rl.env.env_desc import RuntimeEnvBuilder
 from tempo.api.rl.env.wrappers import RuntimeEnv, TempoEnvWrapper
 from tempo.core.configs import ExecutionConfig
-from tempo.runtime.backends.backend import DLBackend
+from tempo.core.dl_backend import DLBackend
 from tempo.utils import logger
 
 log = logger.get_logger(__name__)
@@ -19,9 +20,9 @@ log = logger.get_logger(__name__)
 @dataclass(frozen=True)
 class EnvBuildCtx:
     name: str
-    num_envs: Optional[int]
-    max_episode_steps: Optional[int]
-    kwargs: Dict[str, Any]
+    num_envs: int | None
+    max_episode_steps: int | None
+    kwargs: dict[str, Any]
     exec_cfg: ExecutionConfig
     backend: DLBackend
 
@@ -30,7 +31,7 @@ EnvBuilder = Callable[[EnvBuildCtx], gym.Env]
 
 
 class EnvRegistry:
-    registry: ClassVar[Dict[str, EnvBuilder]] = {}
+    registry: ClassVar[dict[str, EnvBuilder]] = {}
 
     @staticmethod
     def register_env_set(env_set_name: str, builder: Callable[[EnvBuildCtx], gym.Env]) -> None:
@@ -41,7 +42,7 @@ class EnvRegistry:
     @staticmethod
     def _env_desc_from_runtime_builder(
         builder: RuntimeEnvBuilder,
-        num_envs: Optional[int] = None,
+        num_envs: int | None = None,
     ) -> EnvDesc:
         env = builder(None)
         reward_range = (float(env.reward_range[0]), float(env.reward_range[1]))
@@ -61,12 +62,12 @@ class EnvRegistry:
     def get_env_description(
         name: str,
         env_build_ctx: EnvBuildCtx,
-        wrappers: Optional[Sequence[Type[TempoEnvWrapper]]] = None,
+        wrappers: Sequence[type[TempoEnvWrapper]] | None = None,
     ) -> EnvDesc:
         env_set, name = name.split(".", maxsplit=1)
 
         # Runtime env builder requires only number of envs
-        def runtime_env_builder(ne: Optional[int]) -> RuntimeEnv:
+        def runtime_env_builder(ne: int | None) -> RuntimeEnv:
             env_build_ctx_ = dataclasses.replace(env_build_ctx, num_envs=ne)
             env_ = EnvRegistry.registry[env_set](env_build_ctx_)
             for wrapper in wrappers or []:

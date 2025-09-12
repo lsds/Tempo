@@ -3,17 +3,9 @@ from __future__ import annotations
 import builtins
 import functools
 import math
+from collections.abc import Callable, Mapping, Sequence
 from typing import (
     Any,
-    Callable,
-    Dict,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-    Type,
     Union,
     overload,
 )
@@ -27,6 +19,8 @@ from tempo.core.device import device
 from tempo.core.dim_utils import (
     normalize_dims,
     normalize_indexes,
+    normalize_neg_1s_in_shape_expand,
+    normalize_neg_1s_in_shape_reshape,
     normalize_negative_dim,
     normalize_negative_dim_tuple,
     normalize_slice_indexes,
@@ -43,10 +37,10 @@ from tempo.core.shape import (
 from tempo.core.symbolic_tensor import SymbolicTensor
 from tempo.core.thunk import (
     Thunk,
-    ThunkEmissionCtx,
     ThunkExecutionCtx,
-    UserDefinedThunkDesc,
 )
+from tempo.core.thunk_emitter import ThunkEmissionCtx
+from tempo.core.thunk_udf import UserDefinedThunkDesc
 from tempo.utils.common import as_seq
 from tempo.utils.logger import get_logger
 
@@ -77,11 +71,11 @@ class AutodiffFn:
     def backward(
         self,
         grad_output: SymbolicTensor,  # TODO for split needs to be sequence
-    ) -> Sequence[Optional[SymbolicTensor]]:
+    ) -> Sequence[SymbolicTensor | None]:
         raise NotImplementedError(f"backward not implemented for {type(self)}")
 
     @classmethod
-    def apply(cls: Type[AutodiffFn], *x: RecurrentTensor, **kwargs: Any) -> ManyRecurrentTensors:
+    def apply(cls: type[AutodiffFn], *x: RecurrentTensor, **kwargs: Any) -> ManyRecurrentTensors:
         assert all(t._underlying is not None for t in x), (
             "Can't apply autodiff function to uninitialized tensor"
         )
@@ -196,8 +190,8 @@ def map_with_ts_udf(
 
     def translation_fn(op: top.TensorOp, ctx: ThunkEmissionCtx):  # type: ignore
         def thunk(  # type: ignore
-            inputs: Tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[Any, ...]:
+            inputs: tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
+        ) -> tuple[Any, ...]:
             return (
                 fun(
                     inputs[0],
@@ -250,7 +244,7 @@ def source_with_ts_udf(
     shape: ShapeLike,
     dtype: DataTypeLike,
     domain: DomainLike,
-    lazy_vectorized_version: Optional[Callable[[Mapping[ie.Symbol, int]], Any]] = None,
+    lazy_vectorized_version: Callable[[Mapping[ie.Symbol, int]], Any] | None = None,
     requires_grad: bool = False,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
@@ -261,7 +255,7 @@ def source_with_ts_udf(
     if lazy_vectorized_version is None:
         vectorize_fn = None
     else:
-        from tempo.core.thunk import UDFVectorizationCtx
+        from tempo.core.thunk_udf import UDFVectorizationCtx
 
         def vectorize_fn(vec_ctx: UDFVectorizationCtx) -> UserDefinedThunkDesc:
             vec_shape = Shape.from_(shape).prepend_dim(vec_ctx.vec_size)
@@ -300,8 +294,8 @@ def sink_many_udf(
 ) -> None:
     def translation_fn(op: top.TensorOp, ctx: ThunkEmissionCtx):  # type: ignore
         def thunk(  # type: ignore
-            inputs: Tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[Any, ...]:
+            inputs: tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
+        ) -> tuple[Any, ...]:
             fun(
                 # inputs[0],
                 inputs,
@@ -318,7 +312,7 @@ def sink_many_udf(
         infer_output_dtypes=lambda input_dtypes: (),  # type:ignore
         needs_symbol_setter=False,
     )
-    xs: List[RecurrentTensor] = [lift(x) for x in rts_to_sink]
+    xs: list[RecurrentTensor] = [lift(x) for x in rts_to_sink]
     SymbolicTensor.udf(desc, [x._underlying for x in xs])
 
 
@@ -330,8 +324,8 @@ def sink_many_with_ts_udf(
 
     def translation_fn(op: top.TensorOp, ctx: ThunkEmissionCtx):  # type: ignore
         def thunk(  # type: ignore
-            inputs: Tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[Any, ...]:
+            inputs: tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
+        ) -> tuple[Any, ...]:
             fun(
                 inputs,
                 thunk_exec_ctx.symbol_values,
@@ -361,8 +355,8 @@ def sink_with_ts_udf(
 ) -> None:
     def translation_fn(op: top.TensorOp, ctx: ThunkEmissionCtx):  # type: ignore
         def thunk(  # type: ignore
-            inputs: Tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[Any, ...]:
+            inputs: tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
+        ) -> tuple[Any, ...]:
             fun(
                 inputs[0],
                 {k: thunk_exec_ctx.symbol_values[k] for k in op.domain.variables},
@@ -382,25 +376,10 @@ def sink_with_ts_udf(
     SymbolicTensor.udf(desc, [x._underlying])
 
 
+# TODO: move remaining udf methdos to symbolic tensor
 def sink_udf(x: MaybeRecurrentTensor, fun: Callable[[Any], None]) -> None:
-    def translation_fn(op: top.TensorOp, ctx: ThunkEmissionCtx):  # type: ignore
-        def thunk(  # type: ignore
-            inputs: Tuple[Any, ...], thunk_exec_ctx: ThunkExecutionCtx
-        ) -> Tuple[Any, ...]:
-            fun(inputs[0])  # type: ignore
-            return ()
-
-        return thunk  # type: ignore
-
-    desc = UserDefinedThunkDesc(
-        thunk_translation=translation_fn,
-        num_inputs=1,
-        num_outputs=0,
-        infer_output_shapes=lambda input_shapes: (),  # type:ignore
-        infer_output_dtypes=lambda input_dtypes: (),  # type:ignore
-    )
     x = lift(x)
-    SymbolicTensor.udf(desc, [x._underlying])
+    SymbolicTensor.sink_udf(fun, x._underlying)
 
 
 def add(x: MaybeRecurrentTensor, y: MaybeRecurrentTensor) -> RecurrentTensor:
@@ -742,11 +721,11 @@ def _validate_conv(
     input_: RecurrentTensor,
     weight: RecurrentTensor,
     # bias: Optional[RecurrentTensor],
-    stride: Tuple[int, ...],
-    padding: Tuple[int, ...],
-    dilation: Tuple[int, ...],
+    stride: tuple[int, ...],
+    padding: tuple[int, ...],
+    dilation: tuple[int, ...],
     transposed: bool,
-    output_padding: Tuple[int, ...],
+    output_padding: tuple[int, ...],
     groups: int,
     N_dims: int,
 ) -> None:
@@ -784,11 +763,11 @@ def conv_general(
     input_: MaybeRecurrentTensor,
     weight: MaybeRecurrentTensor,
     n_dims: int,
-    stride: Union[int, Tuple[int, ...]] = 1,
-    padding: Union[int, Tuple[int, ...]] = 0,
-    dilation: Union[int, Tuple[int, ...]] = 1,
+    stride: int | tuple[int, ...] = 1,
+    padding: int | tuple[int, ...] = 0,
+    dilation: int | tuple[int, ...] = 1,
     transposed: bool = False,
-    output_padding: Union[int, Tuple[int, ...]] = 0,
+    output_padding: int | tuple[int, ...] = 0,
     groups: int = 1,
 ) -> RecurrentTensor:
     """This Op performs a N-D Convolution using 2 input tensors: input and weight.
@@ -883,11 +862,11 @@ def conv_general(
 def conv1d(
     input_: MaybeRecurrentTensor,
     weight: MaybeRecurrentTensor,
-    stride: Union[int, Tuple[int, ...]] = 1,
-    padding: Union[int, Tuple[int, ...]] = 0,
-    dilation: Union[int, Tuple[int, ...]] = 1,
+    stride: int | tuple[int, ...] = 1,
+    padding: int | tuple[int, ...] = 0,
+    dilation: int | tuple[int, ...] = 1,
     transposed: bool = False,
-    output_padding: Union[int, Tuple[int, ...]] = 0,
+    output_padding: int | tuple[int, ...] = 0,
     groups: int = 1,
 ) -> RecurrentTensor:
     return conv_general(
@@ -907,11 +886,11 @@ def conv1d(
 def conv2d(
     input_: MaybeRecurrentTensor,
     weight: MaybeRecurrentTensor,
-    stride: Union[int, Tuple[int, ...]] = 1,
-    padding: Union[int, Tuple[int, ...]] = 0,
-    dilation: Union[int, Tuple[int, ...]] = 1,
+    stride: int | tuple[int, ...] = 1,
+    padding: int | tuple[int, ...] = 0,
+    dilation: int | tuple[int, ...] = 1,
     transposed: bool = False,
-    output_padding: Union[int, Tuple[int, ...]] = 0,
+    output_padding: int | tuple[int, ...] = 0,
     groups: int = 1,
 ) -> RecurrentTensor:
     return conv_general(
@@ -930,11 +909,11 @@ def conv2d(
 def conv3d(
     input_: MaybeRecurrentTensor,
     weight: MaybeRecurrentTensor,
-    stride: Union[int, Tuple[int, ...]] = 1,
-    padding: Union[int, Tuple[int, ...]] = 0,
-    dilation: Union[int, Tuple[int, ...]] = 1,
+    stride: int | tuple[int, ...] = 1,
+    padding: int | tuple[int, ...] = 0,
+    dilation: int | tuple[int, ...] = 1,
     transposed: bool = False,
-    output_padding: Union[int, Tuple[int, ...]] = 0,
+    output_padding: int | tuple[int, ...] = 0,
     groups: int = 1,
 ) -> RecurrentTensor:
     return conv_general(
@@ -960,37 +939,6 @@ def transpose(tensor: MaybeRecurrentTensor, dim0: int = 1, dim1: int = 0) -> Rec
     return t.permute(tuple(order))
 
 
-# TODO move to utils probably
-def _normalize_negative_reshape_shape(curr_shape: Shape, requested_shape: Shape) -> Shape:
-    for s in requested_shape:
-        if isinstance(s, int) and s < 0:
-            assert s == -1, f"Only negative dimension allowed is -1, got {s}"
-
-    num_neg_dims = builtins.sum(1 for s in requested_shape if isinstance(s, int) and s < 0)
-    if num_neg_dims == 0:
-        return requested_shape
-    if num_neg_dims > 1:
-        raise ValueError(
-            f"Cannot have more than one negative dimension in reshape, got {requested_shape}"
-        )
-
-    total_elems = curr_shape.prod()
-    prod_of_known_dims = Shape(
-        tuple(
-            s for s in requested_shape if (isinstance(s, int) and s >= 0) or not isinstance(s, int)
-        )
-    ).prod()
-
-    if isinstance(total_elems, int) and isinstance(prod_of_known_dims, int):
-        if total_elems % prod_of_known_dims != 0:
-            raise ValueError(
-                f"Reshape cannot infer the missing dimension for shape {requested_shape} \
-                and tensor shape {curr_shape}"
-            )
-    neg_one_val = total_elems // prod_of_known_dims
-    return Shape(tuple(neg_one_val if s == -1 else s for s in requested_shape))
-
-
 def reshape(
     tensor: MaybeRecurrentTensor,
     shape: ShapeLike,
@@ -999,7 +947,7 @@ def reshape(
     shape = Shape.from_(shape)
 
     if shape.has_negative_dim():
-        shape = _normalize_negative_reshape_shape(t.shape, shape)
+        shape = normalize_neg_1s_in_shape_reshape(t.shape, shape)
 
     if t.shape == shape:
         return t
@@ -1025,7 +973,7 @@ def flatten(tensor: MaybeRecurrentTensor, start_dim: int = 0, end_dim: int = -1)
     return t.reshape(flattened_shape)
 
 
-def permute(tensor: MaybeRecurrentTensor, dims: Tuple[int, ...]) -> RecurrentTensor:
+def permute(tensor: MaybeRecurrentTensor, dims: tuple[int, ...]) -> RecurrentTensor:
     t = lift(tensor)
     dims = normalize_negative_dim_tuple(dims, t.shape)
     assert len(t.shape) == len(dims), (
@@ -1097,6 +1045,10 @@ silu = swish
 def softmax(x: MaybeRecurrentTensor, dim: int = -1, stable: bool = True) -> RecurrentTensor:
     x = lift(x)
     dim = normalize_negative_dim(dim, x.shape)
+    x_dtype = x.dtype
+
+    # NOTE: Always use at least float32 for softmax.
+    sm_dtype = dtypes.least_upper_float(dtypes.upcast(x_dtype, dtypes.float32))
 
     # TODO: Ideally, this should eventually be automated, by recognizing that
     # a sum of exp has the potential to overflow. The way we recognize this should be general.
@@ -1104,8 +1056,9 @@ def softmax(x: MaybeRecurrentTensor, dim: int = -1, stable: bool = True) -> Recu
         max_val = x.max(dim=dim, keepdim=True)[0]
         x = x - max_val
 
-    exp_ = x.exp()
-    return exp_ / exp_.sum(dims=dim, keepdim=True)
+    exp_ = x.cast(sm_dtype).exp()
+    res = exp_ / exp_.sum(dims=dim, keepdim=True)
+    return res.cast(x_dtype)
 
 
 def cross_entropy(
@@ -1322,15 +1275,16 @@ def discounted_cum_sum(
     x, gamma = lift_all_to_rt(x, gamma)
     x_ori = x
     x_dtype = x.dtype
+    accum_dtype = dtypes.least_upper_float(dtypes.upcast(x_dtype, dtypes.float64))
 
-    x, gamma = x.cast(dtypes.float64), gamma.cast(dtypes.float64)
+    # x, gamma = x.cast(dtypes.float64), gamma.cast(dtypes.float64)
     dim = normalize_negative_dim(dim, x.shape)
 
     # Setup the discount factors
     gamma_expanded = gamma.expand(x.shape)
     gamma_powers = gamma_expanded.cumprod(dim, positive=True) / gamma
 
-    discounted_cumsum = (x * gamma_powers).flip(dim).cumsum(dim=dim).flip(dim)
+    discounted_cumsum = (x * gamma_powers).flip(dim).cast(accum_dtype).cumsum(dim=dim).flip(dim)
     returns = discounted_cumsum / gamma_powers
     returns = returns.cast(x_dtype)
 
@@ -1342,17 +1296,19 @@ def expand(x: MaybeRecurrentTensor, shape: ShapeLike) -> RecurrentTensor:
     shape = Shape.from_(shape)
     x = lift(x)
     # NOTE: this is here to replicate torch behaviour safely.
+    # TODO: I think we have a utility for this somewhere...
     if len(x.shape) < len(shape):
         diff = len(shape) - len(x.shape)
         for _ in range(diff):
             x = x.unsqueeze(0)
+    shape = normalize_neg_1s_in_shape_expand(x.shape, shape)
     if x.shape == shape:
         return x
     ret: RecurrentTensor = ad.Expand.apply(x, shape=shape)[0]
     return ret
 
 
-def repeat(x: MaybeRecurrentTensor, num_repeats: Union[int, Sequence[int]]) -> RecurrentTensor:
+def repeat(x: MaybeRecurrentTensor, num_repeats: int | Sequence[int]) -> RecurrentTensor:
     x = lift(x)
     num_repeats = as_seq(num_repeats)
 
@@ -1362,7 +1318,7 @@ def repeat(x: MaybeRecurrentTensor, num_repeats: Union[int, Sequence[int]]) -> R
     if all(r == 1 for r in num_repeats):
         return x
 
-    def flatten(l: Sequence[Sequence[ie.IntIndexValueLike]]) -> List[ie.IntIndexValueLike]:
+    def flatten(l: Sequence[Sequence[ie.IntIndexValueLike]]) -> list[ie.IntIndexValueLike]:
         return [item for sublist in l for item in sublist]
 
     # NOTE: Unsqueeze behind each dimension in the base shape to allow for expanding that dimension
@@ -1377,6 +1333,8 @@ def repeat(x: MaybeRecurrentTensor, num_repeats: Union[int, Sequence[int]]) -> R
 
 def repeat_interleave(x: MaybeRecurrentTensor, num_repeats: int, dim: int) -> RecurrentTensor:
     x = lift(x)
+    if num_repeats == 1:
+        return x
     dim = normalize_negative_dim(dim, x.shape)
     s = x.shape
     return (
@@ -1392,7 +1350,7 @@ def _flip_one_dim(x: RecurrentTensor, dim: int) -> RecurrentTensor:
     return ret
 
 
-def flip(x: MaybeRecurrentTensor, dim: Union[int, Sequence[int]]) -> RecurrentTensor:
+def flip(x: MaybeRecurrentTensor, dim: int | Sequence[int]) -> RecurrentTensor:
     x = lift(x)
     dims = as_seq(dim)
     # No duplicates
@@ -1430,6 +1388,7 @@ def gather(
     # src, index = broadcast_tensors(src, index)
     dim = normalize_negative_dim(dim, src.shape)
 
+    index = index.cast(dtypes.default_int)
     ret: RecurrentTensor = ad.Gather.apply(src, index, dim=dim)[0]
     return ret
 
@@ -1446,6 +1405,7 @@ def scatter_add(
     sink, src = upcast_tensors(sink, src)
 
     dim = normalize_negative_dim(dim, sink.shape)  # TODO make sure not src
+    index = index.cast(dtypes.default_int)
     ret: RecurrentTensor = ad.ScatterAdd.apply(sink, index, src, dim=dim)[0]
     return ret
 
@@ -1459,6 +1419,7 @@ def scatter(
     index, src = lift_all_to_rt(index, src)
     sink: RecurrentTensor = zeros_like(src)
     dim = normalize_negative_dim(dim, sink.shape)  # TODO sink or src?
+    index = index.cast(dtypes.default_int)
     return scatter_add(sink, dim, index, src)
 
 
@@ -1491,7 +1452,7 @@ def squeeze(x: MaybeRecurrentTensor, dims: DIM_TYPE = None) -> RecurrentTensor:
 
 def unsqueeze(x: MaybeRecurrentTensor, dim: int = 0) -> RecurrentTensor:
     x = lift(x)
-    dim = normalize_negative_dim(dim, x.shape, unsq=True)
+    dim = normalize_negative_dim(dim, x.shape, allow_end=True)
     ret: RecurrentTensor = ad.Unsqueeze.apply(x, dim=dim)[0]
     return ret
 
@@ -1504,7 +1465,7 @@ def split(x: MaybeRecurrentTensor, dim: int, num_splits: int) -> Sequence[Recurr
 
 
 def cat(
-    xs: Union[Sequence[MaybeRecurrentTensor], MaybeRecurrentTensor],
+    xs: Sequence[MaybeRecurrentTensor] | MaybeRecurrentTensor,
     *args: MaybeRecurrentTensor,
     dim: int = 0,
 ) -> RecurrentTensor:
@@ -1523,7 +1484,7 @@ def cat(
 
 
 def stack(
-    xs: Union[Sequence[MaybeRecurrentTensor], MaybeRecurrentTensor],
+    xs: Sequence[MaybeRecurrentTensor] | MaybeRecurrentTensor,
     *args: MaybeRecurrentTensor,
     dim: int = 0,
 ) -> RecurrentTensor:
@@ -1531,6 +1492,13 @@ def stack(
         xs = [xs, *args]  # type: ignore
 
     xs_rt = lift_all_to_rt(*xs)
+
+    assert all(x.ndim == xs_rt[0].ndim for x in xs_rt), (
+        "All tensors must have the same number of dimensions"
+    )
+
+    dim = normalize_negative_dim(dim, xs_rt[0].shape, allow_end=True)
+
     return cat(*[x.unsqueeze(dim) for x in xs_rt], dim=dim)
 
 
@@ -1539,9 +1507,8 @@ def const(
     shape: ShapeLike = None,
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[
-        bool
-    ] = None,  # TODO: this is silly, consts have no domain, so no updates
+    # TODO: this is silly, consts have no domain, so no updates
+    requires_grad: None | bool = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.implied(val))
 
@@ -1565,9 +1532,9 @@ def const(
 
 
 def const_like(
-    x: Union[float, bool, int],
+    x: float | bool | int,
     y: RecurrentTensor,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     return const(x, shape=y.shape, requires_grad=requires_grad)
 
@@ -1576,7 +1543,7 @@ def ones(
     shape: ShapeLike = (),
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -1586,7 +1553,7 @@ def ones(
 def ones_like(
     y: RecurrentTensor,
     dtype: DataTypeLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -1598,7 +1565,7 @@ def arange(
     start: int = 0,
     step: int = 1,
     dtype: DataTypeLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_int)
 
@@ -1630,7 +1597,7 @@ def zeros(
     shape: ShapeLike = (),
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -1640,7 +1607,7 @@ def zeros(
 def zeros_like(
     y: RecurrentTensor,
     dtype: DataTypeLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -1650,18 +1617,18 @@ def zeros_like(
 @overload
 def min(  # noqa: A001, A003
     x: MaybeRecurrentTensor, dim: int = 1, keepdim: bool = False
-) -> Tuple[RecurrentTensor, RecurrentTensor]: ...
+) -> tuple[RecurrentTensor, RecurrentTensor]: ...
 
 
 @overload
 def min(  # noqa: A001, A003
     *xs: MaybeRecurrentTensor,
-) -> Tuple[RecurrentTensor, RecurrentTensor]: ...
+) -> tuple[RecurrentTensor, RecurrentTensor]: ...
 
 
 def min(  # noqa: A001, A003
     *args: MaybeRecurrentTensor, **kwargs: Any
-) -> Tuple[RecurrentTensor, RecurrentTensor]:
+) -> tuple[RecurrentTensor, RecurrentTensor]:
     if len(args) == 1:
         x_tt = lift(args[0])
         vals, idxs = max(-x_tt, **kwargs)
@@ -1681,18 +1648,18 @@ def min(  # noqa: A001, A003
 @overload
 def max(  # noqa: A001, A003
     x: MaybeRecurrentTensor, dim: int = 1, keepdim: bool = False
-) -> Tuple[RecurrentTensor, RecurrentTensor]: ...
+) -> tuple[RecurrentTensor, RecurrentTensor]: ...
 
 
 @overload
 def max(  # noqa: A001, A003
     *xs: MaybeRecurrentTensor,
-) -> Tuple[RecurrentTensor, RecurrentTensor]: ...
+) -> tuple[RecurrentTensor, RecurrentTensor]: ...
 
 
 def max(  # noqa: A001, A003
     *args: MaybeRecurrentTensor, **kwargs: Any
-) -> Tuple[RecurrentTensor, RecurrentTensor]:
+) -> tuple[RecurrentTensor, RecurrentTensor]:
     if len(args) == 1:
         x_tt = lift(args[0])
         dim: int = int(kwargs.get("dim", 1))
@@ -1712,18 +1679,18 @@ def max(  # noqa: A001, A003
         raise Exception("Must pass at least one tensor to max")
 
 
-def argmax(x: MaybeRecurrentTensor, dim: int = 1) -> RecurrentTensor:
-    return max(x, dim=dim)[1]
+def argmax(x: MaybeRecurrentTensor, dim: int = 1, keepdim: bool = False) -> RecurrentTensor:
+    return max(x, dim=dim, keepdim=keepdim)[1]
 
 
-def argmin(x: MaybeRecurrentTensor, dim: int = 1) -> RecurrentTensor:
-    return min(x, dim=dim)[1]
+def argmin(x: MaybeRecurrentTensor, dim: int = 1, keepdim: bool = False) -> RecurrentTensor:
+    return min(x, dim=dim, keepdim=keepdim)[1]
 
 
 def clip(
     x: MaybeRecurrentTensor,
-    lb: Union[MaybeRecurrentTensor, None] = None,
-    ub: Union[MaybeRecurrentTensor, None] = None,
+    lb: MaybeRecurrentTensor | None = None,
+    ub: MaybeRecurrentTensor | None = None,
 ) -> RecurrentTensor:
     if lb is not None:
         x = max(*broadcast_tensors(*lift_all_to_rt(x, lb)))[0]
@@ -1733,8 +1700,8 @@ def clip(
 
 
 def _mul_generic(
-    left: Union[int, ie.IntIndexValue], right: Union[int, ie.IntIndexValue]
-) -> Union[int, ie.IntIndexValue]:
+    left: int | ie.IntIndexValue, right: int | ie.IntIndexValue
+) -> int | ie.IntIndexValue:
     return left * right
 
 
@@ -1895,7 +1862,7 @@ def random(
     shape: ShapeLike = (),
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     out_dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -1912,20 +1879,16 @@ def random(
 def random_bool(
     shape: ShapeLike = (),
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
-    return (
-        RecurrentTensor.uniform(
-            shape,
-            low=0,
-            high=2,
-            dtype=dtypes.int32,
-            domain=domain,
-            requires_grad=requires_grad,
-        )
-        # .cast(dtypes.int32)
-        .cast(dtypes.bool_)
-    )
+    return RecurrentTensor.uniform(
+        shape,
+        low=0,
+        high=2,
+        dtype=dtypes.int32,  # NOTE: This instance of int32 is okay
+        domain=domain,
+        requires_grad=requires_grad,
+    ).cast(dtypes.bool_)
 
 
 def random_int(
@@ -1934,7 +1897,7 @@ def random_int(
     shape: ShapeLike = (),
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_int)
     return RecurrentTensor.uniform(
@@ -1953,7 +1916,7 @@ def uniform(
     high: MaybeRecurrentTensor = 1.0,
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -1969,7 +1932,7 @@ def scaled_uniform(
     shape: ShapeLike = (),
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -1990,8 +1953,8 @@ def linear_init_uniform(
     shape: ShapeLike = (),
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    num_input_features: Optional[int] = None,
-    requires_grad: Optional[bool] = None,
+    num_input_features: int | None = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -2009,7 +1972,7 @@ def glorot_uniform(
     shape: ShapeLike = (),
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -2034,29 +1997,27 @@ def _external_init_as_const(backend_tensor: BackendTensorT) -> RecurrentTensor:
 
 
 def init_from_statedict(
-    flat_state_dict: Dict[str, BackendTensorT],
-    key: Union[Callable[[Dict[ie.Symbol, int]], str], str],
+    flat_state_dict: dict[str, BackendTensorT],
+    key: Callable[[dict[ie.Symbol, int]], str] | str,
     shape: ShapeLike = None,
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
     skip_cast_dev_and_bend: bool = False,
 ) -> RecurrentTensor:
-    dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
+    dtype_ = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
-    from tempo.runtime.backends.backend import DLBackend
+    from tempo.core.dl_backend import DLBackend
 
     exec_cfg = get_active_exec_cfg()
     user_backend = DLBackend.get_backend(exec_cfg.backend)
 
     if not isinstance(key, str):
         assert shape is not None, "shape must be provided if key is a callable"
-        assert dtype is not None, "dtype must be provided if key is a callable"
+        assert dtype_ is not None, "dtype must be provided if key is a callable"
         # assert domain is not None, "domain must be provided if key is a callable"
     else:
         shape = Shape.from_(tuple(flat_state_dict[key].shape))
-        dtype = user_backend.to_tpo_dtype(flat_state_dict[key].dtype)
-
-    domain = Domain.from_(domain, True)
+        dtype_ = user_backend.to_tpo_dtype(flat_state_dict[key].dtype)
 
     # NOTE: We will leverage the torch implementation of orthogonal_init
     dev_tpo = device.from_(exec_cfg.dev)
@@ -2077,8 +2038,8 @@ def init_from_statedict(
             t = flat_state_dict[key_fn(ts)]  # type: ignore
 
             ret = user_backend.from_dlpack(t)
-            if dtype is not None:
-                bend_dtype = user_backend.to_backend_datatype(dtype)
+            if dtype_ is not None:
+                bend_dtype = user_backend.to_backend_datatype(dtype_)
                 # _logger.info("Casting tensor %s to %s", key_, bend_dtype)
                 ret = user_backend.cast_backend_dtype(ret, bend_dtype)
 
@@ -2090,7 +2051,7 @@ def init_from_statedict(
     shape = Shape.from_(shape)
     domain = Domain.from_(domain, True)
 
-    return source_with_ts_udf(udf, shape, dtype, domain)
+    return source_with_ts_udf(udf, shape, dtype_, domain)
 
 
 def init_from_existing_tensor(
@@ -2116,7 +2077,7 @@ def _external_init_as_udf(
     domain: DomainLike = None,
 ) -> RecurrentTensor:
     # NOTE: We will leverage the torch implementation of orthogonal_init
-    from tempo.runtime.backends.backend import DLBackend
+    from tempo.core.dl_backend import DLBackend
 
     exec_cfg = get_active_exec_cfg()
     user_backend = DLBackend.get_backend(exec_cfg.backend)
@@ -2237,7 +2198,7 @@ def randn(
     shape: ShapeLike = None,
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
     shape = Shape.from_(shape)
@@ -2254,7 +2215,7 @@ def normal(
     domain: DomainLike = None,
     mean: MaybeRecurrentTensor = 0.0,
     std: MaybeRecurrentTensor = 1.0,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     shape = Shape.from_(shape)
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
@@ -2262,7 +2223,7 @@ def normal(
     std, mean = _lift_if_index_value(std), _lift_if_index_value(mean)
     rand = randn(shape, dtype, domain, requires_grad)
     ret = rand * std + mean
-    return ret
+    return ret.cast(dtype)
 
 
 def kaiming_uniform(
@@ -2270,7 +2231,7 @@ def kaiming_uniform(
     a: MaybeRecurrentTensor = 0.01,
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -2299,11 +2260,11 @@ def kaiming_uniform(
 
 
 def kaiming_normal(
-    shape: Union[Tuple[int, ...], Shape] = (),
+    shape: tuple[int, ...] | Shape = (),
     dtype: DataTypeLike = None,
     a: MaybeRecurrentTensor = 0.01,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -2332,7 +2293,7 @@ def kaiming_normal(
 
 
 def multinomial(
-    weights: MaybeRecurrentTensor,
+    weights_: MaybeRecurrentTensor,
     num_samples: int = 1,
     replacement: bool = False,
     domain: DomainLike = None,
@@ -2349,25 +2310,22 @@ def multinomial(
         containing the indices of the samples.
 
     """
-    weights = lift(weights)
-    assert 1 == weights.ndim and num_samples > 0, (
-        f"{weights.ndim=} of shape {weights.shape} must be 1D, {num_samples=} must be positive"
+    weights_ = lift(weights_)
+    assert 1 <= weights_.ndim <= 2 and num_samples > 0, (
+        f"{weights_.ndim=} of shape {weights_.shape} must be 1D or 2D, "
+        f"{num_samples=} must be positive"
     )
     assert replacement or num_samples == 1, "no replacement only supports num_samples = 1"
-    cw = weights.cumsum()
-    cdf = cw / cw[..., -1]  # .unsqueeze(0)  , cdf.shape=(W,)
-    unif_samples = RecurrentTensor.random(
-        Shape(
-            (
-                num_samples,
-                1,
-            ),
-        ),
-        domain=domain if domain is not None else weights.domain,
-    ).expand(Shape((num_samples, cdf.shape.at(0))))
-    # TODO: why cast? Why not take the bool and sum, outputting int?
-    indices = (unif_samples >= cdf).cast(dtypes.default_int).sum(1)
-    return indices
+
+    dom = Domain.union(Domain.from_(domain, True), weights_.domain)
+
+    weight = weights_.unsqueeze(0) if weights_.ndim == 1 else weights_
+    cw = weight.cumsum(dim=1).cast(dtypes.float32)
+    cdf = cw / cw[..., -1].unsqueeze(1)
+    unif_samples = RecurrentTensor.random((num_samples, cdf.shape.at(0), 1), domain=dom)
+    # NOTE: original impl uses >=, but this leads to out-of-bounds errors in llama exmaple
+    indices = (unif_samples.expand((-1, -1, cdf.shape.at(1))) >= cdf).sum(2).permute((1, 0))
+    return (indices.squeeze(0) if weights_.ndim == 1 else indices).cast(dtypes.default_int)
 
 
 def l_norm(  # noqa: C901
@@ -2407,7 +2365,7 @@ def logsumexp(
     return x.exp().sum(sum_dims, keepdim=keepdim).ln()
 
 
-def chunk(x: MaybeRecurrentTensor, chunks: int, dim: int = 0) -> List[RecurrentTensor]:
+def chunk(x: MaybeRecurrentTensor, chunks: int, dim: int = 0) -> list[RecurrentTensor]:
     x = lift(x)
     # Use index
     size_at_dim = x.shape.int_at(dim)
@@ -2415,11 +2373,11 @@ def chunk(x: MaybeRecurrentTensor, chunks: int, dim: int = 0) -> List[RecurrentT
     assert size_at_dim % chunks == 0, "Number of chunks must divide tensor size"
     chunk_size = size_at_dim // chunks
 
-    return [x.slice_(dim, chunk_size * i, chunk_size * (i + 1)) for i in range(chunks)]
+    return [x.slice_dim(dim, chunk_size * i, chunk_size * (i + 1)) for i in range(chunks)]
 
 
 def dilate(
-    x: MaybeRecurrentTensor, dilations: Union[Tuple[int, ...], int], n_dims: Optional[int] = None
+    x: MaybeRecurrentTensor, dilations: tuple[int, ...] | int, n_dims: int | None = None
 ) -> RecurrentTensor:
     """
     Dilates the input tensor by the given dilations.
@@ -2450,10 +2408,10 @@ def dilate(
 
 def pad_dim(
     x: MaybeRecurrentTensor,
-    padding: Union[Tuple[int, int], int],
+    padding: tuple[int, int] | int,
     dim: int,
     mode: str = "constant",
-    value: Optional[float] = None,
+    value: float | None = None,
 ) -> RecurrentTensor:
     x = lift(x)
     if isinstance(padding, int):
@@ -2470,9 +2428,9 @@ def pad_dim(
 
 def pad(
     x: MaybeRecurrentTensor,
-    padding: Tuple[Union[Tuple[int, int], int], ...],
+    padding: tuple[tuple[int, int] | int, ...],
     mode: str = "constant",
-    value: Optional[float] = None,
+    value: float | None = None,
 ) -> RecurrentTensor:
     """Pads the input tensor with a constant value.
 
@@ -2492,12 +2450,12 @@ def pad(
     return x
 
 
-def slice_(
+def slice_dim(
     x: MaybeRecurrentTensor,
     dim: int,
     start: ie.IntIndexValueLike,
     stop: ie.IntIndexValueLike,
-    step: Optional[ie.IntIndexValueLike] = None,
+    step: ie.IntIndexValueLike | None = None,
 ) -> RecurrentTensor:
     """Slices the input tensor along the given dimension.
 
@@ -2535,6 +2493,7 @@ def index(tensor: MaybeRecurrentTensor, dim: int, index: MaybeRecurrentTensor) -
     assert index.ndim < 2, "Index must be a scalar or 1D tensor"
 
     assert dtypes.is_integer(index.dtype), "Index must be integer"
+    index = index.cast(dtypes.default_int)
 
     dim = normalize_negative_dim(dim, tensor.shape)
 
@@ -2603,18 +2562,18 @@ def index_add(
 
 def slice_many(
     tensor: MaybeRecurrentTensor,
-    slices: Union[Sequence[Union[ie.IndexAtom, slice, int]], Union[ie.IndexAtom, slice, int]],
+    slices: Sequence[ie.IndexAtom | slice | int] | ie.IndexAtom | slice | int,
 ) -> RecurrentTensor:
     tensor = lift(tensor)
     slices = as_seq(slices)
 
     for i, slc in enumerate(slices):
         if isinstance(slc, slice):
-            tensor = slice_(tensor, i, slc.start, slc.stop, slc.step)
+            tensor = slice_dim(tensor, i, slc.start, slc.stop, slc.step)
         elif isinstance(slc, ie.Slice):
-            tensor = slice_(tensor, i, slc.start, slc.stop, 1)
+            tensor = slice_dim(tensor, i, slc.start, slc.stop, 1)
         elif isinstance(slc, (ie.IntIndexValue, int)):
-            tensor = slice_(tensor, i, slc, slc + 1, 1)
+            tensor = slice_dim(tensor, i, slc, slc + 1, 1)
         else:
             raise ValueError(f"Invalid slice {slc}")
     return tensor
@@ -2622,7 +2581,7 @@ def slice_many(
 
 def index_many(
     tensor: MaybeRecurrentTensor,
-    indexes: Union[Sequence[MaybeRecurrentTensor], MaybeRecurrentTensor, None],
+    indexes: Sequence[MaybeRecurrentTensor] | MaybeRecurrentTensor | None,
 ) -> RecurrentTensor:
     tensor = lift(tensor)
 
@@ -2668,13 +2627,13 @@ def is_like(x: MaybeRecurrentTensor, y: MaybeRecurrentTensor) -> bool:
     return x.shape == y.shape and x.dtype == y.dtype and x.domain == y.domain
 
 
-def barrier(barrier_name: Optional[str] = None) -> None:
+def barrier(barrier_name: str | None = None) -> None:
     SymbolicTensor.barrier(barrier_name)
 
 
 def placeholder_like(
     x: MaybeRecurrentTensor,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     x = lift(x)
     return placeholder(x.shape, x.dtype, x.domain, requires_grad)
@@ -2682,10 +2641,10 @@ def placeholder_like(
 
 # TODO change to "branching" maybe?
 def placeholder(
-    shape: Union[Tuple[int, ...], Shape] = (),
+    shape: tuple[int, ...] | Shape = (),
     dtype: DataTypeLike = None,
     domain: DomainLike = None,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> RecurrentTensor:
     dtype = dtypes.from_(dtype, none_dtype=dtypes.default_float)
 
@@ -2727,9 +2686,9 @@ def unflatten(tensor: MaybeRecurrentTensor, dim: int, sizes: Sequence[int]) -> R
     return tensor.reshape(new_shape)
 
 
-def sort(
+def _sort_manual(
     tensor: MaybeRecurrentTensor, dim: int = -1, descending: bool = False
-) -> Tuple[RecurrentTensor, RecurrentTensor]:
+) -> tuple[RecurrentTensor, RecurrentTensor]:
     """
     Performs a bitonic sort on the tensor along the specified dimension.
 
@@ -2786,7 +2745,7 @@ def sort(
 
     x = x.flatten(dim, dim + n_stages - 1)
     # Remove padding
-    x = x.slice_(dim, 0, orig_len)
+    x = x.slice_dim(dim, 0, orig_len)
 
     assert isinstance(orig_len, int)
     # compute indices for sorted values
@@ -2810,6 +2769,23 @@ def sort(
     return x, idx
 
 
+def sort(
+    tensor: MaybeRecurrentTensor, dim: int = -1, descending: bool = False, stable: bool = False
+) -> tuple[RecurrentTensor, RecurrentTensor]:
+    tensor = lift(tensor)
+    dim = normalize_negative_dim(dim, tensor.shape)
+
+    vals, idxs = ad.Sort.apply(tensor, dim=dim, stable=stable, descending=descending)
+
+    # NOTE: This approach can fail when descending == True and stable == True, since the
+    # stable order for ascending != stable order for descending.
+    # if descending:
+    #    vals = vals.flip(dim)
+    #    idxs = idxs.flip(dim)
+
+    return vals, idxs
+
+
 def sample_top_p(probs: MaybeRecurrentTensor, p: float = 0.9) -> RecurrentTensor:
     """
     Perform top-p (nucleus) sampling on a probability distribution.
@@ -2829,11 +2805,10 @@ def sample_top_p(probs: MaybeRecurrentTensor, p: float = 0.9) -> RecurrentTensor
     probs_sort, probs_idx = sort(probs, dim=-1, descending=True)
     probs_sum = cumsum(probs_sort, dim=-1)
     mask = probs_sum - probs_sort > p
-    # probs_sort[mask] = 0.0
     probs_sort = where(mask, 0.0, probs_sort)
     probs_sort = probs_sort / probs_sort.sum(dims=-1, keepdim=True)
     next_token = multinomial(probs_sort, num_samples=1)
-    next_token = gather(probs_idx, -1, next_token)  # TODO: use index?
+    next_token = gather(probs_idx, -1, next_token)  # TODO: use index_select instead of gather?
     return next_token
 
 
@@ -2893,27 +2868,15 @@ class RecurrentTensor:
     def __init__(
         self,
         underlying: SymbolicTensor,
-        requires_grad: Optional[bool] = None,
-        ctx: Optional[AutodiffFn] = None,
-        grad: Optional[RecurrentTensor] = None,
+        requires_grad: bool | None = None,
+        ctx: AutodiffFn | None = None,
+        grad: RecurrentTensor | None = None,
     ):
         self._underlying: SymbolicTensor = underlying
 
-        self._ctx: Optional[AutodiffFn] = ctx
-        self.requires_grad: Optional[bool] = requires_grad
-        self.grad: Optional[RecurrentTensor] = None if grad is None else grad
-
-        # if self.dtype == dtypes.float32: #TODO: remove this
-        #    #raise ValueError("float32 is not expected")
-        #    print("float32 is not expected ==================")
-        #    import traceback
-        #    traceback.print_stack()
-        # if self.dtype == dtypes.int32: #TODO: remove this
-        #    #Print a stack trace
-        #    print("int32 is not expected ==================")
-        #    import traceback
-        #    traceback.print_stack()
-        ##    raise ValueError("int32 is not expected")
+        self._ctx: AutodiffFn | None = ctx
+        self.requires_grad: bool | None = requires_grad
+        self.grad: RecurrentTensor | None = None if grad is None else grad
 
     def __str__(self) -> str:
         op_name = self._underlying.op.__class__.__name__
@@ -2963,16 +2926,14 @@ class RecurrentTensor:
         return len(self.shape)
 
     @property
-    def numel(self) -> Union[int, ie.IndexValue]:
+    def numel(self) -> int | ie.IndexValue:
         return self.shape.prod()  # type: ignore
 
     @property
     def spatial_shape(self) -> Shape:
         return self._underlying.spatial_shape
 
-    def size(
-        self, dim: DIM_TYPE = None
-    ) -> Union[ie.IntIndexValueLike, Sequence[ie.IntIndexValueLike]]:
+    def size(self, dim: DIM_TYPE = None) -> ie.IntIndexValueLike | Sequence[ie.IntIndexValueLike]:
         return self._underlying.size(dim)
 
     @property
@@ -3164,13 +3125,13 @@ class RecurrentTensor:
     scatter_add = scatter_add
     gather = gather
     chunk = chunk
-    slice_ = slice_
+    slice_dim = slice_dim
     slice_many = slice_many
     pad_dim = pad_dim
     pad = pad
     dilate = dilate
 
-    index = spatial_index = index
+    index = spatial_index = index_select = index
     index_many = spatial_index_many = index_many
     # index_put = index_put
     index_add = spatial_index_add = index_add
@@ -3223,12 +3184,12 @@ class RecurrentTensor:
     def creation_traceback(self) -> str:
         return self._underlying.op.creation_traceback
 
-    def _topological_sort_computational_graph(self) -> List[RecurrentTensor]:
+    def _topological_sort_computational_graph(self) -> list[RecurrentTensor]:
         def __topo_sort(
             node: RecurrentTensor,
-            visited: Set[RecurrentTensor],
-            nodes: List[RecurrentTensor],
-        ) -> List[RecurrentTensor]:
+            visited: set[RecurrentTensor],
+            nodes: list[RecurrentTensor],
+        ) -> list[RecurrentTensor]:
             visited.add(node)
             if node._ctx is not None:
                 for i in node._ctx.parents:
@@ -3239,7 +3200,7 @@ class RecurrentTensor:
 
         return __topo_sort(self, set(), [])
 
-    def backward(self, grad: Optional[RecurrentTensor] = None) -> None:
+    def backward(self, grad: RecurrentTensor | None = None) -> None:
         # NOTE: In case the user calls backward on a symbolically indexed tensor, we call ident.
         from tempo.api.tempo_context_manager import get_active_ctx_manager
         from tempo.core.op_tags import BACKWARD_REGION_TAG
@@ -3248,7 +3209,7 @@ class RecurrentTensor:
         with ctx.tag_region(BACKWARD_REGION_TAG):
             self.ident().backward_(grad)
 
-    def backward_(self, grad: Optional[RecurrentTensor] = None) -> None:
+    def backward_(self, grad: RecurrentTensor | None = None) -> None:
         assert self.requires_grad, "Can't call backward on tensor that does not requires_grad"
         assert self._ctx is not None, "Can't call backward on a tensor without a context"
         assert self._underlying is not None, "Can't call backward on an uninitialized tensor"
@@ -3292,7 +3253,7 @@ class RecurrentTensor:
         dom = self.domain
 
         symbolic_dim_sizes = dom.ubounds
-        spatial_dim_sizes: Tuple[ie.IntIndexValue, ...] = tuple(
+        spatial_dim_sizes: tuple[ie.IntIndexValue, ...] = tuple(
             s if isinstance(s, ie.IntIndexValue) else ie.ConstInt(s)
             for s in self._underlying.spatial_shape
         )
@@ -3312,7 +3273,7 @@ class RecurrentTensor:
             item = item.members
 
         # Make sure we are working with a sequence
-        item_seq: Tuple[Any] = tuple(as_seq(item))  # type: ignore
+        item_seq: tuple[Any] = tuple(as_seq(item))  # type: ignore
 
         ## Combine with existing index sequence if it exists
         # if self._underlying._index_expr is not None:
@@ -3348,7 +3309,7 @@ class RecurrentTensor:
             for i, idx in enumerate(item_seq[num_symb_indices:]):
                 if isinstance(idx, (ie.Slice, slice)):
                     # , idx.step
-                    to_ret = to_ret.slice_(i, idx.start, idx.stop)  # type: ignore
+                    to_ret = to_ret.slice_dim(i, idx.start, idx.stop)  # type: ignore
                 else:
                     to_ret = to_ret.index(i, idx)
         return to_ret

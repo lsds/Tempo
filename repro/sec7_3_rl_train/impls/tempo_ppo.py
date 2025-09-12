@@ -59,6 +59,9 @@ def get_tempo_rl_train_config(
         # NOTE: Enable swap for large obs experiments.
         cfg.enable_swap = True
 
+    for key in kwargs.get("disable_cfg_keys", []):
+        setattr(cfg, key, False)
+
     return cfg
 
 
@@ -134,6 +137,12 @@ def get_tempo_ppo_executor(  # noqa: C901
         returns = advantage.detach() + value.detach()
 
         with ctx.tag_region("losses"):
+            if kwargs.get("is_ablation", False):
+                # NOTE: Insert duplicate code for ablation to explicitly show
+                # the benefit of whole-program optimization
+                action, value = net(o.unsqueeze())
+                action, value = action, value.squeeze(0)
+
             with ctx.tag_region("entropy"):
                 entropy = net.entropy()
                 if len(entropy.domain) > 1:
@@ -181,7 +190,7 @@ if __name__ == "__main__":
     params = {
         "env_name": "trivial.trivial",
         # NOTE: Default obs shape for trivial env
-        "obs_shape": (3, 4, 4),
+        "obs_shape": (3, 2, 2),
         "seed": 0,
         "dev": "gpu",
         "iterations": 50,
@@ -195,8 +204,8 @@ if __name__ == "__main__":
         "num_envs": 32,
         "ep_len": 250,
         "params_per_layer": 64,
-        "num_layers": 2,
-        "sys_cfg": "tempo-torch",
+        "num_layers": 1,
+        "sys_cfg": "tempo-jax",
         "results_path": "./results/minimal_test_ppo",
         "vizualize": True,
     }

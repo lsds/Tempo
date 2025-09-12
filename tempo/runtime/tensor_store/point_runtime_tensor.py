@@ -1,13 +1,11 @@
-from typing import Dict, Tuple, Union
-
 from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT, TensorId
 from tempo.core.device import DeviceGroup
+from tempo.core.dl_backend import DLBackend
 from tempo.core.domain import Domain
 from tempo.core.dtype import DataType
 from tempo.core.shape import Shape
 from tempo.core.utils import enum_block_points
-from tempo.runtime.backends.backend import DLBackend
 from tempo.runtime.tensor_store.tensor_store import RuntimeTensor
 from tempo.utils import logger
 
@@ -37,7 +35,7 @@ class PointRuntimeTensor(RuntimeTensor[BackendTensorT]):
         self.prefetch_amount = exec_cfg.runtime_tensor_prefetch_amount_point
 
         # Pre-allocate a large  dictionary to avoid resizing at runtime
-        self._data_dict: Dict[Tuple[Union[int, slice], ...], BackendTensorT] = dict.fromkeys(
+        self._data_dict: dict[tuple[int | slice, ...], BackendTensorT] = dict.fromkeys(
             range(100_000)  # type: ignore
         )
         self._data_dict.clear()
@@ -84,10 +82,10 @@ class PointRuntimeTensor(RuntimeTensor[BackendTensorT]):
     # TODO implement iterative version?
     def _concat_tensors(  # noqa: C901
         self,
-        item: Tuple[Union[int, slice], ...],
+        item: tuple[int | slice, ...],
         item_len: int,
         depth: int,
-        index: Tuple[int, ...] = (),
+        index: tuple[int, ...] = (),
     ) -> BackendTensorT:
         if depth == item_len:
             return self._data_dict[index]
@@ -118,22 +116,22 @@ class PointRuntimeTensor(RuntimeTensor[BackendTensorT]):
             )
 
     def __getitem__(  # noqa: C901
-        self, item: Tuple[Union[int, slice], ...]
+        self, item: tuple[int | slice, ...]
     ) -> BackendTensorT:
         # log.info("%s: GET @ %s", self.tensor_id, item)
         return self._concat_tensors(item, len(item), 0)
 
-    def all_int_fast_path(self, item: Tuple[Union[int, slice], ...]) -> BackendTensorT:
+    def all_int_fast_path(self, item: tuple[int | slice, ...]) -> BackendTensorT:
         # log.info("%s: GET @ %s", self.tensor_id, item)
         return self._data_dict[item]
 
     def split_and_set(
         self,
         tensor: BackendTensorT,
-        item: Tuple[Union[int, slice], ...],
+        item: tuple[int | slice, ...],
         item_len: int,
         depth: int,
-        index: Tuple[int, ...] = (),
+        index: tuple[int, ...] = (),
     ) -> None:
         if depth == item_len:
             self._data_dict[index] = tensor
@@ -162,7 +160,7 @@ class PointRuntimeTensor(RuntimeTensor[BackendTensorT]):
             )
 
     def __setitem__(  # noqa: C901
-        self, item: Tuple[Union[int, slice], ...], value: BackendTensorT
+        self, item: tuple[int | slice, ...], value: BackendTensorT
     ) -> None:
         # log.info("%s: SET @ %s", self.tensor_id, item)
         # assert len(item) == self.domain_size
@@ -173,7 +171,7 @@ class PointRuntimeTensor(RuntimeTensor[BackendTensorT]):
         # slices to the tensor store.
         # log.info(f"SET {self.tensor_id}[{item}]")
 
-    def all_int_fast_path_set(self, item: Tuple[int, ...], value: BackendTensorT) -> None:
+    def all_int_fast_path_set(self, item: tuple[int, ...], value: BackendTensorT) -> None:
         # log.info("%s: SET @ %s", self.tensor_id, item)
         self._data_dict[item] = value
 
@@ -181,7 +179,7 @@ class PointRuntimeTensor(RuntimeTensor[BackendTensorT]):
         """This method clears the tensor of any remaining data."""
         self._data_dict.clear()
 
-    def deallocate_point(self, item: Tuple[int, ...]) -> None:
+    def deallocate_point(self, item: tuple[int, ...]) -> None:
         # log.info("%s: DEA @ %s", self.tensor_id, item)
         # log.info("deallocate called for %s at %s", self.tensor_id, item)
         # del self._data_dict[item]
@@ -192,11 +190,11 @@ class PointRuntimeTensor(RuntimeTensor[BackendTensorT]):
 
         self._data_dict[item] = None  # type: ignore
 
-    def offload_point(self, item: Tuple[int, ...]) -> None:
+    def offload_point(self, item: tuple[int, ...]) -> None:
         # log.info("%s: OFF @ %s", self.tensor_id, item)
         self._data_dict[item] = self.backend.to_cpu(self._data_dict[item])
 
-    def fetch_point(self, item: Tuple[int, ...]) -> None:
+    def fetch_point(self, item: tuple[int, ...]) -> None:
         # log.info("%s: FET @ %s", self.tensor_id, item)
         self._data_dict[item] = self.backend.to_device(self._data_dict[item], self.dev)
 
@@ -213,18 +211,18 @@ class PointRuntimeTensor(RuntimeTensor[BackendTensorT]):
                 else:
                     break
 
-    def deallocate_block(self, item: Tuple[Union[int, slice], ...]) -> None:
+    def deallocate_block(self, item: tuple[int | slice, ...]) -> None:
         # log.info("%s: DEA @ %s", self.tensor_id, item)
         for p in enum_block_points(item):
             # self.deallocate(p)
             self._data_dict[p] = None  # type: ignore
 
-    def offload_block(self, item: Tuple[Union[int, slice], ...]) -> None:
+    def offload_block(self, item: tuple[int | slice, ...]) -> None:
         # log.info("%s: OFF @ %s", self.tensor_id, item)
         for p in enum_block_points(item):
             self._data_dict[p] = self.backend.to_cpu(self._data_dict[p])
 
-    def fetch_block(self, item: Tuple[Union[int, slice], ...]) -> None:
+    def fetch_block(self, item: tuple[int | slice, ...]) -> None:
         # log.info("%s: FET @ %s", self.tensor_id, item)
         for p in enum_block_points(item):
             self._data_dict[p] = self.backend.to_device(self._data_dict[p], self.dev)

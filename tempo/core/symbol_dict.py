@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import MutableMapping  # Import MutableMapping
-from typing import Any, Generator, List, Tuple
+from collections.abc import (
+    Generator,
+    MutableMapping,  # Import MutableMapping
+)
+from typing import Any
 
 from tempo.core import index_expr as ie
 
@@ -10,10 +13,10 @@ class SymbolDict(MutableMapping):  # Inherit from MutableMapping
     __slots__ = ["_keys", "_values", "__pool__"]
 
     def __init__(self, capacity: int = 32):
-        self._keys: List[ie.Symbol] = [None] * capacity  # type: ignore
-        self._values: List[int] = [None] * capacity  # type: ignore
+        self._keys: list[ie.Symbol] = [None] * capacity  # type: ignore
+        self._values: list[int] = [None] * capacity  # type: ignore
 
-    def load_keys(self, keys: List[ie.Symbol]) -> None:
+    def load_keys(self, keys: list[ie.Symbol]) -> None:
         for key in keys:
             self._keys[key.idx] = key
 
@@ -30,14 +33,14 @@ class SymbolDict(MutableMapping):  # Inherit from MutableMapping
         # self._keys[key.idx] = None  # type: ignore
         self._values[key.idx] = None  # type: ignore
 
-    def __iter__(self) -> Generator[ie.Symbol, None, None]:
+    def __iter__(self) -> Generator[ie.Symbol]:
         return (key for key in self._keys if key is not None)
 
     def __len__(self) -> int:
         return sum(1 for key in self._keys if key is not None)
 
     # TODO change to ItemsView???
-    def items(self) -> Generator[Tuple[ie.Symbol, Any], None, None]:  # type:ignore
+    def items(self) -> Generator[tuple[ie.Symbol, Any]]:  # type:ignore
         for key, val in zip(self._keys, self._values, strict=False):
             if key is not None:
                 yield key, val
@@ -54,11 +57,11 @@ class SymbolDict(MutableMapping):  # Inherit from MutableMapping
         new_dict._values = self._values.copy()
         return new_dict
 
-    def keys(self) -> List[ie.Symbol]:  # type: ignore
+    def keys(self) -> list[ie.Symbol]:  # type: ignore
         return [key for key in self._keys if key is not None]
 
     # TODO change to ValuesView???
-    def values(self) -> List[int]:  # type: ignore
+    def values(self) -> list[int]:  # type: ignore
         return [val for key, val in self.items() if key is not None]
 
     def __getstate__(self) -> dict:

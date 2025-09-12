@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any
 
 import pandas as pd
 
@@ -15,7 +16,7 @@ This file contains utilities to load and parse the results of the experiments.
 """
 
 
-def read_csv(path: str) -> Union[pd.DataFrame, None]:
+def read_csv(path: str) -> pd.DataFrame | None:
     try:
         return pd.read_csv(path)
     except Exception:
@@ -28,7 +29,7 @@ def parse_error_file(error_file_path: str) -> str:
     Returns "OOM" if the error contains memory-related keywords, "MISSING" otherwise.
     """
     try:
-        with open(error_file_path, "r") as f:
+        with open(error_file_path) as f:
             error_content = f.read().lower()
 
         # Keywords that indicate out-of-memory errors
@@ -57,7 +58,7 @@ def parse_error_file(error_file_path: str) -> str:
         return "MISSING"
 
 
-def get_gpu_id_from_run_data(run_data: Dict[str, Any]) -> int:
+def get_gpu_id_from_run_data(run_data: dict[str, Any]) -> int:
     if run_data["monitor"] is not None:
         gpu_mem_col = [col for col in run_data["monitor"].columns if "gpu" in col and "mem" in col]
         if gpu_mem_col:
@@ -66,8 +67,8 @@ def get_gpu_id_from_run_data(run_data: Dict[str, Any]) -> int:
 
 
 def get_single_run_data(
-    path: str, params: Dict[str, Any], name_function: Callable[[str, Dict[str, Any]], str]
-) -> Dict[str, Any]:
+    path: str, params: dict[str, Any], name_function: Callable[[str, dict[str, Any]], str]
+) -> dict[str, Any]:
     # Generate expected experiment name
     expected_name, experiment_path = name_function(path, params)
 
@@ -102,12 +103,12 @@ def get_single_run_data(
 
 def load_sweep_data(
     base_path: str,
-    base_params: Dict[str, Any],
-    sweeps: Dict[str, List[Any]],
-    systems: List[str],
-    name_function: Callable[[Dict[str, Any]], str],
+    base_params: dict[str, Any],
+    sweeps: dict[str, list[Any]],
+    systems: list[str],
+    name_function: Callable[[dict[str, Any]], str],
     caching_allocators: bool = True,
-) -> Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]]:
+) -> dict[str, dict[Any, dict[str, dict[str, Any]]]]:
     """Load data from the experiment results using the naming scheme from shared.py"""
     # Access the small_to_med_scale subpath
     path = Path(base_path)
@@ -138,10 +139,10 @@ def load_sweep_data(
 
 
 def get_sweep_df(
-    data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]],
-    sweeps: Dict[str, List[Any]],
+    data: dict[str, dict[Any, dict[str, dict[str, Any]]]],
+    sweeps: dict[str, list[Any]],
     sweep_key: str,
-    systems: List[str],
+    systems: list[str],
 ) -> pd.DataFrame:
     data_list = []
     for sweep_value in sweeps[sweep_key]:
@@ -155,7 +156,7 @@ def get_sweep_df(
 
 
 def has_error(
-    data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]],
+    data: dict[str, dict[Any, dict[str, dict[str, Any]]]],
     framework: str,
     sweep_key: str,
     sweep_value,
@@ -174,7 +175,7 @@ def has_error(
 
 
 def get_error_type(
-    data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]],
+    data: dict[str, dict[Any, dict[str, dict[str, Any]]]],
     framework: str,
     sweep_key: str,
     sweep_value,
@@ -184,13 +185,13 @@ def get_error_type(
 
 
 def get_normalized_dfs(
-    data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]],
+    data: dict[str, dict[Any, dict[str, dict[str, Any]]]],
     framework: str,
     sweep_key: str,
     sweep_value: Any,
     iterations_from_start_to_remove: int = 1,
     iterations_from_end_to_remove: int = 1,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Get normalized dataframes for a specific framework and sweep value"""
     run = data[sweep_key][sweep_value][framework]
     df_monitor = run["monitor"]
@@ -279,14 +280,22 @@ def compute_ratios(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_aggregate_metric_df(
-    data: Dict[str, Dict[Any, Dict[str, Dict[str, Any]]]],
+    data: dict[str, dict[Any, dict[str, dict[str, Any]]]],
     sweep_key: str,
     sweep_value: Any,
     sys: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     error = has_error(data, sys, sweep_key, sweep_value)
     error_type = get_error_type(data, sys, sweep_key, sweep_value)
 
+    if not error:
+        df_monitor, df_log = get_normalized_dfs(data, sys, sweep_key, sweep_value, 0)
+
+    mem_dict = {
+        "gpu_mem_mean": df_monitor["gpu_mem_util"].mean() if not error else 0,
+        "gpu_mem_median": df_monitor["gpu_mem_util"].median() if not error else 0,
+        "gpu_mem_peak": df_monitor["gpu_mem_util"].max() if not error else 0,
+    }
     if not error:
         df_monitor, df_log = get_normalized_dfs(data, sys, sweep_key, sweep_value)
 
@@ -297,9 +306,9 @@ def build_aggregate_metric_df(
         "framework": sys,
         "iter_mean": df_log["elapsed_sec"].diff().mean() if not error else 0,
         "iter_std": df_log["elapsed_sec"].diff().std() if not error else 0,
-        "gpu_mem_mean": df_monitor["gpu_mem_util"].mean() if not error else 0,
-        "gpu_mem_median": df_monitor["gpu_mem_util"].median() if not error else 0,
-        "gpu_mem_peak": df_monitor["gpu_mem_util"].max() if not error else 0,
+        "gpu_mem_mean": mem_dict["gpu_mem_mean"],
+        "gpu_mem_median": mem_dict["gpu_mem_median"],
+        "gpu_mem_peak": mem_dict["gpu_mem_peak"],
         "gpu_util_mean": df_monitor["gpu_util"].mean() if not error else 0,
         "gpu_util_median": df_monitor["gpu_util"].median() if not error else 0,
         "gpu_util_peak": df_monitor["gpu_util"].max() if not error else 0,

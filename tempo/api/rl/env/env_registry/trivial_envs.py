@@ -1,6 +1,6 @@
 from tempo.api.rl.env.env_registry.env_registry import EnvBuildCtx, EnvRegistry
 from tempo.api.rl.env.wrappers import ToBackendTensorTWrapper
-from tempo.runtime.backends.backend import DLBackendName
+from tempo.core.dl_backends import DLBackendName
 from tempo.utils import logger
 
 log = logger.get_logger(__name__)
@@ -34,7 +34,7 @@ try:
         # print(f"       obs_shape: {obs_shape}")
         # print(f"       continuous: {continuous}")
 
-        from tempo.runtime.backends.backend import DLBackend
+        from tempo.core.dl_backend import DLBackend
 
         dev = DLBackend.get_backend("jax").to_backend_device_obj(ctx.exec_cfg.dev)
 
@@ -46,7 +46,7 @@ try:
             dev=dev,
         )
 
-        if DLBackendName.str_to_enum(ctx.exec_cfg.backend) != DLBackendName.JAX:
+        if ctx.exec_cfg.get_canonical_backend_name() != DLBackendName.JAX:
             # to_backend = lambda x: ctx.backend.to_device(
             #    ctx.backend.from_dlpack(x), dev
             # )

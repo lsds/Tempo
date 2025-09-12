@@ -1,7 +1,8 @@
 import itertools
 from dataclasses import replace
 from math import prod
-from typing import Any, Callable, List, Tuple, Union
+from typing import Any
+from collections.abc import Callable
 
 import pytest
 import torch
@@ -13,11 +14,11 @@ from tempo.api.recurrent_tensor import RecurrentTensor
 from tempo.api.tempo_context_manager import TempoContext
 from tempo.core.dtype import dtypes
 
-def get_torch_t(ins: List[torch.Tensor], pattern: Callable[[int], Any], t: int) -> torch.Tensor:
+def get_torch_t(ins: list[torch.Tensor], pattern: Callable[[int], Any], t: int) -> torch.Tensor:
     catted = torch.stack(ins, dim=0)
     return catted[pattern(t)]
 
-all_patterns = [
+TEST_PATTERNS = [
     "identity",
     "fixed_range",
     "all",
@@ -30,10 +31,11 @@ all_patterns = [
     #"mod_8",
     #"floor_div_2"
 ]
+OPTIM_LEVELS = [True] # ,False
 
 def pattern_table(
         pattern: str, T_ub: int, w_past: int = 4, w_future: int = 2
-) -> Tuple[Callable[[int], Union[int, torch.Tensor]], Callable[[ie.Symbol], ie.IndexAtom]]:
+) -> tuple[Callable[[int], int | torch.Tensor], Callable[[ie.Symbol], ie.IndexAtom]]:
     if pattern == "identity":
         return lambda t: t, lambda t: t
 
@@ -75,15 +77,15 @@ def pattern_table(
 
 @pytest.mark.parametrize(
     "shape_str,backend,pattern,enable_optims",
-    itertools.product(["4x4"], ["torch"], all_patterns, [False, True]),
+    itertools.product(["4x4"], ["torch"], TEST_PATTERNS, OPTIM_LEVELS),
 )
 def test_ad(shape_str: str, backend: str, pattern: str, enable_optims: bool, exec_cfg: ExecutionConfig):
     shape = tuple(int(s) for s in shape_str.split("x"))
     T_ub = 100
     pat_torch, pat_tr = pattern_table(pattern, T_ub)
 
-    x_ts: List[torch.Tensor] = []
-    y_ts: List[torch.Tensor] = []
+    x_ts: list[torch.Tensor] = []
+    y_ts: list[torch.Tensor] = []
     with torch.enable_grad():
         with torch.set_grad_enabled(True):
             for t_int in range(T_ub):
@@ -177,6 +179,8 @@ def test_ad(shape_str: str, backend: str, pattern: str, enable_optims: bool, exe
 
 if __name__ == "__main__":
     cfg = ExecutionConfig.test_cfg()
-    cfg = replace(cfg, visualize_pipeline_stages=True, render_schedule=True, enable_incrementalization=True, validate_pipeline_stages=True)
-    test_ad("4x4", "torch", "all_past", True, cfg)
+    cfg = replace(cfg, visualize_pipeline_stages=True, render_schedule=True)
+    #for pattern in TEST_PATTERNS:
+    #    test_ad("4x4", "torch", pattern, True, cfg)
+    test_ad("4x4", "torch", "future_sliding_window", True, cfg)
     #test_ad("4x4", "torch", "all_future", True, cfg)

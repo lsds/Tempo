@@ -1,69 +1,44 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from enum import IntEnum
+from collections.abc import Callable, Sequence
 from typing import (
     Any,
-    Callable,
     ClassVar,
-    Dict,
     Generic,
-    Optional,
-    Sequence,
-    Tuple,
-    Type,
-    Union,
 )
+
+import numpy as np
 
 from tempo.core.analysis_ctx import AnalysisCtx
 from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT, OpId
 from tempo.core.dependence_graph import PDG
 from tempo.core.device import DeviceGroup, DeviceLike
+from tempo.core.dl_backends import DLBackendName
 from tempo.core.dtype import DataType
 from tempo.core.shape import StaticShapeLike
 from tempo.core.thunk import Thunk
-from tempo.runtime.thunk_emitter import ThunkEmitter
+from tempo.core.thunk_emitter import ThunkEmitter
 
 # from dlpack import DLPackObject, asdlpack
 
 
-class DLBackendName(IntEnum):
-    TORCH = 0
-    JAX = 1
-
-    @classmethod
-    def str_to_enum(cls, name: str) -> DLBackendName:
-        lower_name = name.lower()
-        if lower_name == "pytorch" or lower_name == "torch":
-            return DLBackendName.TORCH
-        elif lower_name == "jax" or lower_name == "xla":
-            return DLBackendName.JAX
-        else:
-            raise ValueError(f"Invalid backend name: {name}")
-
-
-def clear_all_jit_caches() -> None:
-    """Clear the jit cache for all backends."""
-    for backend in DLBackend.registry.values():
-        backend.clear_jit_cache()
-
-
 class DLBackend(Generic[BackendTensorT], ABC):
-    registry: ClassVar[Dict[DLBackendName, Type[DLBackend]]] = {}
+    registry: ClassVar[dict[DLBackendName, type[DLBackend]]] = {}
 
     backend_cpu: Any = None
 
     # =============== Registry Methods ===============
     @staticmethod
-    def register_backend(backend_name: DLBackendName, backend_cls: Type[DLBackend]) -> None:
+    def register_backend(backend_name: DLBackendName, backend_cls: type[DLBackend]) -> None:
         """Register a backend class in the registry."""
         if backend_name in DLBackend.registry:
             raise ValueError(f"Tried overwriting environment set {backend_name} with new builder")
         DLBackend.registry[backend_name] = backend_cls
 
     @staticmethod
-    def get_backend(backend_name: Union[DLBackendName, str]) -> Type[DLBackend]:
+    def get_backend(backend_name: DLBackendName | str) -> type[DLBackend]:
         """Get a backend class from the registry."""
         if isinstance(backend_name, str):
             backend_name = DLBackendName.str_to_enum(backend_name)
@@ -76,12 +51,6 @@ class DLBackend(Generic[BackendTensorT], ABC):
         raise NotImplementedError
 
     # =============== Backend Methods ===============
-
-    @staticmethod
-    @abstractmethod
-    def clear_jit_cache() -> None:
-        """Clear the jit cache."""
-        raise NotImplementedError
 
     # --------- Tempo <-> Backend Conversion Methods ---------
     @staticmethod
@@ -116,7 +85,7 @@ class DLBackend(Generic[BackendTensorT], ABC):
 
     @staticmethod
     @abstractmethod
-    def get_thunk_emitter_cls() -> Type[ThunkEmitter[BackendTensorT]]:
+    def get_thunk_emitter_cls() -> type[ThunkEmitter[BackendTensorT]]:
         """Backends must provide a ThunkEmitter class that will be used to emit executable thunks
         for each TensorOp."""
         raise NotImplementedError
@@ -126,7 +95,7 @@ class DLBackend(Generic[BackendTensorT], ABC):
     def configure(exec_cfg: ExecutionConfig) -> None:
         """Configure the backend for execution. Called by the Compiler before backend compilation
         begins."""
-        pass
+        ...
 
     @staticmethod
     def sync() -> None:
@@ -148,7 +117,7 @@ class DLBackend(Generic[BackendTensorT], ABC):
 
     @staticmethod
     @abstractmethod
-    def to_device(tensor: BackendTensorT, dev: Any) -> BackendTensorT:
+    def to_device(tensor: BackendTensorT, dev: Any, **kwargs: Any) -> BackendTensorT:
         """Move a backend tensor to a different backend device."""
         raise NotImplementedError
 
@@ -162,8 +131,8 @@ class DLBackend(Generic[BackendTensorT], ABC):
     @abstractmethod
     def fast_int_lift(
         fill_value: int,
-        dtype: Optional[Any] = None,
-        device: Optional[Any] = None,
+        dtype: Any | None = None,
+        device: Any | None = None,
     ) -> BackendTensorT:
         """Lift a python int to a backend tensor."""
         raise NotImplementedError
@@ -172,9 +141,9 @@ class DLBackend(Generic[BackendTensorT], ABC):
     @abstractmethod
     def full_tensor(
         fill_value: Any,
-        shape: Optional[StaticShapeLike] = None,
-        dtype: Optional[Any] = None,
-        device: Optional[Any] = None,
+        shape: StaticShapeLike | None = None,
+        dtype: Any | None = None,
+        device: Any | None = None,
     ) -> BackendTensorT:
         """Create a backend tensor filled with a given value."""
         raise NotImplementedError
@@ -183,9 +152,9 @@ class DLBackend(Generic[BackendTensorT], ABC):
     @abstractmethod
     def lift_tensor(
         data: Any,
-        shape: Optional[StaticShapeLike] = None,
-        dtype: Optional[DataType] = None,
-        device: Optional[str] = None,
+        shape: StaticShapeLike | None = None,
+        dtype: DataType | None = None,
+        device: str | None = None,
     ) -> BackendTensorT:
         """Lift a python object to a backend tensor.
         For example, numpy arrays become tensors with corresponding shape and dtype,
@@ -202,8 +171,13 @@ class DLBackend(Generic[BackendTensorT], ABC):
 
     @staticmethod
     @abstractmethod
+    def reshape(tensor: BackendTensorT, shape: StaticShapeLike) -> BackendTensorT:
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
     def trace_codegen_thunk(
-        execution_func: Callable[[Tuple[BackendTensorT, ...]], Tuple[BackendTensorT, ...]],
+        execution_func: Callable[[tuple[BackendTensorT, ...]], tuple[BackendTensorT, ...]],
         op_id: OpId,
         dev: DeviceGroup,
         exec_cfg: ExecutionConfig,
@@ -223,7 +197,7 @@ class DLBackend(Generic[BackendTensorT], ABC):
         Returns:
             A traced thunk
         """
-        pass
+        ...
 
     # --------- Tensor Manipulation Methods ---------
 
@@ -246,10 +220,10 @@ class DLBackend(Generic[BackendTensorT], ABC):
     @abstractmethod
     def get_inplace_set_fn(
         tensor: BackendTensorT,
-        item: Sequence[Union[int, slice]],
+        item: Sequence[int | slice],
         value: BackendTensorT,
         traceable: bool = False,
-    ) -> Callable[[BackendTensorT, Sequence[Union[int, slice]], BackendTensorT], BackendTensorT]:
+    ) -> Callable[[BackendTensorT, Sequence[int | slice], BackendTensorT], BackendTensorT]:
         """Get a function that updates a backend tensor in place."""
         raise NotImplementedError
 
@@ -263,6 +237,12 @@ class DLBackend(Generic[BackendTensorT], ABC):
     @abstractmethod
     def permute(tensor: BackendTensorT, axes: Sequence[int]) -> BackendTensorT:
         """Permute the dimensions of a backend tensor."""
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def to_numpy(tensor: BackendTensorT) -> np.ndarray:
+        """Convert a backend tensor to a numpy array."""
         raise NotImplementedError
 
     # TODO remove or reinstate

@@ -1,16 +1,16 @@
+from collections.abc import Mapping
 from functools import partial
-from typing import Dict, Mapping, Tuple, Union
 
 from tempo.core import index_expr as ie
 from tempo.core.configs import ExecutionConfig
 from tempo.core.datatypes import BackendTensorT, TensorId
 from tempo.core.device import DeviceGroup
+from tempo.core.dl_backend import DLBackend
 from tempo.core.domain import Domain
 from tempo.core.dtype import DataType
 from tempo.core.shape import Shape
 from tempo.core.storage_methods import CircularBufferStore
 from tempo.core.utils import count_block_points, enum_block_points
-from tempo.runtime.backends.backend import DLBackend, DLBackendName
 from tempo.runtime.tensor_store.tensor_store import PreallocRuntimeTensor
 from tempo.utils import logger
 
@@ -72,12 +72,12 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         )
         # Removed assertion that window dim is last
 
-        shape: Tuple[int, ...] = shape.as_static()._shape
+        shape: tuple[int, ...] = shape.as_static()._shape
 
         self.points_per_block = 0
         # Calculate window size and total buffer size
         self.window_size = 1
-        self.window_shape: Tuple[int, ...] = ()
+        self.window_shape: tuple[int, ...] = ()
         for dim, window_size in storage_info.dims_and_base_buffer_sizes:
             size = window_size
             self.window_shape += (size,)
@@ -90,10 +90,10 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
 
         # Initialize the circular buffers for each pointwise index
         self.bend_dtype = self.backend.to_backend_datatype(dtype)
-        self._buffers: Dict[Tuple[int, ...], BackendTensorT] = {}
-        self._write_positions: Dict[Tuple[int, ...], int] = {}
+        self._buffers: dict[tuple[int, ...], BackendTensorT] = {}
+        self._write_positions: dict[tuple[int, ...], int] = {}
 
-        self._dealloc_ticks: Dict[Tuple[int, ...], int] = {}
+        self._dealloc_ticks: dict[tuple[int, ...], int] = {}
 
         self.alloc_fn = partial(
             self.backend.full_tensor,
@@ -108,13 +108,11 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
             storage_info.dims_and_base_buffer_sizes[0][0]
         )
 
-        self.needs_lazy_slice = (
-            self.exec_cfg.enable_lazy_slice and self.backend.get_backend_name() == DLBackendName.JAX
-        )
+        self.should_lazy_slice = self.exec_cfg.can_lazy_slice()
 
     def extract_key_and_index(
-        self, item: Tuple[Union[int, slice], ...]
-    ) -> Tuple[Tuple[int, ...], Tuple[Union[int, slice], ...]]:
+        self, item: tuple[int | slice, ...]
+    ) -> tuple[tuple[int, ...], tuple[int | slice, ...]]:
         """Split item into pointwise key and window indices."""
         # buffer_key = []
         # window_indices = []
@@ -128,7 +126,7 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
         window_idx = (item[self.window_dim_idx],)
         return buffer_key, window_idx  # type: ignore
 
-    def _get_or_create_buffer(self, pointwise_key: Tuple[int, ...]) -> BackendTensorT:
+    def _get_or_create_buffer(self, pointwise_key: tuple[int, ...]) -> BackendTensorT:
         """Get or create a circular buffer for the given pointwise key."""
         buf = self._buffers.get(pointwise_key)
         if buf is None:
@@ -137,9 +135,7 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
             self._dealloc_ticks[pointwise_key] = 0
         return buf
 
-    def get_read_region(
-        self, item: Tuple[Union[int, slice], ...]
-    ) -> Tuple[Tuple[int, ...], Union[int, slice]]:
+    def get_read_region(self, item: tuple[int | slice, ...]) -> tuple[tuple[int, ...], int | slice]:
         """Given the full item, return the index or slice to read from the buffer."""
         buffer_key, window_indices = self.extract_key_and_index(item)
         # Only support 1 window dim for now
@@ -168,25 +164,25 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
                     (stop_logical + self.window_size) % self.total_buffer_size,
                 )
 
-    def all_int_fast_path(self, item: Tuple[int, ...]) -> BackendTensorT:
+    def all_int_fast_path(self, item: tuple[int, ...]) -> BackendTensorT:
         return self.__getitem__(item)
 
-    def __getitem__(self, item: Tuple[Union[int, slice], ...]) -> BackendTensorT:
+    def __getitem__(self, item: tuple[int | slice, ...]) -> BackendTensorT:
         buffer_key, idx = self.get_read_region(item)
         buffer = self._get_or_create_buffer(buffer_key)
 
-        if self.needs_lazy_slice:
+        if self.should_lazy_slice:
             # NOTE: We secretely alter the return type for lazy slicing
             return (buffer, idx.start)  # type: ignore
         else:
             return buffer[idx]  # type: ignore
 
-    def __setitem__(self, item: Tuple[Union[int, slice], ...], value: BackendTensorT) -> None:
+    def __setitem__(self, item: tuple[int | slice, ...], value: BackendTensorT) -> None:
         # NOTE: type ignore because we know for now all writes are point writes
         # TODO: improve this
         return self.all_int_fast_path_set(item, value)  # type: ignore
 
-    def all_int_fast_path_set(self, item: Tuple[int, ...], value: BackendTensorT) -> None:
+    def all_int_fast_path_set(self, item: tuple[int, ...], value: BackendTensorT) -> None:
         # NOTE: writes are always single elements.
 
         buffer_id, (pos1, pos2) = self.extract_write_key_and_indexes(item)
@@ -208,7 +204,7 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
     def mem_usage_bytes(self) -> int:
         return self.total_buffer_size * self.dtype.repr_bytes * len(self._buffers)
 
-    def deallocate_point(self, item: Tuple[Union[int, slice], ...]) -> None:
+    def deallocate_point(self, item: tuple[int | slice, ...]) -> None:
         """This method deallocates the tensor at the given index."""
 
         buffer_key, _ = self.extract_key_and_index(item)
@@ -220,7 +216,7 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
             del self._buffers[buffer_key]
             del self._dealloc_ticks[buffer_key]
 
-    def deallocate_block(self, block: Tuple[Union[int, slice], ...]) -> None:
+    def deallocate_block(self, block: tuple[int | slice, ...]) -> None:
         key, index = self.extract_key_and_index(block)
         # NOTE: class assumes a single block dim, but this may not be the case in mem man reqs.
         keys = enum_block_points(key)
@@ -232,27 +228,27 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
                 del self._buffers[k]
                 del self._dealloc_ticks[k]
 
-    def offload_point(self, item: Tuple[Union[int, slice], ...]) -> None:
+    def offload_point(self, item: tuple[int | slice, ...]) -> None:
         """This method offloads the tensor at the given index."""
         log.warning(
             "offload_point requested with item %s - does not make sense for circular buffers", item
         )
         raise NotImplementedError("Does not make sense for circular buffers")
 
-    def fetch_point(self, item: Tuple[Union[int, slice], ...]) -> None:
+    def fetch_point(self, item: tuple[int | slice, ...]) -> None:
         """This method fetches the tensor at the given index."""
         log.warning(
             "fetch_point requested with item %s - does not make sense for circular buffers", item
         )
         raise NotImplementedError("Does not make sense for circular buffers")
 
-    def offload_block(self, block: Tuple[Union[int, slice], ...]) -> None:
+    def offload_block(self, block: tuple[int | slice, ...]) -> None:
         log.warning(
             "offload_block requested with item %s - does not make sense for circular buffers", block
         )
         raise NotImplementedError("Does not make sense for circular buffers")
 
-    def fetch_block(self, block: Tuple[Union[int, slice], ...]) -> None:
+    def fetch_block(self, block: tuple[int | slice, ...]) -> None:
         log.warning(
             "fetch_block requested with item %s - does not make sense for circular buffers", block
         )
@@ -271,17 +267,17 @@ class CircularRuntimeTensor(PreallocRuntimeTensor[BackendTensorT]):
             return False
         return bool(self.tensor_id == other.tensor_id)
 
-    def replace_backing_buffer(self, key: Tuple[int, ...], buffer: BackendTensorT) -> None:
+    def replace_backing_buffer(self, key: tuple[int, ...], buffer: BackendTensorT) -> None:
         """Replaces the backing buffer for the given key."""
         self._buffers[key] = buffer
 
-    def get_backing_buffer(self, key: Tuple[int, ...]) -> BackendTensorT:
+    def get_backing_buffer(self, key: tuple[int, ...]) -> BackendTensorT:
         """Gets the backing buffer for the given key."""
         return self._get_or_create_buffer(key)
 
     def extract_write_key_and_indexes(
-        self, item: Tuple[int, ...]
-    ) -> Tuple[Tuple[int, ...], Tuple[Tuple[int, ...], ...]]:
+        self, item: tuple[int, ...]
+    ) -> tuple[tuple[int, ...], tuple[tuple[int, ...], ...]]:
         """Extracts the write key and indexes from the given item."""
         buffer_id, window_indices = self.extract_key_and_index(item)
         # Only support 1 window dim for now

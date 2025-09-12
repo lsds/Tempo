@@ -1,13 +1,11 @@
-from typing import List, Tuple
-
 from tempo.core import index_expr as ie
 from tempo.core import tensor_ops as top
 from tempo.core.compilation_ctx import CompilationCtx
 from tempo.core.datatypes import OpInId, OpOutId
 from tempo.core.dependence_graph import PDG, DependencyData
 from tempo.core.op_tags import STATIFY_PAD_ID_TAG
-from tempo.core.symbolic_tensor import SymbolicTensor, _get_symbolic_tensor_for_op_output
-from tempo.transformations.incrementalization.incrementalization_common import PadInfo
+from tempo.core.symbolic_tensor import SymbolicTensor, get_symbolic_tensor_for_op_output
+from tempo.transformations.incrementalization.incrementalization_mechanism import PadInfo
 from tempo.utils import isl as isl_utils
 from tempo.utils import logger
 from tempo.utils.dg_utils import (
@@ -51,11 +49,11 @@ def apply_mask_to_edge(
     src_op: top.TensorOp,
     dom_var: ie.Symbol,
     masked_op_in_dim: int,
-    pad_infos: List[PadInfo],
+    pad_infos: list[PadInfo],
 ) -> None:
     dg = ctx.dg
 
-    log.info(
+    log.debug(
         "Applying mask to edge %s -%s-> %s on dim %d, with pad_infos: %s",
         snk_op,
         edge_data,
@@ -66,7 +64,7 @@ def apply_mask_to_edge(
     mask_value = get_mask_value(snk_op)
 
     # apply mask by modifying pdg
-    symb_t = _get_symbolic_tensor_for_op_output(dg, src_op, OpOutId(edge_data.src_out_idx))
+    symb_t = get_symbolic_tensor_for_op_output(dg, src_op, OpOutId(edge_data.src_out_idx))
 
     snk_in_shape = dg.get_input_shape(snk_op, edge_data.sink_in_idx)
     mask_val_symb_t = symb_t.full(mask_value, dtype=symb_t.dtype).broadcast_to_shape(snk_in_shape)
@@ -74,14 +72,13 @@ def apply_mask_to_edge(
 
     idxs = SymbolicTensor.arange(padded_dim_size)
 
-    left_right_cond_exprs: List[Tuple[ie.IntIndexValue, ie.IntIndexValue]] = []
+    left_right_cond_exprs: list[tuple[ie.IntIndexValue, ie.IntIndexValue]] = []
     for pad_info in pad_infos:
         lifted_how_padding_indexed = ie.lift_to_int_ie(pad_info.pad_idx_index_expr)
 
         # TODO: could get this from pad_op_in_shape[pad_op.dim]
         non_padded_slice_size = pad_info.src_inc_dim_access_expr.evaluate_shape(dg.static_bounds)[0]
         lifted_non_padded_slice_size = ie.lift_to_int_ie(non_padded_slice_size)
-        print(f"lifted_non_padded_slice_size: {lifted_non_padded_slice_size}")
 
         left_padding_remapped = ie.lift_to_int_ie(pad_info.padding[0]).remap(
             {dom_var: lifted_how_padding_indexed}
@@ -178,7 +175,7 @@ def apply_val_to_val_mask_to_edge(
     target_num = get_mask_value(snk_op)
 
     # apply mask by modifying pdg
-    symb_t = _get_symbolic_tensor_for_op_output(dg, src_op, OpOutId(edge_data.src_out_idx))
+    symb_t = get_symbolic_tensor_for_op_output(dg, src_op, OpOutId(edge_data.src_out_idx))
     masked_symb_t = symb_t.nan_to_num(target_num)
 
     dg.remove_edge(snk_op, src_op, edge_data)

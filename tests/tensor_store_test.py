@@ -30,7 +30,7 @@ def test_scalar_batch_write(exec_cfg: ExecutionConfig, domain_3d: Domain):
     )
 
     D0 = 5
-    inp = torch.ones((D0))
+    inp = torch.ones(D0)
 
     tensor[0:5, 0, 0] = inp
     out = tensor[0:5, 0, 0]
@@ -45,7 +45,7 @@ def test_scalar_batch_multi_write(exec_cfg: ExecutionConfig, domain_3d: Domain):
     )
 
     D0 = 5
-    inp = torch.ones((D0))
+    inp = torch.ones(D0)
 
     # Write
     tensor[0:5, 0, 0] = inp
@@ -70,7 +70,7 @@ def test_scalar_batch_multi_write_batch_read(
     )
 
     D0 = 5
-    inp = torch.ones((D0))
+    inp = torch.ones(D0)
 
     # Write
     tensor[0:5, 0, 0] = inp

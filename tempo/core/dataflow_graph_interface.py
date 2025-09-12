@@ -1,10 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Generic, Iterable, Sequence, Tuple
+from collections.abc import Callable, Iterable, Sequence
+from typing import Generic
 
 from tempo.core.datatypes import BackendTensorT, OpId, OpInId, OpOutId
 from tempo.core.dtype import DataType
 from tempo.core.shape import Shape
 from tempo.core.tensor_op import TensorOp
+from tempo.core.thunk import ThunkExecutionCtx
 from tempo.utils import logger
 
 log = logger.get_logger(__name__)
@@ -22,8 +24,8 @@ class DataflowGraphI(Generic[BackendTensorT], ABC):
 
     def __init__(
         self,
-        irouter: Tuple[Tuple[Tuple[OpId, OpInId], ...], ...],
-        orouter: Tuple[Tuple[OpId, OpOutId], ...],
+        irouter: tuple[tuple[tuple[OpId, OpInId], ...], ...],
+        orouter: tuple[tuple[OpId, OpOutId], ...],
     ) -> None:
         self.irouter = irouter
         self.orouter = orouter
@@ -52,7 +54,25 @@ class DataflowGraphI(Generic[BackendTensorT], ABC):
     @abstractmethod
     def execute(
         self,
-        inputs: Tuple[BackendTensorT, ...],
-        thunk_map: Callable[[TensorOp, Tuple[BackendTensorT, ...]], Tuple[BackendTensorT, ...]],
-    ) -> Tuple[BackendTensorT, ...]:
+        inputs: tuple[BackendTensorT, ...],
+        thunk_map: Callable[[TensorOp, tuple[BackendTensorT, ...]], tuple[BackendTensorT, ...]],
+    ) -> tuple[BackendTensorT, ...]:
+        raise NotImplementedError
+
+    def get_compiled_executor(
+        self,
+        op_id: OpId,
+        thunk_map: dict[
+            OpId,
+            Callable[[tuple[BackendTensorT, ...], ThunkExecutionCtx], tuple[BackendTensorT, ...]],
+        ],
+    ) -> Callable[[tuple[BackendTensorT, ...], ThunkExecutionCtx], tuple[BackendTensorT, ...]]:
+        """Compile the generated executor function and return a callable.
+
+        Args:
+            thunk_map: Dictionary mapping OpId to thunk functions
+
+        Returns:
+            A compiled function that can execute the computation
+        """
         raise NotImplementedError

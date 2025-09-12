@@ -52,7 +52,7 @@ SYS = [
 ]
 
 
-def name_from_params(objective: Optional[int] = None, ca: bool = True) -> str:
+def name_from_params(objective: int | None = None, ca: bool = True) -> str:
     if objective is None:
         name = "objective_monte_carlo"
     else:
@@ -63,7 +63,7 @@ def name_from_params(objective: Optional[int] = None, ca: bool = True) -> str:
     return name
 
 
-def get_experiment_name_and_results_path(base_path: str, kwargs: Dict[str, Any]) -> Tuple[str, str]:
+def get_experiment_name_and_results_path(base_path: str, kwargs: dict[str, Any]) -> tuple[str, str]:
     ca = kwargs["use_caching_allocators"]
     objective = kwargs["objective"]
 
