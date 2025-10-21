@@ -2,6 +2,11 @@
 
 ![Tempo Banner](docs/banner.png)
 
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/lsds/Tempo/tests_linters.yml)
+![GitHub License](https://img.shields.io/github/license/lsds/Tempo)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lsds/Tempo)
+
 # SOSP'25 Reproducibility
 
 See [repro/README.me](repro/README.md)
